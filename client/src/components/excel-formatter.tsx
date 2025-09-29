@@ -363,8 +363,8 @@ export function ExcelFormatter() {
                 <p className="text-sm text-muted-foreground">Columns Deleted</p>
               </div>
               <div className="text-center">
-                <p className="text-2xl font-bold text-primary">{itemListStats.remainingColumns}</p>
-                <p className="text-sm text-muted-foreground">Remaining Columns</p>
+                <p className="text-2xl font-bold text-primary">{parsedItemData?.length || 0}</p>
+                <p className="text-sm text-muted-foreground">Records Ready</p>
               </div>
             </div>
 
