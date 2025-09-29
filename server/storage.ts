@@ -39,11 +39,24 @@ export interface IStorage {
   
   // Sales Transactions operations
   createSalesTransaction(transaction: InsertSalesTransaction): Promise<SalesTransaction>;
+  getAllSalesTransactions(limit?: number, offset?: number, search?: string, year?: number, month?: number): Promise<{
+    transactions: SalesTransaction[];
+    total: number;
+  }>;
+  updateSalesTransaction(id: number, transaction: Partial<InsertSalesTransaction>): Promise<SalesTransaction | undefined>;
+  deleteSalesTransaction(id: number): Promise<boolean>;
+  deleteAllSalesTransactions(): Promise<number>;
   getSalesStats(): Promise<{
     totalTransactions: number;
     totalRevenue: string;
     totalReceipts: number;
     totalStores: number;
+  }>;
+  getSalesInsights(): Promise<{
+    byStore: Array<{ store: string; totalSales: number; totalRevenue: string; transactionCount: number }>;
+    byItem: Array<{ sku: string; itemName: string; totalSales: number; totalRevenue: string; vendorName: string | null; category: string | null }>;
+    byMonth: Array<{ month: string; totalRevenue: string; transactionCount: number }>;
+    byYear: Array<{ year: string; totalRevenue: string; transactionCount: number }>;
   }>;
   
   // Upload History operations
@@ -194,6 +207,83 @@ export class DatabaseStorage implements IStorage {
     return createdTransaction;
   }
 
+  async getAllSalesTransactions(limit = 50, offset = 0, search?: string, year?: number, month?: number): Promise<{
+    transactions: SalesTransaction[];
+    total: number;
+  }> {
+    let transactions: SalesTransaction[];
+    let total: number;
+
+    const filters = [];
+    
+    // Search filter
+    if (search) {
+      filters.push(
+        or(
+          ilike(salesTransactions.sku, `%${search}%`),
+          ilike(salesTransactions.itemName, `%${search}%`),
+          ilike(salesTransactions.store, `%${search}%`),
+          ilike(salesTransactions.receiptNumber, `%${search}%`)
+        )
+      );
+    }
+    
+    // Year filter using date range for index efficiency
+    if (year) {
+      filters.push(sql`${salesTransactions.date} >= make_date(${year}, 1, 1)`);
+      filters.push(sql`${salesTransactions.date} < make_date(${year + 1}, 1, 1)`);
+    }
+    
+    // Month filter using date range (1-12)
+    if (month && year) {
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      filters.push(sql`${salesTransactions.date} >= make_date(${year}, ${month}, 1)`);
+      filters.push(sql`${salesTransactions.date} < make_date(${nextYear}, ${nextMonth}, 1)`);
+    }
+
+    const whereClause = filters.length > 0 ? sql`${sql.join(filters, sql` AND `)}` : undefined;
+    
+    if (whereClause) {
+      const [transactionsResult, [countResult]] = await Promise.all([
+        db.select().from(salesTransactions).where(whereClause).orderBy(desc(salesTransactions.date)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(salesTransactions).where(whereClause)
+      ]);
+      
+      transactions = transactionsResult;
+      total = countResult.count;
+    } else {
+      const [transactionsResult, [countResult]] = await Promise.all([
+        db.select().from(salesTransactions).orderBy(desc(salesTransactions.date)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(salesTransactions)
+      ]);
+      
+      transactions = transactionsResult;
+      total = countResult.count;
+    }
+
+    return { transactions, total };
+  }
+
+  async updateSalesTransaction(id: number, transaction: Partial<InsertSalesTransaction>): Promise<SalesTransaction | undefined> {
+    const [updatedTransaction] = await db
+      .update(salesTransactions)
+      .set(transaction)
+      .where(eq(salesTransactions.id, id))
+      .returning();
+    return updatedTransaction || undefined;
+  }
+
+  async deleteSalesTransaction(id: number): Promise<boolean> {
+    const result = await db.delete(salesTransactions).where(eq(salesTransactions.id, id));
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async deleteAllSalesTransactions(): Promise<number> {
+    const result = await db.delete(salesTransactions);
+    return result.rowCount || 0;
+  }
+
   async getSalesStats(): Promise<{
     totalTransactions: number;
     totalRevenue: string;
@@ -214,6 +304,89 @@ export class DatabaseStorage implements IStorage {
       totalRevenue: stats.totalRevenue || "0",
       totalReceipts: stats.totalReceipts,
       totalStores: stats.totalStores,
+    };
+  }
+
+  async getSalesInsights(): Promise<{
+    byStore: Array<{ store: string; totalSales: number; totalRevenue: string; transactionCount: number }>;
+    byItem: Array<{ sku: string; itemName: string; totalSales: number; totalRevenue: string; vendorName: string | null; category: string | null }>;
+    byMonth: Array<{ month: string; totalRevenue: string; transactionCount: number }>;
+    byYear: Array<{ year: string; totalRevenue: string; transactionCount: number }>;
+  }> {
+    // Sales by store
+    const byStore = await db
+      .select({
+        store: salesTransactions.store,
+        totalSales: count(salesTransactions.id),
+        totalRevenue: sum(salesTransactions.price),
+        transactionCount: sql<number>`COUNT(DISTINCT ${salesTransactions.receiptNumber})`,
+      })
+      .from(salesTransactions)
+      .groupBy(salesTransactions.store)
+      .orderBy(desc(sum(salesTransactions.price)));
+
+    // Sales by item (SKU) with joined item list data
+    const byItem = await db
+      .select({
+        sku: salesTransactions.sku,
+        itemName: salesTransactions.itemName,
+        totalSales: count(salesTransactions.id),
+        totalRevenue: sum(salesTransactions.price),
+        vendorName: itemList.vendorName,
+        category: itemList.category,
+      })
+      .from(salesTransactions)
+      .leftJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .groupBy(salesTransactions.sku, salesTransactions.itemName, itemList.vendorName, itemList.category)
+      .orderBy(desc(sum(salesTransactions.price)));
+
+    // Sales by month
+    const byMonth = await db
+      .select({
+        month: sql<string>`TO_CHAR(${salesTransactions.date}, 'YYYY-MM')`,
+        totalRevenue: sum(salesTransactions.price),
+        transactionCount: count(salesTransactions.id),
+      })
+      .from(salesTransactions)
+      .groupBy(sql`TO_CHAR(${salesTransactions.date}, 'YYYY-MM')`)
+      .orderBy(sql`TO_CHAR(${salesTransactions.date}, 'YYYY-MM') DESC`);
+
+    // Sales by year
+    const byYear = await db
+      .select({
+        year: sql<string>`EXTRACT(YEAR FROM ${salesTransactions.date})::text`,
+        totalRevenue: sum(salesTransactions.price),
+        transactionCount: count(salesTransactions.id),
+      })
+      .from(salesTransactions)
+      .groupBy(sql`EXTRACT(YEAR FROM ${salesTransactions.date})`)
+      .orderBy(sql`EXTRACT(YEAR FROM ${salesTransactions.date}) DESC`);
+
+    return {
+      byStore: byStore.map(s => ({
+        store: s.store || 'Unknown',
+        totalSales: s.totalSales,
+        totalRevenue: s.totalRevenue || '0',
+        transactionCount: s.transactionCount,
+      })),
+      byItem: byItem.map(i => ({
+        sku: i.sku || 'Unknown',
+        itemName: i.itemName || 'Unknown',
+        totalSales: i.totalSales,
+        totalRevenue: i.totalRevenue || '0',
+        vendorName: i.vendorName,
+        category: i.category,
+      })),
+      byMonth: byMonth.map(m => ({
+        month: m.month || 'Unknown',
+        totalRevenue: m.totalRevenue || '0',
+        transactionCount: m.transactionCount,
+      })),
+      byYear: byYear.map(y => ({
+        year: y.year || 'Unknown',
+        totalRevenue: y.totalRevenue || '0',
+        transactionCount: y.transactionCount,
+      })),
     };
   }
 

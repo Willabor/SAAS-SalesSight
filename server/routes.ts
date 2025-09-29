@@ -245,6 +245,108 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get all sales transactions with pagination, search, and filters
+  app.get("/api/sales-transactions", async (req, res) => {
+    try {
+      const limit = parseInt(String(req.query.limit)) || 50;
+      const offset = parseInt(String(req.query.offset)) || 0;
+      const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Parse and validate year/month as numbers
+      let year: number | undefined;
+      let month: number | undefined;
+      
+      if (req.query.year) {
+        const parsedYear = parseInt(String(req.query.year));
+        if (!isNaN(parsedYear) && parsedYear >= 1900 && parsedYear <= 2100) {
+          year = parsedYear;
+        }
+      }
+      
+      if (req.query.month) {
+        const parsedMonth = parseInt(String(req.query.month));
+        if (!isNaN(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12) {
+          month = parsedMonth;
+        }
+      }
+      
+      const result = await storage.getAllSalesTransactions(limit, offset, search, year, month);
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching sales transactions:", error);
+      res.status(500).json({ error: "Failed to fetch sales transactions" });
+    }
+  });
+
+  // Update sales transaction
+  app.put("/api/sales-transactions/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid transaction ID" });
+      }
+      
+      // Validate request body using partial schema
+      const updateData = insertSalesTransactionSchema.partial().parse(req.body);
+      
+      const updated = await storage.updateSalesTransaction(id, updateData);
+      if (updated) {
+        res.json(updated);
+      } else {
+        res.status(404).json({ error: "Transaction not found" });
+      }
+    } catch (error) {
+      console.error("Error updating transaction:", error);
+      res.status(500).json({ error: "Failed to update transaction" });
+    }
+  });
+
+  // Delete individual sales transaction
+  app.delete("/api/sales-transactions/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid transaction ID" });
+      }
+      
+      const deleted = await storage.deleteSalesTransaction(id);
+      if (deleted) {
+        res.json({ success: true, message: "Transaction deleted successfully" });
+      } else {
+        res.status(404).json({ error: "Transaction not found" });
+      }
+    } catch (error) {
+      console.error("Error deleting transaction:", error);
+      res.status(500).json({ error: "Failed to delete transaction" });
+    }
+  });
+
+  // Clear all sales transactions
+  app.delete("/api/sales-transactions", async (req, res) => {
+    try {
+      const deletedCount = await storage.deleteAllSalesTransactions();
+      res.json({ 
+        success: true, 
+        message: `Cleared ${deletedCount} transactions from database`,
+        deletedCount 
+      });
+    } catch (error) {
+      console.error("Error clearing sales transactions:", error);
+      res.status(500).json({ error: "Failed to clear sales transactions" });
+    }
+  });
+
+  // Get sales insights
+  app.get("/api/sales-insights", async (req, res) => {
+    try {
+      const insights = await storage.getSalesInsights();
+      res.json(insights);
+    } catch (error) {
+      console.error("Error fetching sales insights:", error);
+      res.status(500).json({ error: "Failed to fetch sales insights" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
