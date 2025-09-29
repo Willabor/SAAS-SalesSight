@@ -178,16 +178,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (let index = 0; index < data.length; index++) {
         const transaction = data[index];
         try {
-          // Validate the transaction data
-          const validatedTransaction = insertSalesTransactionSchema.parse({
+          // Validate the transaction data - convert all values to appropriate types
+          const rawData = {
             date: transaction.Date || transaction.date,
             store: transaction.Store || transaction.store,
             receiptNumber: transaction["Receipt #"] || transaction.receiptNumber,
             sku: transaction.SKU || transaction.sku,
             itemName: transaction["Item Name"] || transaction.itemName,
             transactionStoreType: transaction["Transaction Store Type"] || transaction.transactionStoreType,
-            price: parseFloat(transaction.Price || transaction.price || "0"),
+            price: transaction.Price || transaction.price,
             sheet: transaction.Sheet || transaction.sheet,
+          };
+
+          const validatedTransaction = insertSalesTransactionSchema.parse({
+            date: rawData.date,
+            store: rawData.store != null ? String(rawData.store) : null,
+            receiptNumber: rawData.receiptNumber != null ? String(rawData.receiptNumber) : null,
+            sku: rawData.sku != null ? String(rawData.sku) : null,
+            itemName: rawData.itemName != null ? String(rawData.itemName) : null,
+            transactionStoreType: rawData.transactionStoreType != null ? String(rawData.transactionStoreType) : null,
+            price: rawData.price != null ? String(rawData.price) : "0",
+            sheet: rawData.sheet != null ? String(rawData.sheet) : null,
           });
 
           await storage.createSalesTransaction(validatedTransaction);
