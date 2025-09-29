@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Upload, Download, FileText, BarChart3, CheckCircle } from "lucide-react";
 import { formatItemList, formatSalesFile, flattenSalesData, downloadExcelFile, downloadCSVFile, samplePreview } from "@/lib/formatters";
 import type { ItemListStats, SalesStats, BusinessStats } from "@/lib/formatters";
-import { uploadData } from "@/lib/api";
+import { uploadData, uploadDataWithProgress } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 type ProcessingMode = 'item-list' | 'sales';
@@ -24,6 +24,15 @@ export function ExcelFormatter() {
   const [uploadMode, setUploadMode] = useState<'initial' | 'weekly_update'>('initial');
   const [status, setStatus] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
+  
+  // Upload progress tracking
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadStats, setUploadStats] = useState<{
+    processed: number;
+    total: number;
+    uploaded: number;
+    failed: number;
+  } | null>(null);
   
   // Item List state
   const [itemListWorkbook, setItemListWorkbook] = useState<any>(null);
@@ -194,19 +203,72 @@ export function ExcelFormatter() {
   };
 
   const uploadToDatabase = async () => {
+    if (!file) return;
+    
+    let data: any[];
+    let type: 'item-list' | 'sales-transactions';
+    
     if (processingMode === 'item-list' && parsedItemData) {
-      await uploadMutation.mutateAsync({
-        data: parsedItemData,
-        type: 'item-list',
-        mode: uploadMode,
-        fileName: file?.name || 'unknown.xlsx',
-      });
+      data = parsedItemData;
+      type = 'item-list';
     } else if (processingMode === 'sales' && parsedSalesData) {
-      await uploadMutation.mutateAsync({
-        data: parsedSalesData,
-        type: 'sales-transactions',
-        fileName: file?.name || 'unknown.xlsx',
+      data = parsedSalesData;
+      type = 'sales-transactions';
+    } else {
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadStats({ processed: 0, total: data.length, uploaded: 0, failed: 0 });
+    
+    try {
+      const result = await uploadDataWithProgress(
+        type,
+        data,
+        (progress) => {
+          setUploadStats(progress);
+          // Update upload progress percentage based on uploaded items
+          const percentage = Math.round((progress.uploaded / progress.total) * 100);
+          setUploadProgress(percentage);
+          setStatus(`Uploading to database: ${progress.processed} of ${progress.total} items processed (${progress.uploaded} uploaded, ${progress.failed} failed)`);
+        },
+        processingMode === 'item-list' ? uploadMode : undefined,
+        file.name
+      );
+
+      // Invalidate queries to refresh stats
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/upload-history"] });
+
+      if (result.failed > 0) {
+        toast({
+          title: "Upload completed with errors",
+          description: `${result.uploaded} records uploaded, ${result.failed} failed`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Upload successful",
+          description: `${result.uploaded} records uploaded successfully`,
+        });
+      }
+      
+      setStatus(`Upload complete: ${result.uploaded} items uploaded, ${result.failed} failed`);
+      
+    } catch (error) {
+      toast({
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
       });
+      setStatus("Upload failed");
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+      setTimeout(() => {
+        setUploadStats(null);
+      }, 3000); // Clear progress after 3 seconds
     }
   };
 
@@ -382,6 +444,34 @@ export function ExcelFormatter() {
               </RadioGroup>
             </div>
 
+            {/* Upload Progress Display */}
+            {isUploading && uploadStats && (
+              <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-blue-900">Uploading to Database</p>
+                  <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
+                </div>
+                <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
+                    <p className="text-xs text-blue-700">Processed</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
+                    <p className="text-xs text-green-700">Uploaded</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
+                    <p className="text-xs text-red-700">Failed</p>
+                  </div>
+                </div>
+                <p className="text-sm text-blue-800">
+                  {uploadStats.processed} of {uploadStats.total} items processed
+                </p>
+              </div>
+            )}
+
             <div className="flex gap-3">
               <Button onClick={downloadItemList} variant="outline" className="flex items-center gap-2">
                 <Download className="w-4 h-4" />
@@ -389,11 +479,12 @@ export function ExcelFormatter() {
               </Button>
               <Button 
                 onClick={uploadToDatabase} 
-                disabled={uploadMutation.isPending}
+                disabled={isUploading}
                 className="flex items-center gap-2"
+                data-testid="button-upload-database"
               >
                 <Upload className="w-4 h-4" />
-                {uploadMutation.isPending ? 'Uploading...' : 'Upload to Database'}
+                {isUploading ? 'Uploading...' : 'Upload to Database'}
               </Button>
             </div>
           </CardContent>
@@ -492,6 +583,34 @@ export function ExcelFormatter() {
               </div>
             </div>
 
+            {/* Upload Progress Display */}
+            {isUploading && uploadStats && (
+              <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-blue-900">Uploading to Database</p>
+                  <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
+                </div>
+                <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
+                    <p className="text-xs text-blue-700">Processed</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
+                    <p className="text-xs text-green-700">Uploaded</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
+                    <p className="text-xs text-red-700">Failed</p>
+                  </div>
+                </div>
+                <p className="text-sm text-blue-800">
+                  {uploadStats.processed} of {uploadStats.total} items processed
+                </p>
+              </div>
+            )}
+
             <div className="flex gap-3">
               <Button onClick={downloadConsolidatedCSV} variant="outline" className="flex items-center gap-2">
                 <Download className="w-4 h-4" />
@@ -499,11 +618,12 @@ export function ExcelFormatter() {
               </Button>
               <Button 
                 onClick={uploadToDatabase} 
-                disabled={uploadMutation.isPending}
+                disabled={isUploading}
                 className="flex items-center gap-2"
+                data-testid="button-upload-database-sales"
               >
                 <Upload className="w-4 h-4" />
-                {uploadMutation.isPending ? 'Uploading...' : 'Upload to Database'}
+                {isUploading ? 'Uploading...' : 'Upload to Database'}
               </Button>
             </div>
           </CardContent>
