@@ -17,6 +17,39 @@ export interface FormatResult {
   mappedHeaders: { [oldHeader: string]: string };
 }
 
+export interface ItemListStats {
+  rowsDeleted: number;
+  columnsDeleted: number;
+  remainingColumns: number;
+}
+
+export interface SalesStats {
+  sheetsProcessed: number;
+  rowsDeleted: number;
+  sheetNames: string[];
+}
+
+export interface BusinessStats {
+  totalRecords: number;
+  totalRevenue: number;
+  avgItemPrice: number;
+  uniqueReceipts: number;
+  uniqueStores: number;
+  uniqueSKUs: number;
+  topProducts: Array<{
+    itemName: string;
+    quantity: number;
+    totalRevenue: number;
+    avgPrice: number;
+  }>;
+  sheetSummaries: Array<{
+    sheetName: string;
+    records: number;
+    revenue: number;
+    uniqueReceipts: number;
+  }>;
+}
+
 // Detect the header row by finding the first row with meaningful content
 export function detectHeaderRow(data: any[][]): number {
   for (let i = 0; i < Math.min(data.length, 10); i++) {
@@ -377,114 +410,351 @@ export function samplePreview(data: any[], maxRows: number = 10): any[] {
   return data.slice(0, maxRows);
 }
 
-// Main formatting function that orchestrates all operations
-export function formatExcelData(
-  workbook: XLSX.WorkBook, 
-  config: FormatConfig, 
-  type: 'item-list' | 'sales-transactions'
-): FormatResult {
-  const sheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[sheetName];
-  
-  if (!worksheet) {
-    throw new Error('No worksheet found in Excel file');
-  }
-  
-  // Convert to array format for processing
-  let data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-  
-  if (data.length === 0) {
-    throw new Error('Excel file contains no data');
-  }
-  
-  // Detect header row if auto-detection is enabled
-  let headerRowIndex = 0;
-  if (config.autoDetectHeaders) {
-    headerRowIndex = detectHeaderRow(data);
-    if (headerRowIndex > 0) {
-      data = data.slice(headerRowIndex);
-    }
-  }
-  
-  // Delete rows as configured
-  const originalRowCount = data.length;
-  if (config.deleteTopRows || config.deleteBottomRows) {
-    data = deleteRows(data, {
-      top: config.deleteTopRows,
-      bottom: config.deleteBottomRows
-    });
-  }
-  
-  // Delete columns as configured
-  const originalColumnCount = data[0]?.length || 0;
-  if (config.deleteColumns && config.deleteColumns.length > 0) {
-    data = deleteColumns(data, { byHeader: config.deleteColumns });
-  }
-  
-  // Convert back to object format
-  const headers = data[0] as string[];
-  const rows = data.slice(1);
-  
-  // Normalize headers
-  const headerMappings = normalizeHeaders(headers, config.headerMappings);
-  
-  // Convert to objects with mapped headers
-  let processedData = rows
-    .filter(row => row.some(cell => cell !== null && cell !== undefined && cell !== ''))
-    .map(row => {
-      const obj: any = {};
-      headers.forEach((header, i) => {
-        if (header && row[i] !== undefined) {
-          const mappedHeader = headerMappings[header] || header;
-          obj[mappedHeader] = row[i];
+// Specific Item List Formatting (from user's requirements)
+export function formatItemList(file: File): Promise<{
+  workbook: XLSX.WorkBook;
+  stats: ItemListStats;
+  parsedData: any[];
+}> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+      
+      const sheetName = 'Item Detail';
+      if (!workbook.SheetNames.includes(sheetName)) {
+        throw new Error('Sheet "Item Detail" not found in workbook');
+      }
+
+      const worksheet = workbook.Sheets[sheetName];
+      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+      
+      // DELETE TOP 5 ROWS
+      const afterRowDelete: any = {};
+      for (let R = range.s.r + 5; R <= range.e.r; R++) {
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const oldAddr = XLSX.utils.encode_cell({r: R, c: C});
+          const newAddr = XLSX.utils.encode_cell({r: R - 5, c: C});
+          if (worksheet[oldAddr]) {
+            afterRowDelete[newAddr] = worksheet[oldAddr];
+          }
+        }
+      }
+      
+      // DELETE SPECIFIC COLUMNS
+      const columnsToDelete = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46];
+      
+      const colMap: any = {};
+      let newCol = 0;
+      for (let oldCol = 0; oldCol <= range.e.c; oldCol++) {
+        if (!columnsToDelete.includes(oldCol)) {
+          colMap[oldCol] = newCol++;
+        }
+      }
+      
+      const finalCells: any = {};
+      Object.keys(afterRowDelete).forEach(addr => {
+        const cell = XLSX.utils.decode_cell(addr);
+        if (colMap[cell.c] !== undefined) {
+          const newAddr = XLSX.utils.encode_cell({r: cell.r, c: colMap[cell.c]});
+          finalCells[newAddr] = afterRowDelete[addr];
         }
       });
-      return obj;
-    });
-  
-  // Apply type coercion
-  if (type === 'item-list') {
-    const schema = {
-      item_number: 'string',
-      vendor_name: 'string',
-      item_name: 'string',
-      avail_qty: 'number',
-      hq_qty: 'number',
-      gm_qty: 'number',
-      hm_qty: 'number',
-      mm_qty: 'number',
-      nm_qty: 'number',
-      pm_qty: 'number',
-      lm_qty: 'number',
-      order_cost: 'number',
-      selling_price: 'number',
-      last_rcvd: 'date',
-      creation_date: 'date',
-      last_sold: 'date'
-    } as const;
-    processedData = coerceTypes(processedData, schema);
-    
-    // Apply flattening if requested
-    if (config.flattenByStore) {
-      processedData = flattenItemListQuantities(processedData);
+      
+      workbook.Sheets[sheetName] = {
+        ...finalCells,
+        '!ref': XLSX.utils.encode_range({
+          s: {r: 0, c: 0},
+          e: {r: range.e.r - 5, c: newCol - 1}
+        })
+      };
+      
+      const stats: ItemListStats = {
+        rowsDeleted: 5,
+        columnsDeleted: columnsToDelete.length,
+        remainingColumns: newCol
+      };
+      
+      // PARSE DATA FOR DATABASE UPLOAD
+      const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null });
+      const parsedRecords = jsonData.map((row: any) => ({
+        item_number: row['Item #'] || null,
+        vendor_name: row['Vendor Name'] || null,
+        item_name: row['Item Name'] || null,
+        category: row['Category'] || null,
+        gender: row['Gender'] || null,
+        avail_qty: row['Avail Qty'] || 0,
+        hq_qty: row['HQ Qty'] || 0,
+        gm_qty: row['GM Qty'] || 0,
+        hm_qty: row['HM Qty'] || 0,
+        mm_qty: row['MM Qty'] || 0,
+        nm_qty: row['NM Qty'] || 0,
+        pm_qty: row['PM Qty'] || 0,
+        lm_qty: row['LM Qty'] || 0,
+        last_rcvd: row['Last Rcvd'] || null,
+        creation_date: row['Creation Date'] || null,
+        last_sold: row['Last Sold'] || null,
+        style_number: row['Style Number'] || null,
+        style_number_2: row['Style Number 2'] || null,
+        order_cost: row['Order Cost'] || null,
+        selling_price: row['Selling Price'] || null,
+        notes: row['Notes'] || null,
+        size: row['Size'] || null,
+        attribute: row['Attribute'] || null,
+        file_name: file.name
+      }));
+      
+      resolve({
+        workbook,
+        stats,
+        parsedData: parsedRecords
+      });
+      
+    } catch (error) {
+      reject(error);
     }
-  } else if (type === 'sales-transactions') {
-    const schema = {
-      date: 'date',
-      price: 'number'
-    } as const;
-    processedData = coerceTypes(processedData, schema);
-    
-    // Apply 2-step sales processing
-    processedData = normalizeSalesStep1(processedData);
-    processedData = transformSalesStep2(processedData);
-  }
-  
-  return {
-    data: processedData,
-    headers: Object.values(headerMappings),
-    deletedRows: originalRowCount - rows.length - 1, // -1 for header row
-    deletedColumns: originalColumnCount - headers.length,
-    mappedHeaders: headerMappings
-  };
+  });
+}
+
+// Specific Sales Data Formatting Step 1 (from user's requirements)
+export function formatSalesFile(file: File): Promise<{
+  workbook: XLSX.WorkBook;
+  stats: SalesStats;
+}> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+      
+      const processedSheets: string[] = [];
+      let totalRowsDeleted = 0;
+      
+      workbook.SheetNames.forEach(sheetName => {
+        if (!/^Sales Detail/i.test(sheetName)) return;
+        
+        const worksheet = workbook.Sheets[sheetName];
+        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+        
+        // DELETE TOP 5 ROWS
+        totalRowsDeleted += 5;
+        const newCells: any = {};
+        
+        for (let R = range.s.r + 5; R <= range.e.r; R++) {
+          for (let C = range.s.c; C <= range.e.c; C++) {
+            const oldAddr = XLSX.utils.encode_cell({r: R, c: C});
+            const newAddr = XLSX.utils.encode_cell({r: R - 5, c: C});
+            if (worksheet[oldAddr]) {
+              newCells[newAddr] = worksheet[oldAddr];
+            }
+          }
+        }
+        
+        // DELETE COLUMNS A, C, E, G, I, K, M, O (0, 2, 4, 6, 8, 10, 12, 14)
+        const colMap: any = {};
+        let newCol = 0;
+        for (let oldCol = 0; oldCol <= range.e.c; oldCol++) {
+          if (![0, 2, 4, 6, 8, 10, 12, 14].includes(oldCol)) {
+            colMap[oldCol] = newCol++;
+          }
+        }
+        
+        const afterColDelete: any = {};
+        Object.keys(newCells).forEach(addr => {
+          const cell = XLSX.utils.decode_cell(addr);
+          if (colMap[cell.c] !== undefined) {
+            const newAddr = XLSX.utils.encode_cell({r: cell.r, c: colMap[cell.c]});
+            afterColDelete[newAddr] = newCells[addr];
+          }
+        });
+        
+        // INSERT SKU AND ITEM NAME COLUMNS
+        const afterInsert: any = {};
+        Object.keys(afterColDelete).forEach(addr => {
+          const cell = XLSX.utils.decode_cell(addr);
+          let newC = cell.c;
+          if (cell.c >= 3) newC = cell.c + 2;
+          const newAddr = XLSX.utils.encode_cell({r: cell.r, c: newC});
+          afterInsert[newAddr] = afterColDelete[addr];
+        });
+        
+        // ADD HEADERS
+        afterInsert['D1'] = {t: 's', v: 'SKU'};
+        afterInsert['E1'] = {t: 's', v: 'Item Name'};
+        afterInsert['G1'] = {t: 's', v: 'Price'};
+        
+        workbook.Sheets[sheetName] = {
+          ...afterInsert,
+          '!ref': XLSX.utils.encode_range({
+            s: {r: 0, c: 0},
+            e: {r: range.e.r - 5, c: newCol + 1}
+          })
+        };
+        
+        processedSheets.push(sheetName);
+      });
+      
+      const stats: SalesStats = {
+        sheetsProcessed: processedSheets.length,
+        rowsDeleted: totalRowsDeleted,
+        sheetNames: processedSheets
+      };
+      
+      resolve({
+        workbook,
+        stats
+      });
+      
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Sales Data Flattening Step 2 (from user's requirements)
+export function flattenSalesData(workbook: XLSX.WorkBook): Promise<{
+  transactions: any[];
+  businessStats: BusinessStats;
+  csvData: string;
+}> {
+  return new Promise((resolve, reject) => {
+    try {
+      let allTransactions: any[] = [];
+      let sheetSummaries: any[] = [];
+
+      for (let i = 0; i < workbook.SheetNames.length; i++) {
+        const sheetName = workbook.SheetNames[i];
+        
+        if (!/^Sales Detail/i.test(sheetName)) continue;
+        
+        const sheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(sheet, { 
+          header: ['Date', 'Store', 'Receipt #', 'SKU', 'Item Name', 'Transaction Store Type', 'Price', 'Col8', 'Col9'],
+          defval: null,
+          range: 1
+        });
+        
+        let sheetTransactions: any[] = [];
+        let currentTransaction: any = null;
+        
+        // PARSE HIERARCHICAL STRUCTURE
+        for (let j = 0; j < jsonData.length; j++) {
+          const row = jsonData[j] as any;
+          
+          // TRANSACTION HEADER ROW (has Date, Store, Receipt #, but no Price)
+          if (row.Date && row.Store && row['Receipt #'] && !row.Price) {
+            let formattedDate = row.Date instanceof Date 
+              ? row.Date.toISOString().split('T')[0] 
+              : row.Date;
+            
+            currentTransaction = {
+              date: formattedDate,
+              store: row.Store,
+              receiptNumber: row['Receipt #'],
+              transactionStoreType: row['Transaction Store Type']
+            };
+          } 
+          // LINE ITEM ROW (no Date, has Store/Receipt#/Price)
+          else if (!row.Date && row.Store && row['Receipt #'] && row.Price !== null && currentTransaction) {
+            const transaction = {
+              Date: currentTransaction.date,
+              Store: currentTransaction.store,
+              'Receipt #': currentTransaction.receiptNumber,
+              SKU: row.Store,
+              'Item Name': row['Receipt #'],
+              'Transaction Store Type': row['Transaction Store Type'] || currentTransaction.transactionStoreType,
+              Price: row.Price,
+              Sheet: sheetName
+            };
+            
+            sheetTransactions.push(transaction);
+            allTransactions.push(transaction);
+          }
+        }
+        
+        // Calculate sheet summary
+        const revenue = sheetTransactions.reduce((sum, t) => sum + (t.Price || 0), 0);
+        const uniqueReceipts = new Set(sheetTransactions.map(t => t['Receipt #'])).size;
+        
+        sheetSummaries.push({
+          sheetName,
+          records: sheetTransactions.length,
+          revenue,
+          uniqueReceipts
+        });
+      }
+
+      // CALCULATE BUSINESS STATISTICS
+      const productGroups = allTransactions.reduce((acc, item) => {
+        const name = item['Item Name'];
+        if (!acc[name]) {
+          acc[name] = [];
+        }
+        acc[name].push(item);
+        return acc;
+      }, {} as any);
+
+      const topProducts = Object.keys(productGroups)
+        .map(name => ({
+          itemName: name,
+          quantity: productGroups[name].length,
+          totalRevenue: productGroups[name].reduce((sum: number, item: any) => sum + (item.Price || 0), 0),
+          avgPrice: productGroups[name].reduce((sum: number, item: any) => sum + (item.Price || 0), 0) / productGroups[name].length
+        }))
+        .sort((a, b) => b.totalRevenue - a.totalRevenue)
+        .slice(0, 10);
+
+      // GENERATE CSV
+      const csvHeaders = ['Date', 'Store', 'Receipt #', 'SKU', 'Item Name', 'Transaction Store Type', 'Price', 'Sheet'];
+      const csvRows = [csvHeaders.join(',')];
+      
+      allTransactions.forEach(row => {
+        const values = csvHeaders.map(header => {
+          const value = row[header];
+          if (value === null || value === undefined) return '';
+          const str = value.toString();
+          // Escape commas and quotes
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        });
+        csvRows.push(values.join(','));
+      });
+      
+      const csvData = csvRows.join('\n');
+      
+      const businessStats: BusinessStats = {
+        totalRecords: allTransactions.length,
+        totalRevenue: allTransactions.reduce((sum, t) => sum + (t.Price || 0), 0),
+        avgItemPrice: allTransactions.reduce((sum, t) => sum + (t.Price || 0), 0) / allTransactions.length || 0,
+        uniqueReceipts: new Set(allTransactions.map(t => t['Receipt #'])).size,
+        uniqueStores: new Set(allTransactions.map(t => t.Store)).size,
+        uniqueSKUs: new Set(allTransactions.map(t => t.SKU)).size,
+        topProducts,
+        sheetSummaries
+      };
+
+      resolve({
+        transactions: allTransactions,
+        businessStats,
+        csvData
+      });
+      
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Download Functions
+export function downloadExcelFile(workbook: XLSX.WorkBook, filename: string) {
+  XLSX.writeFile(workbook, filename, { compression: true });
+}
+
+export function downloadCSVFile(csvData: string, filename: string) {
+  const blob = new Blob([csvData], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
 }

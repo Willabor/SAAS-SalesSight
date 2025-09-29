@@ -1,0 +1,456 @@
+# MISSING-FEATURES-CODE.md
+
+## Code Snippets for Missing Features
+
+Copy these exact code sections into your Replit project to ensure all features work correctly.
+
+---
+
+## 1. ITEM LIST FORMATTING (Delete Rows/Columns)
+
+This code should already be in `src/App.jsx`. Verify this function exists:
+
+```javascript
+const formatItemList = async () => {
+  if (!file) return;
+
+  setStep('formatting-item-list');
+  setStatus('Reading Item List file...');
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+    
+    setStatus('Formatting Item Detail sheet...');
+    
+    const sheetName = 'Item Detail';
+    if (!workbook.SheetNames.includes(sheetName)) {
+      throw new Error('Sheet "Item Detail" not found in workbook');
+    }
+
+    const worksheet = workbook.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(worksheet['!ref']);
+    
+    // DELETE TOP 5 ROWS
+    const afterRowDelete = {};
+    for (let R = range.s.r + 5; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const oldAddr = XLSX.utils.encode_cell({r: R, c: C});
+        const newAddr = XLSX.utils.encode_cell({r: R - 5, c: C});
+        if (worksheet[oldAddr]) {
+          afterRowDelete[newAddr] = worksheet[oldAddr];
+        }
+      }
+    }
+    
+    // DELETE SPECIFIC COLUMNS
+    const columnsToDelete = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46];
+    
+    const colMap = {};
+    let newCol = 0;
+    for (let oldCol = 0; oldCol <= range.e.c; oldCol++) {
+      if (!columnsToDelete.includes(oldCol)) {
+        colMap[oldCol] = newCol++;
+      }
+    }
+    
+    const finalCells = {};
+    Object.keys(afterRowDelete).forEach(addr => {
+      const cell = XLSX.utils.decode_cell(addr);
+      if (colMap[cell.c] !== undefined) {
+        const newAddr = XLSX.utils.encode_cell({r: cell.r, c: colMap[cell.c]});
+        finalCells[newAddr] = afterRowDelete[addr];
+      }
+    });
+    
+    workbook.Sheets[sheetName] = {
+      ...finalCells,
+      '!ref': XLSX.utils.encode_range({
+        s: {r: 0, c: 0},
+        e: {r: range.e.r - 5, c: newCol - 1}
+      })
+    };
+    
+    setItemListStats({
+      rowsDeleted: 5,
+      columnsDeleted: columnsToDelete.length,
+      remainingColumns: newCol
+    });
+    
+    setItemListWorkbook(workbook);
+    setStep('item-list-ready-upload');
+    
+    // PARSE DATA FOR DATABASE UPLOAD
+    const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null });
+    const parsedRecords = jsonData.map(row => ({
+      item_number: row['Item #'] || null,
+      vendor_name: row['Vendor Name'] || null,
+      item_name: row['Item Name'] || null,
+      category: row['Category'] || null,
+      gender: row['Gender'] || null,
+      avail_qty: row['Avail Qty'] || 0,
+      hq_qty: row['HQ Qty'] || 0,
+      gm_qty: row['GM Qty'] || 0,
+      hm_qty: row['HM Qty'] || 0,
+      mm_qty: row['MM Qty'] || 0,
+      nm_qty: row['NM Qty'] || 0,
+      pm_qty: row['PM Qty'] || 0,
+      lm_qty: row['LM Qty'] || 0,
+      last_rcvd: row['Last Rcvd'] || null,
+      creation_date: row['Creation Date'] || null,
+      last_sold: row['Last Sold'] || null,
+      style_number: row['Style Number'] || null,
+      style_number_2: row['Style Number 2'] || null,
+      order_cost: row['Order Cost'] || null,
+      selling_price: row['Selling Price'] || null,
+      notes: row['Notes'] || null,
+      size: row['Size'] || null,
+      attribute: row['Attribute'] || null,
+      file_name: file.name
+    }));
+    
+    setParsedItemData(parsedRecords);
+    
+  } catch (error) {
+    setStatus('Error: ' + error.message);
+    setStep('choose-mode');
+  }
+};
+```
+
+---
+
+## 2. SALES DATA FORMATTING (2-Step Process)
+
+### Step 1: Format Excel File
+
+```javascript
+const formatFile = async () => {
+  if (!file) return;
+
+  setStep('formatting');
+  setStatus('Reading file...');
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+    
+    setStatus('Formatting sheets...');
+    
+    const processedSheets = [];
+    let totalRowsDeleted = 0;
+    
+    workbook.SheetNames.forEach(sheetName => {
+      if (!/^Sales Detail/i.test(sheetName)) return;
+      
+      const worksheet = workbook.Sheets[sheetName];
+      const range = XLSX.utils.decode_range(worksheet['!ref']);
+      
+      // DELETE TOP 5 ROWS
+      totalRowsDeleted += 5;
+      const newCells = {};
+      
+      for (let R = range.s.r + 5; R <= range.e.r; R++) {
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          const oldAddr = XLSX.utils.encode_cell({r: R, c: C});
+          const newAddr = XLSX.utils.encode_cell({r: R - 5, c: C});
+          if (worksheet[oldAddr]) {
+            newCells[newAddr] = worksheet[oldAddr];
+          }
+        }
+      }
+      
+      // DELETE COLUMNS A, C, E, G, I, K, M, O (0, 2, 4, 6, 8, 10, 12, 14)
+      const colMap = {};
+      let newCol = 0;
+      for (let oldCol = 0; oldCol <= range.e.c; oldCol++) {
+        if (![0, 2, 4, 6, 8, 10, 12, 14].includes(oldCol)) {
+          colMap[oldCol] = newCol++;
+        }
+      }
+      
+      const afterColDelete = {};
+      Object.keys(newCells).forEach(addr => {
+        const cell = XLSX.utils.decode_cell(addr);
+        if (colMap[cell.c] !== undefined) {
+          const newAddr = XLSX.utils.encode_cell({r: cell.r, c: colMap[cell.c]});
+          afterColDelete[newAddr] = newCells[addr];
+        }
+      });
+      
+      // INSERT SKU AND ITEM NAME COLUMNS
+      const afterInsert = {};
+      Object.keys(afterColDelete).forEach(addr => {
+        const cell = XLSX.utils.decode_cell(addr);
+        let newC = cell.c;
+        if (cell.c >= 3) newC = cell.c + 2;
+        const newAddr = XLSX.utils.encode_cell({r: cell.r, c: newC});
+        afterInsert[newAddr] = afterColDelete[addr];
+      });
+      
+      // ADD HEADERS
+      afterInsert['D1'] = {t: 's', v: 'SKU'};
+      afterInsert['E1'] = {t: 's', v: 'Item Name'};
+      afterInsert['G1'] = {t: 's', v: 'Price'};
+      
+      workbook.Sheets[sheetName] = {
+        ...afterInsert,
+        '!ref': XLSX.utils.encode_range({
+          s: {r: 0, c: 0},
+          e: {r: range.e.r - 5, c: newCol + 1}
+        })
+      };
+      
+      processedSheets.push(sheetName);
+    });
+    
+    setStats({
+      sheetsProcessed: processedSheets.length,
+      rowsDeleted: totalRowsDeleted,
+      sheetNames: processedSheets
+    });
+    
+    setFormattedWorkbook(workbook);
+    setStep('ready-to-flatten');
+    
+  } catch (error) {
+    setStatus('Error: ' + error.message);
+    setStep('ready-to-format');
+  }
+};
+```
+
+---
+
+## 3. DATA FLATTENING AND TRANSFORMATION
+
+### Step 2: Flatten Transaction Data
+
+```javascript
+const flattenData = async () => {
+  if (!formattedWorkbook) return;
+
+  setStep('flattening');
+  setStatus('Flattening data...');
+
+  try {
+    let allTransactions = [];
+    let sheetSummaries = [];
+
+    for (let i = 0; i < formattedWorkbook.SheetNames.length; i++) {
+      const sheetName = formattedWorkbook.SheetNames[i];
+      
+      if (!/^Sales Detail/i.test(sheetName)) continue;
+      
+      const sheet = formattedWorkbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { 
+        header: ['Date', 'Store', 'Receipt #', 'SKU', 'Item Name', 'Transaction Store Type', 'Price', 'Col8', 'Col9'],
+        defval: null,
+        range: 1
+      });
+      
+      let sheetTransactions = [];
+      let currentTransaction = null;
+      
+      // PARSE HIERARCHICAL STRUCTURE
+      for (let j = 0; j < jsonData.length; j++) {
+        const row = jsonData[j];
+        
+        // TRANSACTION HEADER ROW (has Date, Store, Receipt #, but no Price)
+        if (row.Date && row.Store && row['Receipt #'] && !row.Price) {
+          let formattedDate = row.Date instanceof Date 
+            ? row.Date.toISOString().split('T')[0] 
+            : row.Date;
+          
+          currentTransaction = {
+            date: formattedDate,
+            store: row.Store,
+            receiptNumber: row['Receipt #'],
+            transactionStoreType: row['Transaction Store Type']
+          };
+        } 
+        // LINE ITEM ROW (no Date, has Store/Receipt#/Price)
+        else if (!row.Date && row.Store && row['Receipt #'] && row.Price !== null && currentTransaction) {
+          const transaction = {
+            Date: currentTransaction.date,
+            Store: currentTransaction.store,
+            'Receipt #': currentTransaction.receiptNumber,
+            SKU: row.Store,
+            'Item Name': row['Receipt #'],
+            'Transaction Store Type': row['Transaction Store Type'] || currentTransaction.transactionStoreType,
+            Price: row.Price,
+            Sheet: sheetName
+          };
+          
+          sheetTransactions.push(transaction);
+          allTransactions.push(transaction);
+        }
+      }
+      
+      sheetSummaries.push({
+        sheetName,
+        records: sheetTransactions.length,
+        revenue: _.sumBy(sheetTransactions, 'Price'),
+        uniqueReceipts: new Set(sheetTransactions.map(t => t['Receipt #'])).size
+      });
+    }
+
+    // CALCULATE BUSINESS STATISTICS
+    const topProducts = _.chain(allTransactions)
+      .groupBy('Item Name')
+      .map((items, name) => ({
+        itemName: name,
+        quantity: items.length,
+        totalRevenue: _.sumBy(items, 'Price'),
+        avgPrice: _.meanBy(items, 'Price')
+      }))
+      .orderBy('totalRevenue', 'desc')
+      .take(10)
+      .value();
+
+    // GENERATE CSV
+    setConsolidatedCSV(Papa.unparse(allTransactions, { header: true }));
+    
+    setBusinessStats({
+      totalRecords: allTransactions.length,
+      totalRevenue: _.sumBy(allTransactions, 'Price'),
+      avgItemPrice: _.meanBy(allTransactions, 'Price'),
+      uniqueReceipts: new Set(allTransactions.map(t => t['Receipt #'])).size,
+      uniqueStores: new Set(allTransactions.map(t => t.Store)).size,
+      uniqueSKUs: new Set(allTransactions.map(t => t.SKU)).size,
+      topProducts,
+      sheetSummaries
+    });
+
+    setParsedSalesData(allTransactions);
+    setStep('sales-ready-upload');
+    
+  } catch (error) {
+    setStatus('Error: ' + error.message);
+    setStep('ready-to-flatten');
+  }
+};
+```
+
+---
+
+## 4. DOWNLOAD FORMATTED FILES (Excel/CSV)
+
+### Download Formatted Item List (Excel)
+
+```javascript
+const downloadItemList = () => {
+  if (!itemListWorkbook) return;
+  XLSX.writeFile(itemListWorkbook, 'Formatted_Item_List.xlsx', { compression: true });
+};
+```
+
+### Download Formatted Sales Data (Excel)
+
+```javascript
+const downloadFormattedExcel = () => {
+  if (!formattedWorkbook) return;
+  XLSX.writeFile(formattedWorkbook, 'Formatted_Sales_Data.xlsx', { compression: true });
+};
+```
+
+### Download Consolidated Sales Data (CSV)
+
+```javascript
+const downloadConsolidatedCSV = () => {
+  if (!consolidatedCSV) return;
+  const blob = new Blob([consolidatedCSV], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'Consolidated_Sales_Data.csv';
+  link.click();
+};
+```
+
+---
+
+## 5. COMPLETE STATE VARIABLES NEEDED
+
+Make sure these are declared at the top of your `App.jsx` component:
+
+```javascript
+const [file, setFile] = useState(null);
+const [step, setStep] = useState('upload');
+const [status, setStatus] = useState('');
+const [formattedWorkbook, setFormattedWorkbook] = useState(null);
+const [stats, setStats] = useState(null);
+const [consolidatedCSV, setConsolidatedCSV] = useState('');
+const [businessStats, setBusinessStats] = useState(null);
+const [itemListWorkbook, setItemListWorkbook] = useState(null);
+const [itemListStats, setItemListStats] = useState(null);
+const [processingMode, setProcessingMode] = useState(null);
+const [uploadMode, setUploadMode] = useState('initial');
+const [uploadProgress, setUploadProgress] = useState(0);
+const [parsedItemData, setParsedItemData] = useState(null);
+const [parsedSalesData, setParsedSalesData] = useState(null);
+```
+
+---
+
+## 6. BUTTON CLICK HANDLERS IN JSX
+
+Make sure these buttons call the correct functions:
+
+```javascript
+// Item List Mode Button
+<button onClick={() => {
+  setProcessingMode('item-list');
+  formatItemList();  // ← This calls the formatting function
+}}>
+  Item List Formatter
+</button>
+
+// Sales Mode Button
+<button onClick={() => {
+  setProcessingMode('sales');
+  setStep('ready-to-format');
+}}>
+  Sales Data Processor
+</button>
+
+// Step 1: Format Excel Button
+<button onClick={formatFile}>  {/* ← This calls formatFile */}
+  Start Step 1: Format Excel File
+</button>
+
+// Step 2: Flatten Data Button
+<button onClick={flattenData}>  {/* ← This calls flattenData */}
+  Start Step 2: Flatten Data
+</button>
+
+// Download Buttons
+<button onClick={downloadItemList}>
+  Download Formatted Excel
+</button>
+
+<button onClick={downloadFormattedExcel}>
+  Download Formatted Excel
+</button>
+
+<button onClick={downloadConsolidatedCSV}>
+  Download CSV
+</button>
+```
+
+---
+
+## VERIFICATION CHECKLIST
+
+✅ `formatItemList()` function exists and deletes rows/columns  
+✅ `formatFile()` function exists for sales data Step 1  
+✅ `flattenData()` function exists for sales data Step 2  
+✅ `downloadItemList()` function exists  
+✅ `downloadFormattedExcel()` function exists  
+✅ `downloadConsolidatedCSV()` function exists  
+✅ All state variables are declared  
+✅ All buttons are wired to correct functions  
+✅ XLSX, Papa, and lodash are imported at top of file  
+
+---
+
+Copy these code sections into your `src/App.jsx` file to ensure all features work correctly.

@@ -1,5 +1,5 @@
 import { StatsOverview } from "@/components/stats-overview";
-import { FileUploadTabs } from "@/components/file-upload-tabs";
+import { ExcelFormatter } from "@/components/excel-formatter";
 import { UploadProgress } from "@/components/upload-progress";
 import { RecentActivity } from "@/components/recent-activity";
 import { HelpCircle, Settings, FileSpreadsheet } from "lucide-react";
@@ -38,7 +38,7 @@ export default function Dashboard() {
 
         {/* File Upload */}
         <section className="mb-8">
-          <FileUploadTabs />
+          <ExcelFormatter />
         </section>
 
         {/* Upload Progress */}

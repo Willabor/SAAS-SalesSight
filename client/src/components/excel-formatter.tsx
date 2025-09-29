@@ -1,0 +1,524 @@
+import { useState, useRef } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Progress } from "@/components/ui/progress";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Upload, Download, FileText, BarChart3, CheckCircle } from "lucide-react";
+import { formatItemList, formatSalesFile, flattenSalesData, downloadExcelFile, downloadCSVFile, samplePreview } from "@/lib/formatters";
+import type { ItemListStats, SalesStats, BusinessStats } from "@/lib/formatters";
+import { uploadData } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
+
+type ProcessingMode = 'item-list' | 'sales';
+type Step = 'upload' | 'choose-mode' | 'formatting-item-list' | 'item-list-ready-upload' | 'ready-to-format' | 'formatting' | 'ready-to-flatten' | 'flattening' | 'sales-ready-upload';
+
+export function ExcelFormatter() {
+  const [file, setFile] = useState<File | null>(null);
+  const [step, setStep] = useState<Step>('upload');
+  const [processingMode, setProcessingMode] = useState<ProcessingMode | null>(null);
+  const [uploadMode, setUploadMode] = useState<'initial' | 'weekly_update'>('initial');
+  const [status, setStatus] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  
+  // Item List state
+  const [itemListWorkbook, setItemListWorkbook] = useState<any>(null);
+  const [itemListStats, setItemListStats] = useState<ItemListStats | null>(null);
+  const [parsedItemData, setParsedItemData] = useState<any[] | null>(null);
+  
+  // Sales state
+  const [formattedWorkbook, setFormattedWorkbook] = useState<any>(null);
+  const [salesStats, setSalesStats] = useState<SalesStats | null>(null);
+  const [consolidatedCSV, setConsolidatedCSV] = useState('');
+  const [businessStats, setBusinessStats] = useState<BusinessStats | null>(null);
+  const [parsedSalesData, setParsedSalesData] = useState<any[] | null>(null);
+  
+  const fileRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const uploadMutation = useMutation({
+    mutationFn: async ({ data, type, mode, fileName }: {
+      data: any[];
+      type: 'item-list' | 'sales-transactions';
+      mode?: string;
+      fileName: string;
+    }) => {
+      return uploadData(type, data, mode, fileName);
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/upload-history"] });
+      
+      if (result.failed > 0) {
+        toast({
+          title: "Upload completed with errors",
+          description: `${result.uploaded} records uploaded, ${result.failed} failed`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Upload successful",
+          description: `${result.uploaded} records uploaded successfully`,
+        });
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      setStep('choose-mode');
+      setStatus('File selected. Choose processing mode.');
+    }
+  };
+
+  const handleModeSelect = (mode: ProcessingMode) => {
+    setProcessingMode(mode);
+    
+    if (mode === 'item-list') {
+      formatItemListData();
+    } else {
+      setStep('ready-to-format');
+    }
+  };
+
+  const formatItemListData = async () => {
+    if (!file) return;
+
+    setStep('formatting-item-list');
+    setStatus('Reading Item List file...');
+    setUploadProgress(10);
+
+    try {
+      setStatus('Formatting Item Detail sheet...');
+      setUploadProgress(30);
+      
+      const result = await formatItemList(file);
+      
+      setUploadProgress(80);
+      setItemListWorkbook(result.workbook);
+      setItemListStats(result.stats);
+      setParsedItemData(result.parsedData);
+      
+      setStep('item-list-ready-upload');
+      setStatus('Item list formatted successfully!');
+      setUploadProgress(100);
+      
+    } catch (error) {
+      setStatus('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      setStep('choose-mode');
+      toast({
+        title: "Formatting failed",
+        description: error instanceof Error ? error.message : "Failed to format item list",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const formatSalesData = async () => {
+    if (!file) return;
+
+    setStep('formatting');
+    setStatus('Reading file...');
+    setUploadProgress(10);
+
+    try {
+      setStatus('Formatting sheets...');
+      setUploadProgress(30);
+      
+      const result = await formatSalesFile(file);
+      
+      setUploadProgress(70);
+      setFormattedWorkbook(result.workbook);
+      setSalesStats(result.stats);
+      
+      setStep('ready-to-flatten');
+      setStatus('Sales data formatted successfully!');
+      setUploadProgress(100);
+      
+    } catch (error) {
+      setStatus('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      setStep('ready-to-format');
+      toast({
+        title: "Formatting failed",
+        description: error instanceof Error ? error.message : "Failed to format sales data",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const flattenSalesDataStep = async () => {
+    if (!formattedWorkbook) return;
+
+    setStep('flattening');
+    setStatus('Flattening data...');
+    setUploadProgress(10);
+
+    try {
+      setUploadProgress(30);
+      
+      const result = await flattenSalesData(formattedWorkbook);
+      
+      setUploadProgress(80);
+      setConsolidatedCSV(result.csvData);
+      setBusinessStats(result.businessStats);
+      setParsedSalesData(result.transactions);
+      
+      setStep('sales-ready-upload');
+      setStatus('Sales data flattened successfully!');
+      setUploadProgress(100);
+      
+    } catch (error) {
+      setStatus('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      setStep('ready-to-flatten');
+      toast({
+        title: "Flattening failed",
+        description: error instanceof Error ? error.message : "Failed to flatten sales data",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const uploadToDatabase = async () => {
+    if (processingMode === 'item-list' && parsedItemData) {
+      await uploadMutation.mutateAsync({
+        data: parsedItemData,
+        type: 'item-list',
+        mode: uploadMode,
+        fileName: file?.name || 'unknown.xlsx',
+      });
+    } else if (processingMode === 'sales' && parsedSalesData) {
+      await uploadMutation.mutateAsync({
+        data: parsedSalesData,
+        type: 'sales-transactions',
+        fileName: file?.name || 'unknown.xlsx',
+      });
+    }
+  };
+
+  const downloadItemList = () => {
+    if (!itemListWorkbook) return;
+    downloadExcelFile(itemListWorkbook, 'Formatted_Item_List.xlsx');
+  };
+
+  const downloadFormattedExcel = () => {
+    if (!formattedWorkbook) return;
+    downloadExcelFile(formattedWorkbook, 'Formatted_Sales_Data.xlsx');
+  };
+
+  const downloadConsolidatedCSV = () => {
+    if (!consolidatedCSV) return;
+    downloadCSVFile(consolidatedCSV, 'Consolidated_Sales_Data.csv');
+  };
+
+  const resetWorkflow = () => {
+    setFile(null);
+    setStep('upload');
+    setProcessingMode(null);
+    setStatus('');
+    setUploadProgress(0);
+    setItemListWorkbook(null);
+    setItemListStats(null);
+    setParsedItemData(null);
+    setFormattedWorkbook(null);
+    setSalesStats(null);
+    setConsolidatedCSV('');
+    setBusinessStats(null);
+    setParsedSalesData(null);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Upload Step */}
+      {step === 'upload' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload className="w-5 h-5" />
+              Excel File Upload & Formatting
+            </CardTitle>
+            <CardDescription>
+              Upload your Excel file to format and process item lists or sales data
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div 
+              className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary transition-colors cursor-pointer"
+              onClick={() => fileRef.current?.click()}
+              data-testid="excel-upload-zone"
+            >
+              <div className="w-16 h-16 bg-primary/10 rounded-lg flex items-center justify-center mx-auto mb-4">
+                <Upload className="w-8 h-8 text-primary" />
+              </div>
+              <p className="text-lg font-medium text-foreground mb-2">Drop your Excel file here</p>
+              <p className="text-muted-foreground mb-4">or click to browse your files</p>
+              <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
+                Choose Excel File
+              </Button>
+              <p className="text-xs text-muted-foreground mt-3">Supports .xlsx, .xls files up to 50MB</p>
+            </div>
+            <Input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Mode Selection Step */}
+      {step === 'choose-mode' && file && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Choose Processing Mode</CardTitle>
+            <CardDescription>
+              Selected file: {file.name}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Button
+                variant="outline"
+                className="h-auto p-6 flex flex-col items-center gap-3"
+                onClick={() => handleModeSelect('item-list')}
+                data-testid="button-item-list-mode"
+              >
+                <FileText className="w-8 h-8 text-primary" />
+                <div className="text-center">
+                  <p className="font-semibold">Item List Formatter</p>
+                  <p className="text-sm text-muted-foreground">Process Item Detail sheet</p>
+                </div>
+              </Button>
+              
+              <Button
+                variant="outline"
+                className="h-auto p-6 flex flex-col items-center gap-3"
+                onClick={() => handleModeSelect('sales')}
+                data-testid="button-sales-mode"
+              >
+                <BarChart3 className="w-8 h-8 text-primary" />
+                <div className="text-center">
+                  <p className="font-semibold">Sales Data Formatter</p>
+                  <p className="text-sm text-muted-foreground">2-step process for sales data</p>
+                </div>
+              </Button>
+            </div>
+            
+            <Button variant="ghost" onClick={resetWorkflow} className="w-full">
+              Choose Different File
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Progress Indicator */}
+      {(step === 'formatting-item-list' || step === 'formatting' || step === 'flattening') && (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="font-medium">Processing...</p>
+                <Badge variant="secondary">{uploadProgress}%</Badge>
+              </div>
+              <Progress value={uploadProgress} className="w-full" />
+              <p className="text-sm text-muted-foreground">{status}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Item List Results */}
+      {step === 'item-list-ready-upload' && itemListStats && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-green-500" />
+              Item List Formatted Successfully
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{itemListStats.rowsDeleted}</p>
+                <p className="text-sm text-muted-foreground">Rows Deleted</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{itemListStats.columnsDeleted}</p>
+                <p className="text-sm text-muted-foreground">Columns Deleted</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{itemListStats.remainingColumns}</p>
+                <p className="text-sm text-muted-foreground">Remaining Columns</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h4 className="font-semibold">Upload Mode</h4>
+              <RadioGroup value={uploadMode} onValueChange={(value: any) => setUploadMode(value)}>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="initial" id="initial" />
+                  <Label htmlFor="initial">Initial Upload (fail on duplicates)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="weekly_update" id="weekly" />
+                  <Label htmlFor="weekly">Weekly Update (update existing)</Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            <div className="flex gap-3">
+              <Button onClick={downloadItemList} variant="outline" className="flex items-center gap-2">
+                <Download className="w-4 h-4" />
+                Download Formatted Excel
+              </Button>
+              <Button 
+                onClick={uploadToDatabase} 
+                disabled={uploadMutation.isPending}
+                className="flex items-center gap-2"
+              >
+                <Upload className="w-4 h-4" />
+                {uploadMutation.isPending ? 'Uploading...' : 'Upload to Database'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Sales Formatting Steps */}
+      {step === 'ready-to-format' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Step 1: Format Sales Data</CardTitle>
+            <CardDescription>Clean and format the Excel sheets</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={formatSalesData} className="w-full">
+              Start Formatting
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === 'ready-to-flatten' && salesStats && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-green-500" />
+              Step 1 Complete: Data Formatted
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{salesStats.sheetsProcessed}</p>
+                <p className="text-sm text-muted-foreground">Sheets Processed</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{salesStats.rowsDeleted}</p>
+                <p className="text-sm text-muted-foreground">Rows Deleted</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{salesStats.sheetNames.length}</p>
+                <p className="text-sm text-muted-foreground">Sales Detail Sheets</p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <Button onClick={downloadFormattedExcel} variant="outline" className="flex items-center gap-2">
+                <Download className="w-4 h-4" />
+                Download Formatted Excel
+              </Button>
+              <Button onClick={flattenSalesDataStep} className="flex items-center gap-2">
+                Next: Flatten Data
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === 'sales-ready-upload' && businessStats && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-green-500" />
+              Step 2 Complete: Data Flattened
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{businessStats.totalRecords}</p>
+                <p className="text-sm text-muted-foreground">Total Records</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">${businessStats.totalRevenue.toFixed(2)}</p>
+                <p className="text-sm text-muted-foreground">Total Revenue</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{businessStats.uniqueReceipts}</p>
+                <p className="text-sm text-muted-foreground">Unique Receipts</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-primary">{businessStats.uniqueStores}</p>
+                <p className="text-sm text-muted-foreground">Stores</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <h4 className="font-semibold">Top Products by Revenue</h4>
+              <div className="space-y-2">
+                {businessStats.topProducts.slice(0, 5).map((product, index) => (
+                  <div key={index} className="flex justify-between items-center p-3 bg-muted rounded-lg">
+                    <span className="font-medium">{product.itemName}</span>
+                    <span className="text-primary font-semibold">${product.totalRevenue.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <Button onClick={downloadConsolidatedCSV} variant="outline" className="flex items-center gap-2">
+                <Download className="w-4 h-4" />
+                Download CSV
+              </Button>
+              <Button 
+                onClick={uploadToDatabase} 
+                disabled={uploadMutation.isPending}
+                className="flex items-center gap-2"
+              >
+                <Upload className="w-4 h-4" />
+                {uploadMutation.isPending ? 'Uploading...' : 'Upload to Database'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {(step === 'item-list-ready-upload' || step === 'sales-ready-upload') && (
+        <Card>
+          <CardContent className="pt-6">
+            <Button variant="ghost" onClick={resetWorkflow} className="w-full">
+              Start Over with New File
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
