@@ -2,7 +2,8 @@ import { StatsOverview } from "@/components/stats-overview";
 import { ExcelFormatter } from "@/components/excel-formatter";
 import { UploadProgress } from "@/components/upload-progress";
 import { RecentActivity } from "@/components/recent-activity";
-import { HelpCircle, Settings, FileSpreadsheet } from "lucide-react";
+import { HelpCircle, Settings, FileSpreadsheet, Package } from "lucide-react";
+import { Link } from "wouter";
 
 export default function Dashboard() {
   return (
@@ -18,6 +19,12 @@ export default function Dashboard() {
               <h1 className="text-xl font-semibold text-foreground">Excel Sales Data Processor</h1>
             </div>
             <div className="flex items-center space-x-4">
+              <Link href="/item-list">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-item-list">
+                  <Package className="w-5 h-5" />
+                  <span className="hidden sm:inline">Item List</span>
+                </button>
+              </Link>
               <button className="text-muted-foreground hover:text-foreground transition-colors" data-testid="button-help">
                 <HelpCircle className="w-5 h-5" />
               </button>
