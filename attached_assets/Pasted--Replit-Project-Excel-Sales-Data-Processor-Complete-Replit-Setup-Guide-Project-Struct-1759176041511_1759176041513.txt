@@ -1,0 +1,673 @@
+# Replit Project: Excel Sales Data Processor
+
+## Complete Replit Setup Guide
+
+### Project Structure
+
+```
+excel-sales-processor/
+├── .replit
+├── replit.nix
+├── package.json
+├── vite.config.js
+├── index.html
+├── tailwind.config.js
+├── postcss.config.js
+├── .env (for secrets)
+├── src/
+│   ├── main.jsx
+│   ├── App.jsx
+│   ├── index.css
+│   └── db.js
+└── server/
+    ├── server.js
+    └── database.sql
+```
+
+---
+
+## 1. Replit Configuration Files
+
+### `.replit`
+```toml
+run = "npm run dev"
+hidden = [".config", "package-lock.json"]
+modules = ["nodejs-20", "web"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["sh", "-c", "npm run build && npm run preview -- --host 0.0.0.0 --port 3000"]
+deploymentTarget = "cloudrun"
+build = ["npm", "run", "build"]
+
+[[ports]]
+localPort = 5173
+externalPort = 80
+
+[[ports]]
+localPort = 3001
+externalPort = 3001
+```
+
+### `replit.nix`
+```nix
+{ pkgs }: {
+  deps = [
+    pkgs.nodejs-20_x
+    pkgs.postgresql
+  ];
+}
+```
+
+---
+
+## 2. Package Configuration
+
+### `package.json`
+```json
+{
+  "name": "excel-sales-processor",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:client": "vite",
+    "dev:server": "node server/server.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "node server/server.js"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "xlsx": "^0.18.5",
+    "papaparse": "^5.4.1",
+    "lodash": "^4.17.21",
+    "lucide-react": "^0.263.1",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "pg": "^8.11.3",
+    "multer": "^1.4.5-lts.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.0.8",
+    "tailwindcss": "^3.4.0",
+    "postcss": "^8.4.32",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2"
+  }
+}
+```
+
+### `vite.config.js`
+```javascript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
+      }
+    }
+  }
+})
+```
+
+### `tailwind.config.js`
+```javascript
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+### `postcss.config.js`
+```javascript
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+```
+
+---
+
+## 3. Database Setup
+
+### `server/database.sql`
+```sql
+-- Create item_list table
+CREATE TABLE IF NOT EXISTS item_list (
+  id SERIAL PRIMARY KEY,
+  item_number TEXT,
+  vendor_name TEXT,
+  item_name TEXT,
+  category TEXT,
+  gender TEXT,
+  avail_qty INTEGER DEFAULT 0,
+  hq_qty INTEGER DEFAULT 0,
+  gm_qty INTEGER DEFAULT 0,
+  hm_qty INTEGER DEFAULT 0,
+  mm_qty INTEGER DEFAULT 0,
+  nm_qty INTEGER DEFAULT 0,
+  pm_qty INTEGER DEFAULT 0,
+  lm_qty INTEGER DEFAULT 0,
+  last_rcvd DATE,
+  creation_date DATE,
+  last_sold DATE,
+  style_number TEXT,
+  style_number_2 TEXT,
+  order_cost NUMERIC,
+  selling_price NUMERIC,
+  notes TEXT,
+  size TEXT,
+  attribute TEXT,
+  file_name TEXT,
+  uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT unique_item_number UNIQUE(item_number)
+);
+
+-- Create sales_transactions table
+CREATE TABLE IF NOT EXISTS sales_transactions (
+  id SERIAL PRIMARY KEY,
+  date DATE,
+  store TEXT,
+  receipt_number TEXT,
+  sku TEXT,
+  item_name TEXT,
+  transaction_store_type TEXT,
+  price NUMERIC,
+  sheet TEXT,
+  uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_item_number ON item_list(item_number);
+CREATE INDEX IF NOT EXISTS idx_vendor_name ON item_list(vendor_name);
+CREATE INDEX IF NOT EXISTS idx_category ON item_list(category);
+CREATE INDEX IF NOT EXISTS idx_date ON sales_transactions(date);
+CREATE INDEX IF NOT EXISTS idx_store ON sales_transactions(store);
+CREATE INDEX IF NOT EXISTS idx_receipt_number ON sales_transactions(receipt_number);
+CREATE INDEX IF NOT EXISTS idx_sku ON sales_transactions(sku);
+```
+
+---
+
+## 4. Backend Server
+
+### `server/server.js`
+```javascript
+import express from 'express';
+import cors from 'cors';
+import pg from 'pg';
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Database connection
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Initialize database
+async function initializeDatabase() {
+  try {
+    const sqlFile = fs.readFileSync(path.join(__dirname, 'database.sql'), 'utf8');
+    await pool.query(sqlFile);
+    console.log('Database initialized successfully');
+  } catch (error) {
+    console.error('Error initializing database:', error);
+  }
+}
+
+initializeDatabase();
+
+// API Routes
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Server is running' });
+});
+
+// Upload item list data
+app.post('/api/upload/item-list', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { data, mode } = req.body;
+    
+    if (!data || !Array.isArray(data)) {
+      return res.status(400).json({ error: 'Invalid data format' });
+    }
+
+    await client.query('BEGIN');
+    
+    let uploaded = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const item of data) {
+      try {
+        const query = mode === 'weekly_update' 
+          ? `INSERT INTO item_list (
+              item_number, vendor_name, item_name, category, gender,
+              avail_qty, hq_qty, gm_qty, hm_qty, mm_qty, nm_qty, pm_qty, lm_qty,
+              last_rcvd, creation_date, last_sold, style_number, style_number_2,
+              order_cost, selling_price, notes, size, attribute, file_name
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            ON CONFLICT (item_number) DO UPDATE SET
+              vendor_name = EXCLUDED.vendor_name,
+              item_name = EXCLUDED.item_name,
+              category = EXCLUDED.category,
+              gender = EXCLUDED.gender,
+              avail_qty = EXCLUDED.avail_qty,
+              hq_qty = EXCLUDED.hq_qty,
+              gm_qty = EXCLUDED.gm_qty,
+              hm_qty = EXCLUDED.hm_qty,
+              mm_qty = EXCLUDED.mm_qty,
+              nm_qty = EXCLUDED.nm_qty,
+              pm_qty = EXCLUDED.pm_qty,
+              lm_qty = EXCLUDED.lm_qty,
+              last_rcvd = EXCLUDED.last_rcvd,
+              last_sold = EXCLUDED.last_sold,
+              order_cost = EXCLUDED.order_cost,
+              selling_price = EXCLUDED.selling_price,
+              notes = EXCLUDED.notes,
+              uploaded_at = NOW()`
+          : `INSERT INTO item_list (
+              item_number, vendor_name, item_name, category, gender,
+              avail_qty, hq_qty, gm_qty, hm_qty, mm_qty, nm_qty, pm_qty, lm_qty,
+              last_rcvd, creation_date, last_sold, style_number, style_number_2,
+              order_cost, selling_price, notes, size, attribute, file_name
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`;
+
+        const values = [
+          item.item_number, item.vendor_name, item.item_name, item.category, item.gender,
+          item.avail_qty, item.hq_qty, item.gm_qty, item.hm_qty, item.mm_qty,
+          item.nm_qty, item.pm_qty, item.lm_qty, item.last_rcvd, item.creation_date,
+          item.last_sold, item.style_number, item.style_number_2, item.order_cost,
+          item.selling_price, item.notes, item.size, item.attribute, item.file_name
+        ];
+
+        await client.query(query, values);
+        uploaded++;
+      } catch (error) {
+        failed++;
+        errors.push(error.message);
+      }
+    }
+
+    await client.query('COMMIT');
+    
+    res.json({
+      success: true,
+      uploaded,
+      failed,
+      total: data.length,
+      errors: errors.slice(0, 5)
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Upload sales transactions
+app.post('/api/upload/sales-transactions', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { data } = req.body;
+    
+    if (!data || !Array.isArray(data)) {
+      return res.status(400).json({ error: 'Invalid data format' });
+    }
+
+    await client.query('BEGIN');
+    
+    let uploaded = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const transaction of data) {
+      try {
+        const query = `INSERT INTO sales_transactions (
+          date, store, receipt_number, sku, item_name,
+          transaction_store_type, price, sheet
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`;
+
+        const values = [
+          transaction.Date,
+          transaction.Store,
+          transaction['Receipt #'],
+          transaction.SKU,
+          transaction['Item Name'],
+          transaction['Transaction Store Type'],
+          transaction.Price,
+          transaction.Sheet
+        ];
+
+        await client.query(query, values);
+        uploaded++;
+      } catch (error) {
+        failed++;
+        errors.push(error.message);
+      }
+    }
+
+    await client.query('COMMIT');
+    
+    res.json({
+      success: true,
+      uploaded,
+      failed,
+      total: data.length,
+      errors: errors.slice(0, 5)
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get statistics
+app.get('/api/stats/item-list', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) as total_items,
+        COUNT(DISTINCT vendor_name) as total_vendors,
+        COUNT(DISTINCT category) as total_categories,
+        SUM(avail_qty) as total_available
+      FROM item_list
+    `);
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/stats/sales', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) as total_transactions,
+        SUM(price) as total_revenue,
+        COUNT(DISTINCT receipt_number) as total_receipts,
+        COUNT(DISTINCT store) as total_stores
+      FROM sales_transactions
+    `);
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
+```
+
+---
+
+## 5. Frontend Files
+
+### `src/db.js`
+```javascript
+const API_URL = import.meta.env.VITE_API_URL || '/api';
+
+export async function uploadItemList(data, mode = 'initial') {
+  const response = await fetch(`${API_URL}/upload/item-list`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ data, mode }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Upload failed');
+  }
+
+  return response.json();
+}
+
+export async function uploadSalesTransactions(data) {
+  const response = await fetch(`${API_URL}/upload/sales-transactions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ data }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Upload failed');
+  }
+
+  return response.json();
+}
+
+export async function getItemListStats() {
+  const response = await fetch(`${API_URL}/stats/item-list`);
+  return response.json();
+}
+
+export async function getSalesStats() {
+  const response = await fetch(`${API_URL}/stats/sales`);
+  return response.json();
+}
+```
+
+### `src/App.jsx`
+Replace the Supabase upload function with this:
+
+```javascript
+import { uploadItemList, uploadSalesTransactions } from './db';
+
+// Replace uploadToSupabase function with:
+const uploadToSupabase = async (dataType) => {
+  setStep('uploading-to-supabase');
+  setStatus('Uploading to database...');
+  setUploadProgress(0);
+
+  try {
+    const data = dataType === 'item_list' ? parsedItemData : parsedSalesData;
+    if (!data || data.length === 0) {
+      throw new Error('No data to upload');
+    }
+
+    const batchSize = 100;
+    let uploaded = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (let i = 0; i < data.length; i += batchSize) {
+      const batch = data.slice(i, i + batchSize);
+      
+      try {
+        const result = dataType === 'item_list'
+          ? await uploadItemList(batch, uploadMode)
+          : await uploadSalesTransactions(batch);
+        
+        uploaded += result.uploaded;
+        failed += result.failed;
+        if (result.errors) {
+          errors.push(...result.errors);
+        }
+      } catch (err) {
+        failed += batch.length;
+        errors.push(err.message);
+      }
+
+      setUploadProgress(Math.round(((i + batch.length) / data.length) * 100));
+      setStatus(`Uploaded ${uploaded} of ${data.length} records...`);
+    }
+
+    setStep('upload-complete');
+    setStats({
+      ...stats,
+      uploaded,
+      failed,
+      total: data.length,
+      errors: errors.slice(0, 5)
+    });
+
+  } catch (error) {
+    setStatus(`Upload error: ${error.message}`);
+    setStep(dataType === 'item_list' ? 'item-list-complete' : 'complete');
+  }
+};
+```
+
+### `src/main.jsx`
+```javascript
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+```
+
+### `src/index.css`
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+```
+
+### `index.html`
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Excel Sales Data Processor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+```
+
+---
+
+## 6. Environment Variables (Replit Secrets)
+
+In Replit, go to **Tools** → **Secrets** and add:
+
+```
+DATABASE_URL=your_postgres_connection_string
+NODE_ENV=production
+PORT=3001
+```
+
+**To get PostgreSQL in Replit:**
+1. Click the **Database** icon in left sidebar
+2. Select **PostgreSQL**
+3. Replit will automatically provision a database
+4. Connection string will be in `DATABASE_URL` secret
+
+---
+
+## 7. Setup Instructions for Replit
+
+1. **Create New Repl:**
+   - Click "Create Repl"
+   - Select "Node.js" template
+   - Name it "excel-sales-processor"
+
+2. **Copy all files** from the structure above into your Repl
+
+3. **Install Dependencies:**
+   ```bash
+   npm install
+   ```
+
+4. **Setup Database:**
+   - Enable PostgreSQL from Database panel
+   - Database will auto-initialize on first run
+
+5. **Run the Application:**
+   ```bash
+   npm run dev
+   ```
+
+6. **Access:**
+   - Frontend: `https://your-repl-name.your-username.repl.co`
+   - Backend API: `https://your-repl-name.your-username.repl.co/api`
+
+---
+
+## 8. Complete `src/App.jsx` (Modified for Replit)
+
+Use the same App.jsx from the original artifact, but replace the `uploadToSupabase` function with the one shown in section 5 above that uses the `db.js` API functions.
+
+---
+
+This complete package gives Replit everything needed to build, host, and run your Excel Sales Data Processor with a PostgreSQL database, all within their platform.
