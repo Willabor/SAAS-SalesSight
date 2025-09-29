@@ -13,7 +13,7 @@ import {
   type InsertUploadHistory
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql, count, sum } from "drizzle-orm";
+import { eq, desc, sql, count, sum, ilike, or } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -24,6 +24,12 @@ export interface IStorage {
   createItemList(item: InsertItemList): Promise<ItemList>;
   updateItemList(itemNumber: string, item: Partial<InsertItemList>): Promise<ItemList | undefined>;
   upsertItemList(item: InsertItemList): Promise<ItemList>;
+  getAllItemList(limit?: number, offset?: number, search?: string): Promise<{
+    items: ItemList[];
+    total: number;
+  }>;
+  deleteItemList(id: number): Promise<boolean>;
+  deleteAllItemList(): Promise<number>;
   getItemListStats(): Promise<{
     totalItems: number;
     totalVendors: number;
@@ -110,6 +116,51 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return upsertedItem;
+  }
+
+  async getAllItemList(limit = 50, offset = 0, search?: string): Promise<{
+    items: ItemList[];
+    total: number;
+  }> {
+    let items: ItemList[];
+    let total: number;
+
+    if (search) {
+      const searchFilter = or(
+        ilike(itemList.itemNumber, `%${search}%`),
+        ilike(itemList.itemName, `%${search}%`),
+        ilike(itemList.vendorName, `%${search}%`),
+        ilike(itemList.category, `%${search}%`)
+      );
+      
+      const [itemsResult, [countResult]] = await Promise.all([
+        db.select().from(itemList).where(searchFilter).orderBy(desc(itemList.uploadedAt)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(itemList).where(searchFilter)
+      ]);
+      
+      items = itemsResult;
+      total = countResult.count;
+    } else {
+      const [itemsResult, [countResult]] = await Promise.all([
+        db.select().from(itemList).orderBy(desc(itemList.uploadedAt)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(itemList)
+      ]);
+      
+      items = itemsResult;
+      total = countResult.count;
+    }
+
+    return { items, total };
+  }
+
+  async deleteItemList(id: number): Promise<boolean> {
+    const result = await db.delete(itemList).where(eq(itemList.id, id));
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async deleteAllItemList(): Promise<number> {
+    const result = await db.delete(itemList);
+    return result.rowCount || 0;
   }
 
   async getItemListStats(): Promise<{
