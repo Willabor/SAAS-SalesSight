@@ -65,32 +65,80 @@ function validateItemListData(data: any[]): any[] {
   const requiredFields = ['item_number', 'vendor_name', 'item_name'];
   
   return data.map((item, index) => {
-    // Check for required fields (case-insensitive)
     const normalizedItem: any = {};
     
-    // Normalize field names to snake_case
-    Object.keys(item).forEach(key => {
-      const normalizedKey = key.toLowerCase()
-        .replace(/\s+/g, '_')
-        .replace(/[^a-z0-9_]/g, '');
-      normalizedItem[normalizedKey] = item[key];
+    // Map the actual Excel headers to expected database field names
+    const headerMappings: { [key: string]: string } = {
+      'Item #': 'item_number',
+      'item #': 'item_number',
+      'Vendor Name': 'vendor_name',
+      'vendor name': 'vendor_name',
+      'Item Name': 'item_name',
+      'item name': 'item_name',
+      'Category': 'category',
+      'category': 'category',
+      'Gender': 'gender',
+      'gender': 'gender',
+      'Avail Qty': 'avail_qty',
+      'avail qty': 'avail_qty',
+      'HQ Qty': 'hq_qty',
+      'hq qty': 'hq_qty',
+      'GM Qty': 'gm_qty',
+      'gm qty': 'gm_qty',
+      'HM Qty': 'hm_qty',
+      'hm qty': 'hm_qty',
+      'MM Qty': 'mm_qty',
+      'mm qty': 'mm_qty',
+      'NM Qty': 'nm_qty',
+      'nm qty': 'nm_qty',
+      'PM Qty': 'pm_qty',
+      'pm qty': 'pm_qty',
+      'LM Qty': 'lm_qty',
+      'lm qty': 'lm_qty',
+      'Last Rcvd': 'last_rcvd',
+      'last rcvd': 'last_rcvd',
+      'Creation Date': 'creation_date',
+      'creation date': 'creation_date',
+      'Last Sold': 'last_sold',
+      'last sold': 'last_sold',
+      'Style Number': 'style_number',
+      'style number': 'style_number',
+      'Style Number 2': 'style_number_2',
+      'style number 2': 'style_number_2',
+      'Order Cost': 'order_cost',
+      'order cost': 'order_cost',
+      'Selling Price': 'selling_price',
+      'selling price': 'selling_price',
+      'Notes': 'notes',
+      'notes': 'notes',
+      'Size': 'size',
+      'size': 'size',
+      'Attribute': 'attribute',
+      'attribute': 'attribute'
+    };
+    
+    // Process each field in the original item
+    Object.keys(item).forEach(originalKey => {
+      const trimmedKey = originalKey.trim();
+      const mappedKey = headerMappings[trimmedKey] || headerMappings[trimmedKey.toLowerCase()];
+      
+      if (mappedKey) {
+        normalizedItem[mappedKey] = item[originalKey];
+      } else {
+        // Fallback: normalize field names to snake_case
+        const normalizedKey = trimmedKey.toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/[^a-z0-9_]/g, '');
+        normalizedItem[normalizedKey] = item[originalKey];
+      }
     });
     
-    // Map common variations
-    if (normalizedItem.item && !normalizedItem.item_number) {
-      normalizedItem.item_number = normalizedItem.item;
-    }
-    if (normalizedItem.vendor && !normalizedItem.vendor_name) {
-      normalizedItem.vendor_name = normalizedItem.vendor;
-    }
-    if (normalizedItem.name && !normalizedItem.item_name) {
-      normalizedItem.item_name = normalizedItem.name;
-    }
+    // Style Number 2 is already handled in the header mappings
     
     // Validate required fields
     for (const field of requiredFields) {
-      if (!normalizedItem[field]) {
-        throw new Error(`Row ${index + 1}: Missing required field '${field}'`);
+      if (!normalizedItem[field] || normalizedItem[field] === '') {
+        throw new Error(`Row ${index + 1}: Missing required field '${field}' (mapped from Excel headers)`);
       }
     }
     
