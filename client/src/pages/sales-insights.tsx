@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { 
   ArrowLeft,
   TrendingUp,
@@ -30,6 +31,7 @@ import {
   Truck
 } from "lucide-react";
 import { Link } from "wouter";
+import InventoryTurnoverDashboard from "@/components/inventory-turnover-dashboard";
 
 interface SalesInsights {
   byStore: Array<{ 
@@ -117,27 +119,40 @@ export default function SalesInsightsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Loading State */}
-        {isLoading && (
-          <div className="text-center py-16">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-4 text-muted-foreground">Loading analytics...</p>
-          </div>
-        )}
+        <Tabs defaultValue="sales" className="space-y-6">
+          <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsTrigger value="sales" data-testid="tab-sales-insights">
+              <BarChart3 className="w-4 h-4 mr-2" />
+              Sales Insights
+            </TabsTrigger>
+            <TabsTrigger value="inventory" data-testid="tab-inventory-turnover">
+              <Package className="w-4 h-4 mr-2" />
+              Inventory Turnover
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Error State */}
-        {error && (
-          <Card>
-            <CardContent className="py-16 text-center">
-              <p className="text-destructive text-lg">Failed to load sales insights</p>
-              <p className="text-muted-foreground mt-2">Please try refreshing the page</p>
-            </CardContent>
-          </Card>
-        )}
+          <TabsContent value="sales" className="space-y-6">
+            {/* Loading State */}
+            {isLoading && (
+              <div className="text-center py-16">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+                <p className="mt-4 text-muted-foreground">Loading analytics...</p>
+              </div>
+            )}
 
-        {/* Insights Content */}
-        {insights && !isLoading && (
-          <div className="space-y-6">
+            {/* Error State */}
+            {error && (
+              <Card>
+                <CardContent className="py-16 text-center">
+                  <p className="text-destructive text-lg">Failed to load sales insights</p>
+                  <p className="text-muted-foreground mt-2">Please try refreshing the page</p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Insights Content */}
+            {insights && !isLoading && (
+              <div className="space-y-6">
             {/* Sales by Store */}
             <Card>
               <CardHeader>
@@ -500,6 +515,12 @@ export default function SalesInsightsPage() {
             )}
           </div>
         )}
+          </TabsContent>
+
+          <TabsContent value="inventory" className="space-y-6">
+            <InventoryTurnoverDashboard />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   );

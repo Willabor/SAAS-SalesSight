@@ -685,6 +685,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Inventory Turnover API endpoints
+  app.get("/api/inventory/turnover-metrics", async (req, res) => {
+    try {
+      const metrics = await storage.getInventoryTurnoverMetrics();
+      res.json(metrics);
+    } catch (error) {
+      console.error("Error fetching inventory turnover metrics:", error);
+      res.status(500).json({ error: "Failed to fetch inventory turnover metrics" });
+    }
+  });
+
+  app.get("/api/inventory/slow-moving", async (req, res) => {
+    try {
+      const daysThreshold = parseInt(req.query.days as string) || 90;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const slowMovingStock = await storage.getSlowMovingStock(daysThreshold, limit);
+      res.json(slowMovingStock);
+    } catch (error) {
+      console.error("Error fetching slow-moving stock:", error);
+      res.status(500).json({ error: "Failed to fetch slow-moving stock" });
+    }
+  });
+
+  app.get("/api/inventory/overstock-understock", async (req, res) => {
+    try {
+      const daysRange = parseInt(req.query.days as string) || 30;
+      const analysis = await storage.getOverstockUnderstockAnalysis(daysRange);
+      res.json(analysis);
+    } catch (error) {
+      console.error("Error fetching overstock/understock analysis:", error);
+      res.status(500).json({ error: "Failed to fetch overstock/understock analysis" });
+    }
+  });
+
+  app.get("/api/inventory/category-analysis", async (req, res) => {
+    try {
+      const categoryAnalysis = await storage.getCategoryInventoryAnalysis();
+      res.json(categoryAnalysis);
+    } catch (error) {
+      console.error("Error fetching category inventory analysis:", error);
+      res.status(500).json({ error: "Failed to fetch category inventory analysis" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

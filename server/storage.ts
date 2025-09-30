@@ -114,6 +114,48 @@ export interface IStorage {
   }>;
   deleteReceivingVoucher(id: number): Promise<boolean>;
   deleteAllReceivingVouchers(): Promise<number>;
+  
+  // Inventory Turnover operations
+  getInventoryTurnoverMetrics(): Promise<{
+    totalInventoryValue: number;
+    totalInventoryUnits: number;
+    deadStockValue: number;
+    deadStockUnits: number;
+    avgDaysSinceLastSale: number;
+  }>;
+  getSlowMovingStock(daysThreshold: number, limit?: number): Promise<Array<{
+    itemNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    availQty: number;
+    orderCost: string | null;
+    inventoryValue: number;
+    lastSold: string | null;
+    daysSinceLastSale: number | null;
+    stockStatus: string;
+  }>>;
+  getOverstockUnderstockAnalysis(daysRange: number): Promise<Array<{
+    itemNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    availQty: number;
+    orderCost: string | null;
+    inventoryValue: number;
+    unitsSold: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    stockStatus: string;
+  }>>;
+  getCategoryInventoryAnalysis(): Promise<Array<{
+    category: string;
+    totalInventoryValue: number;
+    totalUnits: number;
+    totalItemsCount: number;
+    totalSales: number;
+    avgTurnoverRate: number;
+  }>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -824,6 +866,194 @@ export class DatabaseStorage implements IStorage {
   async deleteAllReceivingVouchers(): Promise<number> {
     const result = await db.delete(receivingVouchers);
     return result.rowCount || 0;
+  }
+
+  // Inventory Turnover Methods
+  async getInventoryTurnoverMetrics(): Promise<{
+    totalInventoryValue: number;
+    totalInventoryUnits: number;
+    deadStockValue: number;
+    deadStockUnits: number;
+    avgDaysSinceLastSale: number;
+  }> {
+    const result = await db
+      .select({
+        totalInventoryValue: sql<number>`COALESCE(SUM(CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC)), 0)`,
+        totalInventoryUnits: sql<number>`COALESCE(SUM(${itemList.availQty}), 0)`,
+        deadStockValue: sql<number>`COALESCE(SUM(CASE WHEN ${itemList.lastSold} IS NULL OR ${itemList.lastSold} < CURRENT_DATE - INTERVAL '90 days' THEN CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC) ELSE 0 END), 0)`,
+        deadStockUnits: sql<number>`COALESCE(SUM(CASE WHEN ${itemList.lastSold} IS NULL OR ${itemList.lastSold} < CURRENT_DATE - INTERVAL '90 days' THEN ${itemList.availQty} ELSE 0 END), 0)`,
+        avgDaysSinceLastSale: sql<number>`COALESCE(AVG(CASE WHEN ${itemList.lastSold} IS NOT NULL THEN (CURRENT_DATE - ${itemList.lastSold}) ELSE NULL END), 0)`,
+      })
+      .from(itemList)
+      .where(sql`${itemList.availQty} > 0`);
+
+    return result[0] || {
+      totalInventoryValue: 0,
+      totalInventoryUnits: 0,
+      deadStockValue: 0,
+      deadStockUnits: 0,
+      avgDaysSinceLastSale: 0,
+    };
+  }
+
+  async getSlowMovingStock(daysThreshold: number = 90, limit: number = 100): Promise<Array<{
+    itemNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    availQty: number;
+    orderCost: string | null;
+    inventoryValue: number;
+    lastSold: string | null;
+    daysSinceLastSale: number | null;
+    stockStatus: string;
+  }>> {
+    const result = await db
+      .select({
+        itemNumber: itemList.itemNumber,
+        itemName: itemList.itemName,
+        category: itemList.category,
+        vendorName: itemList.vendorName,
+        availQty: itemList.availQty,
+        orderCost: itemList.orderCost,
+        inventoryValue: sql<number>`CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC)`,
+        lastSold: itemList.lastSold,
+        daysSinceLastSale: sql<number>`(CURRENT_DATE - ${itemList.lastSold})`,
+        stockStatus: sql<string>`CASE 
+          WHEN ${itemList.lastSold} IS NULL THEN 'Never Sold'
+          WHEN ${itemList.lastSold} < CURRENT_DATE - INTERVAL '180 days' THEN 'Dead Stock'
+          WHEN ${itemList.lastSold} < CURRENT_DATE - INTERVAL '90 days' THEN 'Slow Moving'
+          ELSE 'Normal'
+        END`,
+      })
+      .from(itemList)
+      .where(
+        and(
+          sql`${itemList.availQty} > 0`,
+          or(
+            sql`${itemList.lastSold} IS NULL`,
+            sql`${itemList.lastSold} < CURRENT_DATE - INTERVAL '${sql.raw(daysThreshold.toString())} days'`
+          )
+        )
+      )
+      .orderBy(sql`(CURRENT_DATE - ${itemList.lastSold}) DESC NULLS FIRST`)
+      .limit(limit);
+
+    return result.map(row => ({
+      ...row,
+      itemNumber: row.itemNumber || '',
+      itemName: row.itemName || '',
+      availQty: row.availQty || 0,
+      inventoryValue: Number(row.inventoryValue) || 0,
+    }));
+  }
+
+  async getOverstockUnderstockAnalysis(daysRange: number = 30): Promise<Array<{
+    itemNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    availQty: number;
+    orderCost: string | null;
+    inventoryValue: number;
+    unitsSold: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    stockStatus: string;
+  }>> {
+    const result = await db
+      .select({
+        itemNumber: itemList.itemNumber,
+        itemName: itemList.itemName,
+        category: itemList.category,
+        vendorName: itemList.vendorName,
+        availQty: itemList.availQty,
+        orderCost: itemList.orderCost,
+        inventoryValue: sql<number>`CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC)`,
+        unitsSold: sql<number>`COALESCE(COUNT(DISTINCT ${salesTransactions.id}), 0)`,
+      })
+      .from(itemList)
+      .leftJoin(
+        salesTransactions,
+        and(
+          sql`${salesTransactions.sku} = ${itemList.itemNumber}`,
+          sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '${sql.raw(daysRange.toString())} days'`
+        )
+      )
+      .where(sql`${itemList.availQty} > 0`)
+      .groupBy(
+        itemList.itemNumber,
+        itemList.itemName,
+        itemList.category,
+        itemList.vendorName,
+        itemList.availQty,
+        itemList.orderCost
+      );
+
+    return result.map(row => {
+      const avgDailySales = Number(row.unitsSold) / daysRange;
+      const daysOfSupply = avgDailySales > 0 ? (row.availQty || 0) / avgDailySales : 999;
+      
+      let stockStatus = 'Normal';
+      if (daysOfSupply > 90) {
+        stockStatus = 'Overstock';
+      } else if (daysOfSupply < 7 && avgDailySales > 0) {
+        stockStatus = 'Understock';
+      } else if (avgDailySales === 0 && (row.availQty || 0) > 0) {
+        stockStatus = 'No Sales';
+      }
+
+      return {
+        itemNumber: row.itemNumber || '',
+        itemName: row.itemName || '',
+        category: row.category,
+        vendorName: row.vendorName,
+        availQty: row.availQty || 0,
+        orderCost: row.orderCost,
+        inventoryValue: Number(row.inventoryValue) || 0,
+        unitsSold: Number(row.unitsSold),
+        avgDailySales: Number(avgDailySales.toFixed(2)),
+        daysOfSupply: Number(daysOfSupply.toFixed(1)),
+        stockStatus,
+      };
+    });
+  }
+
+  async getCategoryInventoryAnalysis(): Promise<Array<{
+    category: string;
+    totalInventoryValue: number;
+    totalUnits: number;
+    totalItemsCount: number;
+    totalSales: number;
+    avgTurnoverRate: number;
+  }>> {
+    const result = await db
+      .select({
+        category: sql<string>`COALESCE(${itemList.category}, 'Uncategorized')`,
+        totalInventoryValue: sql<number>`COALESCE(SUM(CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC)), 0)`,
+        totalUnits: sql<number>`COALESCE(SUM(${itemList.availQty}), 0)`,
+        totalItemsCount: sql<number>`COUNT(DISTINCT ${itemList.itemNumber})`,
+        totalSales: sql<number>`COALESCE(COUNT(DISTINCT ${salesTransactions.id}), 0)`,
+      })
+      .from(itemList)
+      .leftJoin(
+        salesTransactions,
+        and(
+          sql`${salesTransactions.sku} = ${itemList.itemNumber}`,
+          sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '30 days'`
+        )
+      )
+      .where(sql`${itemList.availQty} > 0`)
+      .groupBy(sql`COALESCE(${itemList.category}, 'Uncategorized')`);
+
+    return result.map(row => ({
+      category: row.category,
+      totalInventoryValue: Number(row.totalInventoryValue) || 0,
+      totalUnits: Number(row.totalUnits) || 0,
+      totalItemsCount: Number(row.totalItemsCount) || 0,
+      totalSales: Number(row.totalSales) || 0,
+      avgTurnoverRate: Number(row.totalUnits) > 0 ? Number((Number(row.totalSales) / Number(row.totalUnits) * 100).toFixed(2)) : 0,
+    }));
   }
 }
 
