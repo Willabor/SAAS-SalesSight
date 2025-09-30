@@ -39,7 +39,16 @@ export interface IStorage {
   
   // Sales Transactions operations
   createSalesTransaction(transaction: InsertSalesTransaction): Promise<SalesTransaction>;
-  getExistingReceiptNumbers(receiptNumbers: string[]): Promise<Set<string>>;
+  getExistingTransactions(transactions: Array<{
+    date: string | null;
+    store: string | null;
+    receiptNumber: string | null;
+    sku: string | null;
+    itemName: string | null;
+    transactionStoreType: string | null;
+    price: string | null;
+    sheet: string | null;
+  }>): Promise<Set<string>>;
   getAllSalesTransactions(limit?: number, offset?: number, search?: string, year?: number, month?: number): Promise<{
     transactions: SalesTransaction[];
     total: number;
@@ -211,17 +220,76 @@ export class DatabaseStorage implements IStorage {
     return createdTransaction;
   }
 
-  async getExistingReceiptNumbers(receiptNumbers: string[]): Promise<Set<string>> {
-    if (receiptNumbers.length === 0) {
+  async getExistingTransactions(
+    transactions: Array<{
+      date: string | null;
+      store: string | null;
+      receiptNumber: string | null;
+      sku: string | null;
+      itemName: string | null;
+      transactionStoreType: string | null;
+      price: string | null;
+      sheet: string | null;
+    }>
+  ): Promise<Set<string>> {
+    if (transactions.length === 0) {
       return new Set();
     }
     
-    const existingReceipts = await db
-      .selectDistinct({ receiptNumber: salesTransactions.receiptNumber })
-      .from(salesTransactions)
-      .where(sql`${salesTransactions.receiptNumber} IN ${receiptNumbers}`);
+    // Deduplicate incoming transactions to reduce query size
+    const uniqueTransactions = Array.from(
+      new Map(
+        transactions.map(t => [
+          `${t.receiptNumber}|${t.date}|${t.sku}|${t.store}|${t.itemName}|${t.transactionStoreType}|${t.price}|${t.sheet}`,
+          t
+        ])
+      ).values()
+    );
     
-    return new Set(existingReceipts.map(r => r.receiptNumber).filter((r): r is string => r !== null));
+    // Process in chunks to avoid parameter limits (500 transactions per query)
+    const chunkSize = 500;
+    const allExisting = new Set<string>();
+    
+    for (let i = 0; i < uniqueTransactions.length; i += chunkSize) {
+      const chunk = uniqueTransactions.slice(i, i + chunkSize);
+      
+      // Build exact match conditions using IS NOT DISTINCT FROM for NULL-safe comparison
+      const conditions = chunk.map(t => 
+        sql`(
+          ${salesTransactions.receiptNumber} IS NOT DISTINCT FROM ${t.receiptNumber} 
+          AND ${salesTransactions.date} IS NOT DISTINCT FROM ${t.date} 
+          AND ${salesTransactions.sku} IS NOT DISTINCT FROM ${t.sku}
+          AND ${salesTransactions.store} IS NOT DISTINCT FROM ${t.store}
+          AND ${salesTransactions.itemName} IS NOT DISTINCT FROM ${t.itemName}
+          AND ${salesTransactions.transactionStoreType} IS NOT DISTINCT FROM ${t.transactionStoreType}
+          AND ${salesTransactions.price}::text IS NOT DISTINCT FROM ${t.price}
+          AND ${salesTransactions.sheet} IS NOT DISTINCT FROM ${t.sheet}
+        )`
+      );
+      
+      const existingTransactions = await db
+        .select({
+          date: salesTransactions.date,
+          store: salesTransactions.store,
+          receiptNumber: salesTransactions.receiptNumber,
+          sku: salesTransactions.sku,
+          itemName: salesTransactions.itemName,
+          transactionStoreType: salesTransactions.transactionStoreType,
+          price: sql<string>`${salesTransactions.price}::text`,
+          sheet: salesTransactions.sheet,
+        })
+        .from(salesTransactions)
+        .where(sql`${sql.join(conditions, sql` OR `)}`);
+      
+      // Add to set using normalized composite keys
+      existingTransactions.forEach(t => {
+        allExisting.add(
+          `${t.receiptNumber}|${t.date}|${t.sku}|${t.store}|${t.itemName}|${t.transactionStoreType}|${t.price}|${t.sheet}`
+        );
+      });
+    }
+    
+    return allExisting;
   }
 
   async getAllSalesTransactions(limit = 50, offset = 0, search?: string, year?: number, month?: number): Promise<{

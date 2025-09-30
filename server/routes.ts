@@ -4,6 +4,42 @@ import { storage } from "./storage";
 import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, type InsertSalesTransaction } from "@shared/schema";
 import { z } from "zod";
 
+// Timezone-agnostic date normalization to YYYY-MM-DD
+function normalizeDate(dateInput: string | null | undefined): string | null {
+  if (!dateInput) return null;
+  
+  const dateStr = String(dateInput).trim();
+  if (!dateStr) return null;
+  
+  // Already in YYYY-MM-DD format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  
+  // MM/DD/YYYY or M/D/YYYY format
+  const mdyMatch = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mdyMatch) {
+    let [, month, day, year] = mdyMatch;
+    // Convert 2-digit year to 4-digit
+    if (year.length === 2) {
+      year = (parseInt(year) > 50 ? '19' : '20') + year;
+    }
+    // Zero-pad month and day
+    month = month.padStart(2, '0');
+    day = day.padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  // Try ISO string format (YYYY-MM-DDTHH:mm:ss...)
+  if (dateStr.includes('T')) {
+    return dateStr.split('T')[0];
+  }
+  
+  // Fallback: return null for unrecognized formats
+  console.warn(`Unrecognized date format: ${dateStr}`);
+  return null;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check
   app.get("/api/health", (req, res) => {
@@ -171,8 +207,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid data format" });
       }
 
-      // Step 1: Validate all transactions and extract receipt numbers
-      const validatedTransactions: Array<{ transaction: InsertSalesTransaction; receiptNumber: string; index: number }> = [];
+      // Step 1: Validate all transactions and create composite keys
+      const validatedTransactions: Array<{ 
+        transaction: InsertSalesTransaction; 
+        compositeKey: string;
+        index: number;
+      }> = [];
       const errors: string[] = [];
       let failed = 0;
 
@@ -202,9 +242,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             sheet: rawData.sheet != null ? String(rawData.sheet) : null,
           });
 
+          // Normalize fields for consistent comparison (timezone-agnostic)
+          const normalizedPrice = validatedTransaction.price ? String(Number(validatedTransaction.price)) : null;
+          const normalizedDate = normalizeDate(validatedTransaction.date);
+          
+          // Update transaction with normalized date to ensure consistency
+          validatedTransaction.date = normalizedDate;
+          
+          // Create composite key using ALL fields to handle multiple same-item purchases
+          const compositeKey = `${validatedTransaction.receiptNumber}|${normalizedDate}|${validatedTransaction.sku}|${validatedTransaction.store}|${validatedTransaction.itemName}|${validatedTransaction.transactionStoreType}|${normalizedPrice}|${validatedTransaction.sheet}`;
+
           validatedTransactions.push({
             transaction: validatedTransaction,
-            receiptNumber: validatedTransaction.receiptNumber || "",
+            compositeKey,
             index: index + 1
           });
         } catch (error) {
@@ -214,27 +264,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Step 2: Check for existing receipt numbers in database
-      const receiptNumbersToCheck = validatedTransactions
-        .map(v => v.receiptNumber)
-        .filter(r => r && r.trim() !== "");
+      // Step 2: Check for existing transactions using ALL fields (not just receipt+date+sku)
+      // This ensures customers buying multiple of same item on same receipt are handled correctly
+      const transactionsToCheck = validatedTransactions.map(v => ({
+        // Date already normalized during validation
+        date: v.transaction.date ?? null,
+        store: v.transaction.store ?? null,
+        receiptNumber: v.transaction.receiptNumber ?? null,
+        sku: v.transaction.sku ?? null,
+        itemName: v.transaction.itemName ?? null,
+        transactionStoreType: v.transaction.transactionStoreType ?? null,
+        // Normalize price to match database format (numeric::text)
+        price: v.transaction.price ? String(Number(v.transaction.price)) : null,
+        sheet: v.transaction.sheet ?? null
+      }));
       
-      const existingReceiptNumbers = await storage.getExistingReceiptNumbers(receiptNumbersToCheck);
+      const existingTransactions = await storage.getExistingTransactions(transactionsToCheck);
 
       // Step 3: Filter out duplicates and insert only new transactions
+      // Track in-file duplicates to prevent inserting same transaction twice in one upload
+      const insertedInThisUpload = new Set<string>();
       let uploaded = 0;
       let skipped = 0;
-      const skippedReceiptNumbers: string[] = [];
+      const skippedDetails: string[] = [];
 
-      for (const { transaction, receiptNumber, index } of validatedTransactions) {
-        if (receiptNumber && existingReceiptNumbers.has(receiptNumber)) {
+      for (const { transaction, compositeKey, index } of validatedTransactions) {
+        // Check both database and in-file duplicates
+        if (existingTransactions.has(compositeKey) || insertedInThisUpload.has(compositeKey)) {
           skipped++;
-          if (skippedReceiptNumbers.length < 10) {
-            skippedReceiptNumbers.push(receiptNumber);
+          if (skippedDetails.length < 10) {
+            const reason = existingTransactions.has(compositeKey) ? "already in database" : "duplicate in file";
+            skippedDetails.push(`Receipt ${transaction.receiptNumber} - SKU ${transaction.sku} on ${transaction.date} (${reason})`);
           }
         } else {
           try {
             await storage.createSalesTransaction(transaction);
+            insertedInThisUpload.add(compositeKey);
             uploaded++;
           } catch (error) {
             failed++;
@@ -262,7 +327,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         failed,
         total: data.length,
         errors: errors.slice(0, 5), // Return first 5 errors
-        duplicateReceiptNumbers: skippedReceiptNumbers, // Sample of skipped receipt numbers
+        duplicateTransactions: skippedDetails, // Sample of skipped transactions
       });
     } catch (error) {
       console.error("Upload error:", error);
