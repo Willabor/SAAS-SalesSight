@@ -127,8 +127,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(String(req.query.limit)) || 50;
       const offset = parseInt(String(req.query.offset)) || 0;
       const search = req.query.search ? String(req.query.search) : undefined;
+      const category = req.query.category as string | undefined;
+      const gender = req.query.gender as string | undefined;
+      const vendor = req.query.vendor as string | undefined;
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDirection = req.query.sortDirection as 'asc' | 'desc' | undefined;
       
-      const result = await storage.getAllItemList(limit, offset, search);
+      const result = await storage.getAllItemList(limit, offset, search, category, gender, vendor, sortBy, sortDirection);
       res.json(result);
     } catch (error) {
       console.error("Error fetching item list:", error);

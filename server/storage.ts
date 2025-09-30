@@ -31,7 +31,7 @@ export interface IStorage {
   createItemList(item: InsertItemList): Promise<ItemList>;
   updateItemList(itemNumber: string, item: Partial<InsertItemList>): Promise<ItemList | undefined>;
   upsertItemList(item: InsertItemList): Promise<ItemList>;
-  getAllItemList(limit?: number, offset?: number, search?: string): Promise<{
+  getAllItemList(limit?: number, offset?: number, search?: string, category?: string, gender?: string, vendor?: string, sortBy?: string, sortDirection?: 'asc' | 'desc'): Promise<{
     items: ItemList[];
     total: number;
   }>;
@@ -241,39 +241,68 @@ export class DatabaseStorage implements IStorage {
     return upsertedItem;
   }
 
-  async getAllItemList(limit = 50, offset = 0, search?: string): Promise<{
+  async getAllItemList(
+    limit = 50, 
+    offset = 0, 
+    search?: string,
+    category?: string,
+    gender?: string,
+    vendor?: string,
+    sortBy?: string,
+    sortDirection: 'asc' | 'desc' = 'desc'
+  ): Promise<{
     items: ItemList[];
     total: number;
   }> {
-    let items: ItemList[];
-    let total: number;
-
+    // Build filter conditions
+    const filters = [];
+    
     if (search) {
-      const searchFilter = or(
+      filters.push(or(
         ilike(itemList.itemNumber, `%${search}%`),
         ilike(itemList.itemName, `%${search}%`),
         ilike(itemList.vendorName, `%${search}%`),
         ilike(itemList.category, `%${search}%`)
-      );
-      
-      const [itemsResult, [countResult]] = await Promise.all([
-        db.select().from(itemList).where(searchFilter).orderBy(desc(itemList.uploadedAt)).limit(limit).offset(offset),
-        db.select({ count: count() }).from(itemList).where(searchFilter)
-      ]);
-      
-      items = itemsResult;
-      total = countResult.count;
-    } else {
-      const [itemsResult, [countResult]] = await Promise.all([
-        db.select().from(itemList).orderBy(desc(itemList.uploadedAt)).limit(limit).offset(offset),
-        db.select({ count: count() }).from(itemList)
-      ]);
-      
-      items = itemsResult;
-      total = countResult.count;
+      ));
     }
-
-    return { items, total };
+    
+    if (category) {
+      filters.push(eq(itemList.category, category));
+    }
+    
+    if (gender) {
+      filters.push(eq(itemList.gender, gender));
+    }
+    
+    if (vendor) {
+      filters.push(eq(itemList.vendorName, vendor));
+    }
+    
+    const whereClause = filters.length > 0 ? and(...filters) : undefined;
+    
+    // Determine sort column - default to uploadedAt
+    let orderByClause;
+    if (sortBy && sortBy in itemList) {
+      const column = itemList[sortBy as keyof typeof itemList];
+      orderByClause = sortDirection === 'asc' ? sql`${column} ASC` : sql`${column} DESC`;
+    } else {
+      orderByClause = desc(itemList.uploadedAt);
+    }
+    
+    // Execute queries
+    const [itemsResult, [countResult]] = await Promise.all([
+      whereClause 
+        ? db.select().from(itemList).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset)
+        : db.select().from(itemList).orderBy(orderByClause).limit(limit).offset(offset),
+      whereClause
+        ? db.select({ count: count() }).from(itemList).where(whereClause)
+        : db.select({ count: count() }).from(itemList)
+    ]);
+    
+    return { 
+      items: itemsResult, 
+      total: countResult.count 
+    };
   }
 
   async deleteItemList(id: number): Promise<boolean> {
