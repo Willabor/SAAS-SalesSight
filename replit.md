@@ -1,6 +1,11 @@
 # Overview
 
-This is an Excel Sales Data Processor application built as a full-stack web application. The system allows users to upload Excel files containing item lists and sales transaction data, processes them, and provides a dashboard with analytics and statistics. The application features file upload capabilities, data visualization, and real-time progress tracking for data processing operations.
+This is an Excel Sales Data Processor application built as a full-stack web application. The system allows users to upload Excel files containing item lists, sales transaction data, and receiving history from QuickBooks. The application processes these files and provides a dashboard with analytics and statistics. Key features include file upload capabilities, data visualization, multi-step processing workflows, and real-time progress tracking.
+
+The system now includes three major workflows:
+1. **Item List Management**: Upload and manage product inventory data
+2. **Sales Data Processing**: Process sales transactions with duplicate detection
+3. **Receiving History** (NEW): Process QuickBooks receiving vouchers with format & consolidate, flatten operations, voucher viewer with search capabilities, and automatic handling of QuickBooks calculation bugs and reversals
 
 # User Preferences
 
@@ -40,6 +45,8 @@ The server implements a clean separation of concerns with dedicated modules for 
 **Schema Design**:
 - `item_list`: Stores product inventory data with detailed item information, quantities, pricing, and metadata
 - `sales_transactions`: Stores sales transaction records with receipt information and item details
+- `receiving_vouchers`: Stores receiving voucher headers with voucher number, date, store, vendor, type, totals (QB and corrected), and metadata. Includes composite unique constraint on (voucherNumber, store, date) for duplicate prevention
+- `receiving_lines`: Stores receiving voucher line items with item number, item name, quantity, cost, linked to vouchers via foreign key with cascade delete
 - `upload_history`: Tracks file upload operations with success/failure statistics
 - `users`: User management for authentication (prepared but not fully implemented)
 
@@ -54,6 +61,39 @@ The application implements a sophisticated Excel file processing system:
 - **Batch Processing**: Supports large file uploads with progress tracking
 - **Error Handling**: Comprehensive error reporting with detailed failure logs
 - **Multiple Upload Modes**: Supports initial uploads and weekly updates with different processing logic
+
+### Receiving History Processing
+
+The application includes specialized processing for QuickBooks receiving voucher exports:
+
+1. **Format & Consolidate** (Step 1):
+   - Consolidates multiple sheets in reverse chronological order
+   - Deletes top 5 rows from each sheet (header cleanup)
+   - Removes alternating columns (A, C, E, G, I, K, M, O)
+   - Inserts 4 empty columns after Voucher # for item details
+   - Adds headers: Item #, Item Name, Qty, cost
+
+2. **Flatten** (Step 2):
+   - Parses hierarchical voucher structure into flat table
+   - Detects voucher headers (contains Date object)
+   - Extracts line items (Item #, Item Name, Qty, Cost)
+   - Handles QuickBooks calculation bugs by recalculating totals with absolute cost values
+   - Identifies reversals (negative quantities) and marks transaction type
+   - Calculates corrected totals for comparison with QB totals
+
+3. **Upload** (Step 3):
+   - Validates all vouchers and line items with Zod schemas
+   - Checks for duplicates using composite key (voucherNumber + store + date)
+   - Bulk inserts vouchers and associated line items
+   - Tracks upload statistics (uploaded, skipped, failed)
+   - Records upload history with detailed error messages
+
+4. **Voucher Viewer**:
+   - Search and filter vouchers by number, vendor, store, or item
+   - Paginated table view with key metrics
+   - Detail view shows voucher header, totals comparison, and all line items
+   - Highlights QuickBooks calculation mismatches
+   - Shows reversal badges for negative quantities
 
 ## Development and Deployment
 
