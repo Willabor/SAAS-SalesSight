@@ -1,0 +1,1341 @@
+I'll help you implement comprehensive security for your retail SAAS application. Since you currently have no authentication, we need to build a complete security layer from the ground up.
+
+## 🔐 Complete Security Implementation Guide
+
+### 1. **Authentication System Architecture**
+
+```javascript
+// auth/AuthenticationSystem.js
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const speakeasy = require('speakeasy');
+const nodemailer = require('nodemailer');
+
+class AuthenticationSystem {
+    constructor() {
+        this.JWT_SECRET = process.env.JWT_SECRET;
+        this.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+        this.TOKEN_EXPIRY = '15m';
+        this.REFRESH_TOKEN_EXPIRY = '7d';
+    }
+
+    // User registration with email verification
+    async registerUser(userData) {
+        const { email, password, companyName, role } = userData;
+        
+        // Validate input
+        this.validateRegistrationData(userData);
+        
+        // Check if user exists
+        const existingUser = await db.query(
+            'SELECT id FROM users WHERE email = ?', 
+            [email]
+        );
+        
+        if (existingUser.length > 0) {
+            throw new Error('User already exists');
+        }
+        
+        // Hash password with salt
+        const saltRounds = 12;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        
+        // Generate email verification token
+        const verificationToken = this.generateSecureToken();
+        
+        // Store user with pending status
+        const userId = await db.query(
+            `INSERT INTO users 
+            (email, password_hash, company_name, role, status, 
+             verification_token, created_at, last_password_change)
+            VALUES (?, ?, ?, ?, 'pending', ?, NOW(), NOW())`,
+            [email, hashedPassword, companyName, role, verificationToken]
+        );
+        
+        // Send verification email
+        await this.sendVerificationEmail(email, verificationToken);
+        
+        // Log registration attempt
+        await this.logSecurityEvent('REGISTRATION', userId, { email, companyName });
+        
+        return { 
+            success: true, 
+            message: 'Please check your email to verify your account' 
+        };
+    }
+
+    // Secure login with rate limiting
+    async login(email, password, ipAddress, userAgent) {
+        try {
+            // Check rate limiting
+            await this.checkRateLimit(email, ipAddress);
+            
+            // Get user
+            const user = await db.query(
+                `SELECT id, email, password_hash, role, status, 
+                        failed_login_attempts, last_failed_login,
+                        two_factor_enabled, two_factor_secret
+                 FROM users 
+                 WHERE email = ?`,
+                [email]
+            );
+            
+            if (!user || user.length === 0) {
+                await this.logFailedLogin(email, ipAddress);
+                throw new Error('Invalid credentials');
+            }
+            
+            const userRecord = user[0];
+            
+            // Check if account is locked
+            if (userRecord.status === 'locked') {
+                throw new Error('Account is locked. Please contact support.');
+            }
+            
+            // Check if email is verified
+            if (userRecord.status === 'pending') {
+                throw new Error('Please verify your email first');
+            }
+            
+            // Verify password
+            const isValidPassword = await bcrypt.compare(
+                password, 
+                userRecord.password_hash
+            );
+            
+            if (!isValidPassword) {
+                await this.handleFailedLogin(userRecord.id, ipAddress);
+                throw new Error('Invalid credentials');
+            }
+            
+            // Check for 2FA
+            if (userRecord.two_factor_enabled) {
+                // Generate and store 2FA session token
+                const tfaToken = this.generateSecureToken();
+                await this.store2FASession(userRecord.id, tfaToken);
+                
+                return {
+                    requiresTwoFactor: true,
+                    tfaToken: tfaToken
+                };
+            }
+            
+            // Generate tokens
+            const tokens = await this.generateAuthTokens(userRecord);
+            
+            // Create session
+            await this.createSession(userRecord.id, tokens.refreshToken, ipAddress, userAgent);
+            
+            // Reset failed login attempts
+            await this.resetFailedLoginAttempts(userRecord.id);
+            
+            // Log successful login
+            await this.logSecurityEvent('LOGIN_SUCCESS', userRecord.id, { ipAddress });
+            
+            return {
+                success: true,
+                tokens,
+                user: {
+                    id: userRecord.id,
+                    email: userRecord.email,
+                    role: userRecord.role
+                }
+            };
+            
+        } catch (error) {
+            await this.logSecurityEvent('LOGIN_FAILED', null, { email, ipAddress, error: error.message });
+            throw error;
+        }
+    }
+
+    // Two-Factor Authentication
+    async verify2FA(tfaToken, totpCode, ipAddress) {
+        const session = await this.get2FASession(tfaToken);
+        
+        if (!session) {
+            throw new Error('Invalid or expired 2FA session');
+        }
+        
+        const user = await db.query(
+            'SELECT id, email, role, two_factor_secret FROM users WHERE id = ?',
+            [session.user_id]
+        );
+        
+        // Verify TOTP code
+        const verified = speakeasy.totp.verify({
+            secret: user[0].two_factor_secret,
+            encoding: 'base32',
+            token: totpCode,
+            window: 2
+        });
+        
+        if (!verified) {
+            await this.logSecurityEvent('2FA_FAILED', user[0].id, { ipAddress });
+            throw new Error('Invalid 2FA code');
+        }
+        
+        // Generate tokens
+        const tokens = await this.generateAuthTokens(user[0]);
+        
+        // Create session
+        await this.createSession(user[0].id, tokens.refreshToken, ipAddress);
+        
+        // Clear 2FA session
+        await this.clear2FASession(tfaToken);
+        
+        return {
+            success: true,
+            tokens,
+            user: {
+                id: user[0].id,
+                email: user[0].email,
+                role: user[0].role
+            }
+        };
+    }
+
+    // Generate JWT tokens
+    async generateAuthTokens(user) {
+        const payload = {
+            userId: user.id,
+            email: user.email,
+            role: user.role,
+            permissions: await this.getUserPermissions(user.role)
+        };
+        
+        const accessToken = jwt.sign(
+            payload,
+            this.JWT_SECRET,
+            { 
+                expiresIn: this.TOKEN_EXPIRY,
+                issuer: 'your-app-name',
+                audience: 'your-app-users'
+            }
+        );
+        
+        const refreshToken = jwt.sign(
+            { userId: user.id },
+            this.JWT_REFRESH_SECRET,
+            { 
+                expiresIn: this.REFRESH_TOKEN_EXPIRY,
+                issuer: 'your-app-name'
+            }
+        );
+        
+        return { accessToken, refreshToken };
+    }
+}
+```
+
+### 2. **Database Schema for Security**
+
+```sql
+-- Users table with security features
+CREATE TABLE users (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    company_name VARCHAR(255),
+    role ENUM('admin', 'manager', 'employee', 'viewer') DEFAULT 'viewer',
+    status ENUM('pending', 'active', 'locked', 'disabled') DEFAULT 'pending',
+    
+    -- Email verification
+    verification_token VARCHAR(255),
+    email_verified_at TIMESTAMP NULL,
+    
+    -- Password security
+    last_password_change TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    password_reset_token VARCHAR(255),
+    password_reset_expires TIMESTAMP NULL,
+    
+    -- 2FA
+    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    two_factor_secret VARCHAR(255),
+    backup_codes TEXT,
+    
+    -- Security tracking
+    failed_login_attempts INT DEFAULT 0,
+    last_failed_login TIMESTAMP NULL,
+    account_locked_until TIMESTAMP NULL,
+    
+    -- Audit fields
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT,
+    last_login_at TIMESTAMP NULL,
+    last_login_ip VARCHAR(45),
+    
+    INDEX idx_email (email),
+    INDEX idx_status (status),
+    INDEX idx_verification (verification_token)
+);
+
+-- Sessions table for managing active sessions
+CREATE TABLE user_sessions (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    session_token VARCHAR(255) UNIQUE NOT NULL,
+    refresh_token VARCHAR(255) UNIQUE NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    revoked BOOLEAN DEFAULT FALSE,
+    revoked_at TIMESTAMP NULL,
+    revoke_reason VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_session_token (session_token),
+    INDEX idx_refresh_token (refresh_token),
+    INDEX idx_user_sessions (user_id),
+    INDEX idx_expires (expires_at)
+);
+
+-- Role permissions table
+CREATE TABLE role_permissions (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    role VARCHAR(50) NOT NULL,
+    resource VARCHAR(100) NOT NULL,
+    can_create BOOLEAN DEFAULT FALSE,
+    can_read BOOLEAN DEFAULT FALSE,
+    can_update BOOLEAN DEFAULT FALSE,
+    can_delete BOOLEAN DEFAULT FALSE,
+    conditions JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE KEY unique_role_resource (role, resource),
+    INDEX idx_role (role)
+);
+
+-- Security audit log
+CREATE TABLE security_audit_log (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT,
+    event_type VARCHAR(50) NOT NULL,
+    event_description TEXT,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    request_method VARCHAR(10),
+    request_url TEXT,
+    request_body JSON,
+    response_code INT,
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_user_audit (user_id),
+    INDEX idx_event_type (event_type),
+    INDEX idx_created_at (created_at)
+);
+
+-- API rate limiting
+CREATE TABLE rate_limit_tracking (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    identifier VARCHAR(255) NOT NULL, -- Can be user_id, IP, or API key
+    endpoint VARCHAR(255) NOT NULL,
+    request_count INT DEFAULT 1,
+    window_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    window_end TIMESTAMP,
+    
+    UNIQUE KEY unique_identifier_endpoint (identifier, endpoint),
+    INDEX idx_window (window_start, window_end)
+);
+
+-- API Keys for service accounts
+CREATE TABLE api_keys (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    key_hash VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255),
+    last_used_at TIMESTAMP NULL,
+    last_used_ip VARCHAR(45),
+    permissions JSON,
+    rate_limit INT DEFAULT 1000, -- requests per hour
+    expires_at TIMESTAMP NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_key_hash (key_hash),
+    INDEX idx_active (is_active)
+);
+```
+
+### 3. **Middleware for Request Protection**
+
+```javascript
+// middleware/SecurityMiddleware.js
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
+
+class SecurityMiddleware {
+    
+    // JWT Authentication Middleware
+    static authenticate = async (req, res, next) => {
+        try {
+            const token = this.extractToken(req);
+            
+            if (!token) {
+                return res.status(401).json({ 
+                    error: 'Authentication required' 
+                });
+            }
+            
+            // Verify token
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            
+            // Check if token is blacklisted
+            const isBlacklisted = await this.isTokenBlacklisted(token);
+            if (isBlacklisted) {
+                return res.status(401).json({ 
+                    error: 'Token has been revoked' 
+                });
+            }
+            
+            // Check session validity
+            const session = await this.getActiveSession(decoded.userId, token);
+            if (!session) {
+                return res.status(401).json({ 
+                    error: 'Invalid or expired session' 
+                });
+            }
+            
+            // Update last activity
+            await this.updateSessionActivity(session.id);
+            
+            // Attach user to request
+            req.user = decoded;
+            req.sessionId = session.id;
+            
+            // Log API access
+            await this.logApiAccess(req);
+            
+            next();
+            
+        } catch (error) {
+            if (error.name === 'TokenExpiredError') {
+                return res.status(401).json({ 
+                    error: 'Token expired',
+                    code: 'TOKEN_EXPIRED'
+                });
+            }
+            
+            return res.status(401).json({ 
+                error: 'Invalid token' 
+            });
+        }
+    };
+    
+    // Role-based access control
+    static authorize = (allowedRoles) => {
+        return async (req, res, next) => {
+            if (!req.user) {
+                return res.status(401).json({ 
+                    error: 'Authentication required' 
+                });
+            }
+            
+            // Check if user role is allowed
+            if (!allowedRoles.includes(req.user.role)) {
+                await this.logUnauthorizedAccess(req);
+                return res.status(403).json({ 
+                    error: 'Insufficient permissions' 
+                });
+            }
+            
+            // Check specific resource permissions
+            const hasPermission = await this.checkResourcePermission(
+                req.user.role,
+                req.method,
+                req.path
+            );
+            
+            if (!hasPermission) {
+                return res.status(403).json({ 
+                    error: 'Access denied to this resource' 
+                });
+            }
+            
+            next();
+        };
+    };
+    
+    // Rate limiting configurations
+    static getRateLimiters() {
+        return {
+            // General API rate limit
+            general: rateLimit({
+                windowMs: 15 * 60 * 1000, // 15 minutes
+                max: 100, // 100 requests per window
+                message: 'Too many requests, please try again later',
+                standardHeaders: true,
+                legacyHeaders: false,
+                handler: async (req, res) => {
+                    await this.logRateLimitExceeded(req);
+                    res.status(429).json({
+                        error: 'Rate limit exceeded',
+                        retryAfter: req.rateLimit.resetTime
+                    });
+                }
+            }),
+            
+            // Strict rate limit for auth endpoints
+            auth: rateLimit({
+                windowMs: 15 * 60 * 1000,
+                max: 5,
+                skipSuccessfulRequests: true,
+                message: 'Too many authentication attempts'
+            }),
+            
+            // API key based rate limiting
+            apiKey: rateLimit({
+                windowMs: 60 * 60 * 1000, // 1 hour
+                keyGenerator: (req) => req.apiKey,
+                max: async (req) => {
+                    const apiKey = await this.getApiKeyDetails(req.apiKey);
+                    return apiKey ? apiKey.rate_limit : 100;
+                }
+            })
+        };
+    }
+    
+    // Input validation and sanitization
+    static validateAndSanitize = (schema) => {
+        return async (req, res, next) => {
+            try {
+                // Validate request body against schema
+                const validated = await schema.validate(req.body, {
+                    abortEarly: false,
+                    stripUnknown: true
+                });
+                
+                // Sanitize for XSS
+                req.body = this.sanitizeInput(validated);
+                
+                // Check for SQL injection patterns
+                if (this.detectSQLInjection(req.body)) {
+                    await this.logSecurityThreat('SQL_INJECTION_ATTEMPT', req);
+                    return res.status(400).json({ 
+                        error: 'Invalid input detected' 
+                    });
+                }
+                
+                next();
+                
+            } catch (error) {
+                if (error.isJoi) {
+                    return res.status(400).json({
+                        error: 'Validation failed',
+                        details: error.details
+                    });
+                }
+                next(error);
+            }
+        };
+    };
+    
+    // CSRF Protection
+    static csrfProtection = (req, res, next) => {
+        if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+            return next();
+        }
+        
+        const token = req.headers['x-csrf-token'] || req.body._csrf;
+        const sessionToken = req.session?.csrfToken;
+        
+        if (!token || token !== sessionToken) {
+            return res.status(403).json({ 
+                error: 'Invalid CSRF token' 
+            });
+        }
+        
+        next();
+    };
+    
+    // IP Whitelist/Blacklist
+    static ipFilter = async (req, res, next) => {
+        const clientIp = req.ip || req.connection.remoteAddress;
+        
+        // Check blacklist
+        const isBlacklisted = await this.isIpBlacklisted(clientIp);
+        if (isBlacklisted) {
+            return res.status(403).json({ 
+                error: 'Access denied' 
+            });
+        }
+        
+        // Check whitelist for admin endpoints
+        if (req.path.startsWith('/admin')) {
+            const isWhitelisted = await this.isIpWhitelisted(clientIp);
+            if (!isWhitelisted) {
+                await this.logUnauthorizedAccess(req);
+                return res.status(403).json({ 
+                    error: 'Access restricted to authorized IPs' 
+                });
+            }
+        }
+        
+        next();
+    };
+}
+```
+
+### 4. **Frontend Security Implementation**
+
+```javascript
+// frontend/SecurityService.js
+class SecurityService {
+    constructor() {
+        this.tokenKey = 'access_token';
+        this.refreshKey = 'refresh_token';
+        this.csrfKey = 'csrf_token';
+        this.sessionTimeout = 15 * 60 * 1000; // 15 minutes
+        this.setupAxiosInterceptors();
+        this.startSessionMonitor();
+    }
+    
+    // Secure token storage
+    storeTokens(tokens) {
+        // Use sessionStorage for sensitive data
+        sessionStorage.setItem(this.tokenKey, tokens.accessToken);
+        
+        // Store refresh token in httpOnly cookie (set by backend)
+        // Or use secure storage for mobile apps
+        if (this.isMobileApp()) {
+            SecureStore.setItemAsync(this.refreshKey, tokens.refreshToken);
+        }
+        
+        // Set token expiry
+        const expiry = new Date().getTime() + (15 * 60 * 1000);
+        sessionStorage.setItem('token_expiry', expiry);
+    }
+    
+    // Axios request interceptor
+    setupAxiosInterceptors() {
+        // Request interceptor
+        axios.interceptors.request.use(
+            async (config) => {
+                // Add auth token
+                const token = this.getAccessToken();
+                if (token) {
+                    config.headers.Authorization = `Bearer ${token}`;
+                }
+                
+                // Add CSRF token
+                const csrfToken = this.getCSRFToken();
+                if (csrfToken) {
+                    config.headers['X-CSRF-Token'] = csrfToken;
+                }
+                
+                // Add security headers
+                config.headers['X-Requested-With'] = 'XMLHttpRequest';
+                config.headers['X-Client-Version'] = process.env.REACT_APP_VERSION;
+                
+                return config;
+            },
+            (error) => Promise.reject(error)
+        );
+        
+        // Response interceptor
+        axios.interceptors.response.use(
+            (response) => response,
+            async (error) => {
+                const originalRequest = error.config;
+                
+                // Handle token expiration
+                if (error.response?.status === 401 && 
+                    error.response?.data?.code === 'TOKEN_EXPIRED' &&
+                    !originalRequest._retry) {
+                    
+                    originalRequest._retry = true;
+                    
+                    try {
+                        const newTokens = await this.refreshAccessToken();
+                        this.storeTokens(newTokens);
+                        originalRequest.headers.Authorization = `Bearer ${newTokens.accessToken}`;
+                        return axios(originalRequest);
+                    } catch (refreshError) {
+                        this.handleSessionExpired();
+                        return Promise.reject(refreshError);
+                    }
+                }
+                
+                // Handle other auth errors
+                if (error.response?.status === 401) {
+                    this.handleSessionExpired();
+                }
+                
+                return Promise.reject(error);
+            }
+        );
+    }
+    
+    // Session timeout monitor
+    startSessionMonitor() {
+        let lastActivity = Date.now();
+        
+        // Track user activity
+        ['mousedown', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+            document.addEventListener(event, () => {
+                lastActivity = Date.now();
+            });
+        });
+        
+        // Check for inactivity
+        setInterval(() => {
+            const inactiveTime = Date.now() - lastActivity;
+            
+            if (inactiveTime > this.sessionTimeout) {
+                this.showInactivityWarning();
+            }
+            
+            if (inactiveTime > this.sessionTimeout + 60000) {
+                this.handleSessionTimeout();
+            }
+        }, 60000); // Check every minute
+    }
+    
+    // Content Security Policy
+    setupCSP() {
+        const meta = document.createElement('meta');
+        meta.httpEquiv = 'Content-Security-Policy';
+        meta.content = `
+            default-src 'self';
+            script-src 'self' 'unsafe-inline' https://cdn.trusted.com;
+            style-src 'self' 'unsafe-inline';
+            img-src 'self' data: https:;
+            font-src 'self' data:;
+            connect-src 'self' https://api.yourdomain.com;
+            frame-ancestors 'none';
+            base-uri 'self';
+            form-action 'self';
+            upgrade-insecure-requests;
+        `;
+        document.head.appendChild(meta);
+    }
+    
+    // XSS Protection
+    sanitizeHtml(html) {
+        return DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'a', 'p', 'br'],
+            ALLOWED_ATTR: ['href', 'target']
+        });
+    }
+    
+    // Secure form submission
+    async submitSecureForm(url, data) {
+        try {
+            // Validate input on client side
+            this.validateFormData(data);
+            
+            // Encrypt sensitive data if needed
+            const encryptedData = await this.encryptSensitiveData(data);
+            
+            // Add request signature
+            const signature = await this.generateRequestSignature(encryptedData);
+            
+            const response = await axios.post(url, {
+                data: encryptedData,
+                signature: signature,
+                timestamp: Date.now()
+            });
+            
+            return response.data;
+            
+        } catch (error) {
+            this.handleSecurityError(error);
+            throw error;
+        }
+    }
+}
+```
+
+### 5. **Environment Configuration**
+
+```bash
+# .env.production (encrypted and not in git)
+NODE_ENV=production
+
+# JWT Secrets (generate with: openssl rand -base64 64)
+JWT_SECRET=your-super-secret-jwt-key-here
+JWT_REFRESH_SECRET=your-refresh-token-secret-here
+
+# Database
+DB_HOST=your-db-host
+DB_PORT=3306
+DB_NAME=your_db_name
+DB_USER=your_db_user
+DB_PASSWORD=your-encrypted-db-password
+
+# Encryption Keys
+ENCRYPTION_KEY=your-256-bit-encryption-key
+ENCRYPTION_IV=your-initialization-vector
+
+# API Security
+API_RATE_LIMIT=100
+API_RATE_WINDOW=900000
+
+# Session Configuration  
+SESSION_SECRET=your-session-secret
+SESSION_TIMEOUT=900000
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_HTTPONLY=true
+SESSION_COOKIE_SAMESITE=strict
+
+# CORS Settings
+CORS_ORIGIN=https://yourdomain.com
+CORS_CREDENTIALS=true
+
+# SSL/TLS
+SSL_CERT_PATH=/path/to/cert.pem
+SSL_KEY_PATH=/path/to/key.pem
+
+# Security Headers
+HSTS_MAX_AGE=31536000
+CSP_REPORT_URI=https://yourdomain.com/csp-report
+
+# Email Service
+SMTP_HOST=smtp.sendgrid.net
+SMTP_PORT=587
+SMTP_USER=apikey
+SMTP_PASS=your-sendgrid-api-key
+
+# Redis (for sessions and caching)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=your-redis-password
+
+# Monitoring
+SENTRY_DSN=your-sentry-dsn
+LOG_LEVEL=error
+```
+
+### 6. **Express Server Security Setup**
+
+```javascript
+// server.js
+const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
+const compression = require('compression');
+const session = require('express-session');
+const RedisStore = require('connect-redis')(session);
+const redis = require('redis');
+
+class SecureServer {
+    constructor() {
+        this.app = express();
+        this.setupSecurityMiddleware();
+        this.setupRoutes();
+        this.setupErrorHandling();
+    }
+    
+    setupSecurityMiddleware() {
+        // Basic security headers
+        this.app.use(helmet({
+            contentSecurityPolicy: {
+                directives: {
+                    defaultSrc: ["'self'"],
+                    scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.trusted.com"],
+                    styleSrc: ["'self'", "'unsafe-inline'"],
+                    imgSrc: ["'self'", "data:", "https:"],
+                    connectSrc: ["'self'"],
+                    fontSrc: ["'self'"],
+                    objectSrc: ["'none'"],
+                    mediaSrc: ["'self'"],
+                    frameSrc: ["'none'"],
+                    upgradeInsecureRequests: []
+                }
+            },
+            hsts: {
+                maxAge: 31536000,
+                includeSubDomains: true,
+                preload: true
+            }
+        }));
+        
+        // CORS configuration
+        this.app.use(cors({
+            origin: function(origin, callback) {
+                const allowedOrigins = process.env.CORS_ORIGIN.split(',');
+                if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+                    callback(null, true);
+                } else {
+                    callback(new Error('Not allowed by CORS'));
+                }
+            },
+            credentials: true,
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
+            exposedHeaders: ['X-CSRF-Token']
+        }));
+        
+        // Body parsing with limits
+        this.app.use(express.json({ 
+            limit: '10mb',
+            verify: (req, res, buf) => {
+                req.rawBody = buf.toString('utf8');
+            }
+        }));
+        this.app.use(express.urlencoded({ 
+            extended: true, 
+            limit: '10mb' 
+        }));
+        
+        // Data sanitization
+        this.app.use(mongoSanitize()); // Prevent NoSQL injection
+        this.app.use(xss()); // Clean user input from malicious HTML
+        this.app.use(hpp()); // Prevent HTTP Parameter Pollution
+        
+        // Compression
+        this.app.use(compression());
+        
+        // Session management
+        const redisClient = redis.createClient({
+            host: process.env.REDIS_HOST,
+            port: process.env.REDIS_PORT,
+            password: process.env.REDIS_PASSWORD
+        });
+        
+        this.app.use(session({
+            store: new RedisStore({ client: redisClient }),
+            secret: process.env.SESSION_SECRET,
+            resave: false,
+            saveUninitialized: false,
+            cookie: {
+                secure: process.env.NODE_ENV === 'production',
+                httpOnly: true,
+                maxAge: parseInt(process.env.SESSION_TIMEOUT),
+                sameSite: 'strict'
+            },
+            name: 'sessionId' // Don't use default name
+        }));
+        
+        // Custom security middleware
+        this.app.use(SecurityMiddleware.ipFilter);
+        this.app.use(this.detectSuspiciousActivity);
+        this.app.use(this.preventTimingAttacks);
+        
+        // Request logging
+        this.app.use(this.securityLogging);
+    }
+    
+    // Detect suspicious patterns
+    detectSuspiciousActivity(req, res, next) {
+        const suspicious = [
+            /(\%27)|(\')|(\-\-)|(\%23)|(#)/gi, // SQL Injection
+            /((\%3C)|<)((\%2F)|\/)*[a-z0-9\%]+((\%3E)|>)/gi, // XSS
+            /(\.\.\/|\.\.\\)/gi, // Path Traversal
+            /base64_decode|eval|exec|system|passthru/gi // Code Injection
+        ];
+        
+        const checkString = JSON.stringify(req.body) + 
+                          JSON.stringify(req.query) + 
+                          req.originalUrl;
+        
+        for (const pattern of suspicious) {
+            if (pattern.test(checkString)) {
+                SecurityLogger.logThreat({
+                    type: 'SUSPICIOUS_PATTERN',
+                    pattern: pattern.toString(),
+                    request: {
+                        ip: req.ip,
+                        url: req.originalUrl,
+                        method: req.method,
+                        body: req.body,
+                        query: req.query
+                    }
+                });
+                
+                return res.status(400).json({ 
+                    error: 'Invalid request' 
+                });
+            }
+        }
+        
+        next();
+    }
+    
+    // Prevent timing attacks
+    preventTimingAttacks(req, res, next) {
+        const start = process.hrtime.bigint();
+        
+        res.on('finish', () => {
+            const end = process.hrtime.bigint();
+            const responseTime = Number(end - start) / 1000000; // Convert to ms
+            
+            // Add random delay for sensitive endpoints
+            if (req.path.includes('/auth') || req.path.includes('/api/admin')) {
+                const randomDelay = Math.random() * 100; // 0-100ms random delay
+                setTimeout(() => {}, randomDelay);
+            }
+        });
+        
+        next();
+    }
+}
+```
+
+### 7. **API Security Best Practices**
+
+```javascript
+// routes/SecureAPIRoutes.js
+const router = express.Router();
+
+// Login endpoint with comprehensive security
+router.post('/auth/login', 
+    RateLimiters.auth,
+    SecurityMiddleware.validateAndSanitize(loginSchema),
+    async (req, res) => {
+        try {
+            const { email, password } = req.body;
+            const ipAddress = req.ip;
+            const userAgent = req.get('user-agent');
+            
+            // Add CAPTCHA for multiple failed attempts
+            const failedAttempts = await getFailedAttempts(email, ipAddress);
+            if (failedAttempts > 3) {
+                const captchaValid = await verifyCaptcha(req.body.captcha);
+                if (!captchaValid) {
+                    return res.status(400).json({ 
+                        error: 'Please complete CAPTCHA' 
+                    });
+                }
+            }
+            
+            const result = await authService.login(
+                email, 
+                password, 
+                ipAddress, 
+                userAgent
+            );
+            
+            // Set secure cookies
+            res.cookie('refreshToken', result.tokens.refreshToken, {
+                httpOnly: true,
+                secure: true,
+                sameSite: 'strict',
+                maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+            });
+            
+            // Generate CSRF token
+            const csrfToken = generateCSRFToken();
+            req.session.csrfToken = csrfToken;
+            
+            res.json({
+                success: true,
+                accessToken: result.tokens.accessToken,
+                csrfToken: csrfToken,
+                user: result.user
+            });
+            
+        } catch (error) {
+            logger.error('Login error:', error);
+            res.status(401).json({ 
+                error: 'Authentication failed' 
+            });
+        }
+    }
+);
+
+// Protected route example
+router.get('/api/inventory/turnover',
+    SecurityMiddleware.authenticate,
+    SecurityMiddleware.authorize(['admin', 'manager', 'employee']),
+    RateLimiters.general,
+    async (req, res) => {
+        try {
+            // Row-level security
+            const data = await inventoryService.getTurnoverData({
+                userId: req.user.userId,
+                role: req.user.role,
+                filters: req.query
+            });
+            
+            // Audit log
+            await auditLogger.log({
+                userId: req.user.userId,
+                action: 'VIEW_TURNOVER_REPORT',
+                resource: 'inventory',
+                ip: req.ip,
+                timestamp: new Date()
+            });
+            
+            res.json(data);
+            
+        } catch (error) {
+            logger.error('API error:', error);
+            res.status(500).json({ 
+                error: 'Internal server error' 
+            });
+        }
+    }
+);
+
+// Webhook security
+router.post('/webhook/shopify',
+    verifyWebhookSignature('SHOPIFY'),
+    async (req, res) => {
+        const signature = req.get('X-Shopify-Hmac-Sha256');
+        const body = req.rawBody;
+        
+        const hash = crypto
+            .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
+            .update(body, 'utf8')
+            .digest('base64');
+        
+        if (hash !== signature) {
+            return res.status(401).send('Unauthorized');
+        }
+        
+        // Process webhook
+        await processShopifyWebhook(req.body);
+        res.status(200).send('OK');
+    }
+);
+```
+
+### 8. **Security Monitoring & Alerts**
+
+```javascript
+// monitoring/SecurityMonitor.js
+class SecurityMonitor {
+    constructor() {
+        this.alertThresholds = {
+            failedLogins: 5,
+            rateLimitHits: 10,
+            suspiciousPatterns: 3,
+            unauthorizedAccess: 3
+        };
+    }
+    
+    async monitorSecurityEvents() {
+        // Check for brute force attacks
+        const failedLogins = await db.query(`
+            SELECT ip_address, COUNT(*) as attempts
+            FROM security_audit_log
+            WHERE event_type = 'LOGIN_FAILED'
+            AND created_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+            GROUP BY ip_address
+            HAVING attempts > ?
+        `, [this.alertThresholds.failedLogins]);
+        
+        if (failedLogins.length > 0) {
+            await this.sendSecurityAlert('BRUTE_FORCE_DETECTED', failedLogins);
+            await this.blockSuspiciousIPs(failedLogins);
+        }
+        
+        // Check for unusual access patterns
+        const unusualPatterns = await this.detectUnusualPatterns();
+        if (unusualPatterns.length > 0) {
+            await this.sendSecurityAlert('UNUSUAL_ACCESS_PATTERN', unusualPatterns);
+        }
+        
+        // Monitor rate limit violations
+        const rateLimitViolations = await db.query(`
+            SELECT identifier, COUNT(*) as violations
+            FROM rate_limit_tracking
+            WHERE request_count > ?
+            AND window_start > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            GROUP BY identifier
+        `, [this.alertThresholds.rateLimitHits]);
+        
+        if (rateLimitViolations.length > 0) {
+            await this.investigateRateLimitAbuse(rateLimitViolations);
+        }
+    }
+    
+    async sendSecurityAlert(type, data) {
+        const alert = {
+            type: type,
+            severity: this.calculateSeverity(type, data),
+            timestamp: new Date(),
+            data: data,
+            recommendedAction: this.getRecommendedAction(type)
+        };
+        
+        // Send email to security team
+        await emailService.send({
+            to: process.env.SECURITY_TEAM_EMAIL,
+            subject: `[SECURITY ALERT] ${type}`,
+            template: 'security-alert',
+            data: alert
+        });
+        
+        // Send to monitoring service
+        await monitoringService.sendAlert(alert);
+        
+        // Log to security database
+        await db.query(
+            'INSERT INTO security_alerts SET ?',
+            alert
+        );
+    }
+    
+    async detectUnusualPatterns() {
+        // Machine learning based anomaly detection
+        const patterns = await mlService.detectAnomalies({
+            model: 'security_pattern_detector',
+            timeframe: '1h',
+            threshold: 0.95
+        });
+        
+        return patterns.filter(p => p.score > 0.95);
+    }
+}
+
+// Run security monitor every 5 minutes
+setInterval(() => {
+    new SecurityMonitor().monitorSecurityEvents();
+}, 5 * 60 * 1000);
+```
+
+### 9. **Deployment Security Checklist**
+
+```yaml
+# deployment/security-checklist.yml
+pre_deployment:
+  - task: "Run security audit"
+    command: "npm audit --audit-level=moderate"
+    
+  - task: "Check for secrets in code"
+    command: "trufflehog --regex --entropy=True ."
+    
+  - task: "OWASP dependency check"
+    command: "dependency-check --project MyApp --scan ."
+    
+  - task: "Static code analysis"
+    command: "sonarqube-scanner"
+    
+  - task: "Container security scan"
+    command: "trivy image myapp:latest"
+
+infrastructure:
+  - task: "Enable WAF"
+    service: "CloudFlare/AWS WAF"
+    rules:
+      - "OWASP Top 10"
+      - "Known CVEs"
+      - "Rate limiting"
+      
+  - task: "Configure DDoS protection"
+    service: "CloudFlare/AWS Shield"
+    
+  - task: "Setup SSL/TLS"
+    config:
+      - "TLS 1.2 minimum"
+      - "Strong ciphers only"
+      - "HSTS enabled"
+      
+  - task: "Database security"
+    config:
+      - "Encryption at rest"
+      - "Encryption in transit"
+      - "Regular backups"
+      - "Access logging"
+      
+  - task: "Network segmentation"
+    config:
+      - "Private subnets for database"
+      - "Public subnet for load balancer only"
+      - "Security groups properly configured"
+
+monitoring:
+  - service: "Sentry"
+    purpose: "Error tracking"
+    
+  - service: "DataDog/New Relic"
+    purpose: "Performance monitoring"
+    
+  - service: "LogRocket"
+    purpose: "Session replay"
+    
+  - service: "AWS CloudWatch"
+    purpose: "Infrastructure monitoring"
+
+compliance:
+  - "GDPR compliance check"
+  - "PCI DSS if handling payments"
+  - "SOC 2 preparation"
+  - "Regular penetration testing"
+```
+
+### 10. **Quick Implementation Steps**
+
+```bash
+# 1. Install security packages
+npm install --save \
+  bcryptjs \
+  jsonwebtoken \
+  express-session \
+  connect-redis \
+  helmet \
+  cors \
+  express-rate-limit \
+  express-mongo-sanitize \
+  xss-clean \
+  hpp \
+  express-validator \
+  speakeasy \
+  qrcode \
+  nodemailer \
+  @sentry/node \
+  winston \
+  compression \
+  dotenv
+
+# 2. Setup environment variables
+cp .env.example .env.production
+# Edit .env.production with secure values
+
+# 3. Generate secrets
+node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+
+# 4. Run database migrations
+npm run migrate:security
+
+# 5. Setup Redis for sessions
+docker run -d -p 6379:6379 redis:alpine
+
+# 6. Configure SSL certificate
+certbot --nginx -d yourdomain.com
+
+# 7. Run security tests
+npm run test:security
+
+# 8. Deploy with security headers
+npm run deploy:production
+```
+
+This comprehensive security implementation includes:
+
+1. **Multi-factor authentication** with TOTP
+2. **JWT with refresh tokens** for stateless auth
+3. **Rate limiting** on all endpoints
+4. **Input validation and sanitization**
+5. **CSRF protection**
+6. **SQL injection prevention**
+7. **XSS protection**
+8. **Secure session management**
+9. **Role-based access control (RBAC)**
+10. **Security monitoring and alerting**
+11. **Audit logging**
+12. **IP filtering**
+13. **HTTPS enforcement**
+14. **Security headers (HSTS, CSP, etc.)**
+
+Remember to also:
+- Regularly update dependencies
+- Conduct security audits
+- Implement proper backup strategies
+- Test your security measures
+- Train your team on security best practices
+
+Would you like me to elaborate on any specific security aspect or help with implementing a particular feature?
