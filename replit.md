@@ -1,12 +1,13 @@
 # Overview
 
-This is an Excel Sales Data Processor application built as a full-stack web application. The system allows users to upload Excel files containing item lists, sales transaction data, and receiving history from QuickBooks. The application processes these files and provides a dashboard with analytics and statistics. Key features include file upload capabilities, data visualization, multi-step processing workflows, and real-time progress tracking.
+This is an Excel Sales Data Processor application built as a full-stack web application. The system allows users to upload Excel files containing item lists, sales transaction data, and receiving history from QuickBooks. The application processes these files and provides a dashboard with analytics and statistics. Key features include file upload capabilities, data visualization, multi-step processing workflows, real-time progress tracking, and **secure user authentication** using Replit Auth.
 
 The system now includes three major workflows and comprehensive analytics:
 1. **Item List Management**: Upload and manage product inventory data
 2. **Sales Data Processing**: Process sales transactions with duplicate detection
 3. **Receiving History**: Process QuickBooks receiving vouchers with format & consolidate, flatten operations, voucher viewer with search capabilities, and automatic handling of QuickBooks calculation bugs and reversals
-4. **Sales & Inventory Analytics** (NEW): Advanced analytics including sales insights and inventory turnover reporting with dead stock identification, overstock/understock analysis, and category-level inventory metrics
+4. **Sales & Inventory Analytics**: Advanced analytics including sales insights and inventory turnover reporting with dead stock identification, overstock/understock analysis, and category-level inventory metrics
+5. **User Authentication** (NEW): Secure login with Replit Auth supporting Google, GitHub, and email/password authentication. All application features are protected behind authentication.
 
 # User Preferences
 
@@ -39,6 +40,27 @@ The backend follows a Node.js Express.js REST API pattern:
 
 The server implements a clean separation of concerns with dedicated modules for database operations, routing, and business logic. The storage layer abstracts database operations through an interface pattern.
 
+## Authentication & Security
+
+The application uses **Replit Auth** (OpenID Connect) for user authentication:
+
+- **Authentication Provider**: Replit Auth with Google, GitHub, and email/password login options
+- **Session Management**: PostgreSQL-backed sessions using `connect-pg-simple` for secure, server-side session storage
+- **Protected Routes**: All API endpoints (except health check) require authentication via `isAuthenticated` middleware
+- **User Management**: Automatic user creation/update on login using claims from ID token (sub, email, first_name, last_name, profile_image_url)
+- **Security Features**: HTTP-only cookies, secure session configuration, token expiry validation, automatic token refresh
+
+**Frontend Authentication Flow**:
+- Unauthenticated users see a landing page with feature overview
+- Login redirects to Replit Auth for authentication
+- Authenticated users access the full dashboard with unified navigation
+- User profile dropdown displays user info and logout option
+- All pages protected with authentication checks
+
+**Database Schema for Auth**:
+- `users` table: Stores user profiles (id, email, firstName, lastName, profileImageUrl, timestamps)
+- `sessions` table: Stores Express sessions with expiry management (sid, sess, expire)
+
 ## Data Storage Solutions
 
 **Primary Database**: PostgreSQL via Neon Database (serverless)
@@ -49,7 +71,8 @@ The server implements a clean separation of concerns with dedicated modules for 
 - `receiving_vouchers`: Stores receiving voucher headers with voucher number, date, store, vendor, type, totals (QB and corrected), and metadata. Includes composite unique constraint on (voucherNumber, store, date) for duplicate prevention
 - `receiving_lines`: Stores receiving voucher line items with item number, item name, quantity, cost, linked to vouchers via foreign key with cascade delete
 - `upload_history`: Tracks file upload operations with success/failure statistics
-- `users`: User management for authentication (prepared but not fully implemented)
+- `users`: Stores user profiles with Replit Auth ID, email, name, and profile image
+- `sessions`: Stores Express session data for authenticated users with automatic expiry management
 
 The database uses Drizzle ORM for type-safe queries and schema management, with automatic migration support.
 
