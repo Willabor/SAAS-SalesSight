@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, numeric, date, timestamp, boolean, serial } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, numeric, date, timestamp, boolean, serial, unique } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -79,7 +79,7 @@ export const receivingVouchers = pgTable("receiving_vouchers", {
   fileName: text("file_name"),
   uploadedAt: timestamp("uploaded_at").defaultNow(),
 }, (table) => ({
-  uniqueVoucher: sql`UNIQUE(${table.voucherNumber}, ${table.store}, ${table.date})`,
+  uniqueVoucher: unique().on(table.voucherNumber, table.store, table.date),
 }));
 
 export const receivingLines = pgTable("receiving_lines", {
@@ -95,6 +95,7 @@ export const receivingLines = pgTable("receiving_lines", {
 // Relations
 export const itemListRelations = relations(itemList, ({ many }) => ({
   transactions: many(salesTransactions),
+  receivingLines: many(receivingLines),
 }));
 
 export const salesTransactionsRelations = relations(salesTransactions, ({ one }) => ({
@@ -112,6 +113,10 @@ export const receivingLinesRelations = relations(receivingLines, ({ one }) => ({
   voucher: one(receivingVouchers, {
     fields: [receivingLines.voucherId],
     references: [receivingVouchers.id],
+  }),
+  item: one(itemList, {
+    fields: [receivingLines.itemNumber],
+    references: [itemList.itemNumber],
   }),
 }));
 
