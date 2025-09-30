@@ -6,11 +6,12 @@ The system now includes three major workflows and comprehensive analytics:
 1. **Item List Management** (ENHANCED): Upload and manage product inventory data with advanced features:
    - View all 24 database columns with customizable column visibility
    - Server-side filtering by category, gender, and vendor across entire database (35K+ items)
-   - Sortable columns with visual indicators
+   - Server-side sorting on all columns across entire database (not just current page)
    - Export to CSV (all items or filtered results) - operates on entire database
    - Real-time statistics cards (inventory value, potential profit, low stock alerts) - calculated from entire database
    - Advanced search across multiple fields
    - New API endpoints: `/api/stats/item-list-enhanced`, `/api/item-list/filter-options`, `/api/item-list/export`
+   - Enhanced `/api/item-list` endpoint with sorting and filtering parameters
 2. **Sales Data Processing**: Process sales transactions with duplicate detection
 3. **Receiving History**: Process QuickBooks receiving vouchers with format & consolidate, flatten operations, voucher viewer with search capabilities, and automatic handling of QuickBooks calculation bugs and reversals
 4. **Sales & Inventory Analytics**: Advanced analytics including sales insights and inventory turnover reporting with dead stock identification, overstock/understock analysis, and category-level inventory metrics
