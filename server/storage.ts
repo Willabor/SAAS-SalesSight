@@ -57,6 +57,9 @@ export interface IStorage {
     byItem: Array<{ sku: string; itemName: string; totalSales: number; totalRevenue: string; vendorName: string | null; category: string | null }>;
     byMonth: Array<{ month: string; totalRevenue: string; transactionCount: number }>;
     byYear: Array<{ year: string; totalRevenue: string; transactionCount: number }>;
+    byCategory: Array<{ category: string; totalSales: number; totalRevenue: string; transactionCount: number; avgPrice: string }>;
+    inventoryAge: Array<{ ageGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
+    recentInventory: Array<{ recencyGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
   }>;
   
   // Upload History operations
@@ -312,6 +315,9 @@ export class DatabaseStorage implements IStorage {
     byItem: Array<{ sku: string; itemName: string; totalSales: number; totalRevenue: string; vendorName: string | null; category: string | null }>;
     byMonth: Array<{ month: string; totalRevenue: string; transactionCount: number }>;
     byYear: Array<{ year: string; totalRevenue: string; transactionCount: number }>;
+    byCategory: Array<{ category: string; totalSales: number; totalRevenue: string; transactionCount: number; avgPrice: string }>;
+    inventoryAge: Array<{ ageGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
+    recentInventory: Array<{ recencyGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
   }> {
     // Sales by store
     const byStore = await db
@@ -362,6 +368,82 @@ export class DatabaseStorage implements IStorage {
       .groupBy(sql`EXTRACT(YEAR FROM ${salesTransactions.date})`)
       .orderBy(sql`EXTRACT(YEAR FROM ${salesTransactions.date}) DESC`);
 
+    // Sales by category
+    const byCategory = await db
+      .select({
+        category: sql<string>`COALESCE(${itemList.category}, 'Uncategorized')`,
+        totalSales: count(salesTransactions.id),
+        totalRevenue: sum(salesTransactions.price),
+        transactionCount: sql<number>`COUNT(DISTINCT ${salesTransactions.receiptNumber})`,
+        avgPrice: sql<string>`AVG(${salesTransactions.price})`,
+      })
+      .from(salesTransactions)
+      .leftJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .groupBy(sql`COALESCE(${itemList.category}, 'Uncategorized')`)
+      .orderBy(desc(sum(salesTransactions.price)));
+
+    // Inventory age analysis (based on creation date)
+    const inventoryAge = await db
+      .select({
+        ageGroup: sql<string>`
+          CASE 
+            WHEN ${itemList.creationDate} IS NULL THEN 'Unknown'
+            WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '3 months' THEN '0-3 months'
+            WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '6 months' THEN '3-6 months'
+            WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '1 year' THEN '6-12 months'
+            WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '2 years' THEN '1-2 years'
+            ELSE '2+ years'
+          END
+        `,
+        totalSales: count(salesTransactions.id),
+        totalRevenue: sum(salesTransactions.price),
+        itemCount: sql<number>`COUNT(DISTINCT ${salesTransactions.sku})`,
+      })
+      .from(salesTransactions)
+      .leftJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .groupBy(sql`
+        CASE 
+          WHEN ${itemList.creationDate} IS NULL THEN 'Unknown'
+          WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '3 months' THEN '0-3 months'
+          WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '6 months' THEN '3-6 months'
+          WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '1 year' THEN '6-12 months'
+          WHEN ${itemList.creationDate} >= CURRENT_DATE - INTERVAL '2 years' THEN '1-2 years'
+          ELSE '2+ years'
+        END
+      `)
+      .orderBy(desc(sum(salesTransactions.price)));
+
+    // Recent inventory performance (based on last received)
+    const recentInventory = await db
+      .select({
+        recencyGroup: sql<string>`
+          CASE 
+            WHEN ${itemList.lastRcvd} IS NULL THEN 'Never Received'
+            WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '1 month' THEN 'Last Month'
+            WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '3 months' THEN '1-3 months ago'
+            WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '6 months' THEN '3-6 months ago'
+            WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '1 year' THEN '6-12 months ago'
+            ELSE '1+ year ago'
+          END
+        `,
+        totalSales: count(salesTransactions.id),
+        totalRevenue: sum(salesTransactions.price),
+        itemCount: sql<number>`COUNT(DISTINCT ${salesTransactions.sku})`,
+      })
+      .from(salesTransactions)
+      .leftJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .groupBy(sql`
+        CASE 
+          WHEN ${itemList.lastRcvd} IS NULL THEN 'Never Received'
+          WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '1 month' THEN 'Last Month'
+          WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '3 months' THEN '1-3 months ago'
+          WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '6 months' THEN '3-6 months ago'
+          WHEN ${itemList.lastRcvd} >= CURRENT_DATE - INTERVAL '1 year' THEN '6-12 months ago'
+          ELSE '1+ year ago'
+        END
+      `)
+      .orderBy(desc(sum(salesTransactions.price)));
+
     return {
       byStore: byStore.map(s => ({
         store: s.store || 'Unknown',
@@ -386,6 +468,25 @@ export class DatabaseStorage implements IStorage {
         year: y.year || 'Unknown',
         totalRevenue: y.totalRevenue || '0',
         transactionCount: y.transactionCount,
+      })),
+      byCategory: byCategory.map(c => ({
+        category: c.category || 'Uncategorized',
+        totalSales: c.totalSales,
+        totalRevenue: c.totalRevenue || '0',
+        transactionCount: c.transactionCount,
+        avgPrice: c.avgPrice || '0',
+      })),
+      inventoryAge: inventoryAge.map(a => ({
+        ageGroup: a.ageGroup || 'Unknown',
+        totalSales: a.totalSales,
+        totalRevenue: a.totalRevenue || '0',
+        itemCount: a.itemCount,
+      })),
+      recentInventory: recentInventory.map(r => ({
+        recencyGroup: r.recencyGroup || 'Unknown',
+        totalSales: r.totalSales,
+        totalRevenue: r.totalRevenue || '0',
+        itemCount: r.itemCount,
       })),
     };
   }

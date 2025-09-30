@@ -24,7 +24,10 @@ import {
   Calendar,
   DollarSign,
   ShoppingCart,
-  BarChart3
+  BarChart3,
+  Tag,
+  Clock,
+  Truck
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -52,6 +55,25 @@ interface SalesInsights {
     year: string; 
     totalRevenue: string; 
     transactionCount: number;
+  }>;
+  byCategory: Array<{
+    category: string;
+    totalSales: number;
+    totalRevenue: string;
+    transactionCount: number;
+    avgPrice: string;
+  }>;
+  inventoryAge: Array<{
+    ageGroup: string;
+    totalSales: number;
+    totalRevenue: string;
+    itemCount: number;
+  }>;
+  recentInventory: Array<{
+    recencyGroup: string;
+    totalSales: number;
+    totalRevenue: string;
+    itemCount: number;
   }>;
 }
 
@@ -222,6 +244,141 @@ export default function SalesInsightsPage() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Sales by Category */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Tag className="w-5 h-5" />
+                  Sales by Category
+                </CardTitle>
+                <CardDescription>
+                  Product category performance analysis
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {insights.byCategory && insights.byCategory.length > 0 ? (
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Category</TableHead>
+                          <TableHead className="text-right">Units Sold</TableHead>
+                          <TableHead className="text-right">Revenue</TableHead>
+                          <TableHead className="text-right">Avg Price</TableHead>
+                          <TableHead className="text-right">Transactions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {insights.byCategory.slice(0, 15).map((category, index) => (
+                          <TableRow key={index} data-testid={`row-category-${index}`}>
+                            <TableCell className="font-medium">
+                              <Badge variant="secondary">{category.category}</Badge>
+                            </TableCell>
+                            <TableCell className="text-right">{formatNumber(category.totalSales)}</TableCell>
+                            <TableCell className="text-right font-semibold text-green-600 dark:text-green-500">
+                              {formatCurrency(category.totalRevenue)}
+                            </TableCell>
+                            <TableCell className="text-right">{formatCurrency(category.avgPrice)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(category.transactionCount)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-center py-8 text-muted-foreground">No category data available</p>
+                )}
+                {insights.byCategory && insights.byCategory.length > 15 && (
+                  <p className="text-sm text-muted-foreground mt-4 text-center">
+                    Showing top 15 categories out of {insights.byCategory.length} total
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Inventory Analytics Grid */}
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Inventory Age Analysis */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Clock className="w-5 h-5" />
+                    Inventory Age Analysis
+                  </CardTitle>
+                  <CardDescription>
+                    Sales performance by inventory age
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {insights.inventoryAge && insights.inventoryAge.length > 0 ? (
+                    <div className="space-y-3">
+                      {insights.inventoryAge.map((age, index) => (
+                        <div 
+                          key={index} 
+                          className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
+                          data-testid={`inventory-age-${index}`}
+                        >
+                          <div>
+                            <p className="font-medium">{age.ageGroup}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {formatNumber(age.totalSales)} units • {formatNumber(age.itemCount)} unique items
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-semibold text-green-600 dark:text-green-500">
+                              {formatCurrency(age.totalRevenue)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-center py-8 text-muted-foreground">No inventory age data available</p>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Recent Inventory Performance */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Truck className="w-5 h-5" />
+                    Recent Inventory Performance
+                  </CardTitle>
+                  <CardDescription>
+                    Sales by last received date
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {insights.recentInventory && insights.recentInventory.length > 0 ? (
+                    <div className="space-y-3">
+                      {insights.recentInventory.map((recency, index) => (
+                        <div 
+                          key={index} 
+                          className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
+                          data-testid={`recent-inventory-${index}`}
+                        >
+                          <div>
+                            <p className="font-medium">{recency.recencyGroup}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {formatNumber(recency.totalSales)} units • {formatNumber(recency.itemCount)} unique items
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-semibold text-green-600 dark:text-green-500">
+                              {formatCurrency(recency.totalRevenue)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-center py-8 text-muted-foreground">No recent inventory data available</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
             {/* Time-based Analytics Grid */}
             <div className="grid md:grid-cols-2 gap-6">
