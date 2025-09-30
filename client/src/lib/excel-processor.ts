@@ -332,7 +332,7 @@ export async function formatReceivingFile(file: File, onProgress?: (status: stri
  * - Handle negative quantities (reversals)
  * - Calculate corrected totals
  */
-export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?: (status: string) => void): Promise<{
+export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?: (status: string, percentage?: number) => void): Promise<{
   vouchers: ReceivingVoucher[];
   stats: {
     totalVouchers: number;
@@ -344,7 +344,7 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
   };
 }> {
   try {
-    onProgress?.('Flattening voucher data from consolidated sheet...');
+    onProgress?.('Flattening voucher data from consolidated sheet...', 0);
     
     const allVouchers: ReceivingVoucher[] = [];
     let currentVoucher: ReceivingVoucher | null = null;
@@ -352,8 +352,14 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+    const totalRows = range.e.r;
     
     for (let row = 1; row <= range.e.r; row++) {
+      // Report progress every 50 rows to avoid too many updates
+      if (row % 50 === 0 || row === range.e.r) {
+        const percentage = Math.round((row / totalRows) * 100);
+        onProgress?.(`Processing row ${row} of ${totalRows}...`, percentage);
+      }
       const getCell = (col: number) => {
         const addr = XLSX.utils.encode_cell({ r: row, c: col });
         return sheet[addr]?.v;
@@ -424,6 +430,7 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     });
     
     // Calculate statistics
+    onProgress?.('Calculating statistics...', 100);
     const uniqueVendors = new Set(allVouchers.map(v => v.vendor)).size;
     const uniqueStores = new Set(allVouchers.map(v => v.store)).size;
     const totalLines = allVouchers.reduce((sum, v) => sum + v.lines.length, 0);
@@ -439,6 +446,7 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
       qbMismatchCount
     };
     
+    onProgress?.(`Completed! Processed ${allVouchers.length} vouchers.`, 100);
     return { vouchers: allVouchers, stats };
   } catch (error) {
     console.error('Flattening error:', error);

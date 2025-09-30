@@ -56,6 +56,7 @@ export default function ReceivingHistoryPage() {
   const [flattenedData, setFlattenedData] = useState<ReceivingVoucher[] | null>(null);
   const [flattenStats, setFlattenStats] = useState<any>(null);
   const [processingStatus, setProcessingStatus] = useState<string>("");
+  const [processingProgress, setProcessingProgress] = useState<number>(0);
   const [uploadResponse, setUploadResponse] = useState<UploadResponse | null>(null);
   const { toast } = useToast();
 
@@ -109,10 +110,17 @@ export default function ReceivingHistoryPage() {
 
     try {
       setProcessingStatus("Flattening voucher data...");
-      const result = await flattenReceivingData(processedWorkbook, setProcessingStatus);
+      setProcessingProgress(0);
+      const result = await flattenReceivingData(processedWorkbook, (status, percentage) => {
+        setProcessingStatus(status);
+        if (percentage !== undefined) {
+          setProcessingProgress(percentage);
+        }
+      });
       setFlattenedData(result.vouchers);
       setFlattenStats(result.stats);
       setCurrentStep("flatten");
+      setProcessingProgress(100);
       toast({
         title: "Flatten Complete",
         description: `Processed ${result.stats.totalVouchers} vouchers with ${result.stats.totalLines} line items.`,
@@ -492,9 +500,19 @@ export default function ReceivingHistoryPage() {
             )}
 
             {processingStatus && (
-              <p className="text-sm text-muted-foreground text-center" data-testid="text-processing-status">
-                {processingStatus}
-              </p>
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground text-center" data-testid="text-processing-status">
+                  {processingStatus}
+                </p>
+                {processingProgress >= 0 && processingProgress <= 100 && currentStep === "format" && (
+                  <div className="space-y-1">
+                    <Progress value={processingProgress} className="h-2" data-testid="progress-flatten" />
+                    <p className="text-xs text-center text-muted-foreground" data-testid="text-progress-percentage">
+                      {processingProgress}% complete
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
