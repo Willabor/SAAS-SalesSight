@@ -3,6 +3,8 @@ import {
   itemList, 
   salesTransactions, 
   uploadHistory,
+  receivingVouchers,
+  receivingLines,
   type User, 
   type InsertUser,
   type ItemList,
@@ -10,10 +12,14 @@ import {
   type SalesTransaction,
   type InsertSalesTransaction,
   type UploadHistory,
-  type InsertUploadHistory
+  type InsertUploadHistory,
+  type ReceivingVoucher,
+  type InsertReceivingVoucher,
+  type ReceivingLine,
+  type InsertReceivingLine
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql, count, sum, ilike, or } from "drizzle-orm";
+import { eq, desc, sql, count, sum, ilike, or, and } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -75,6 +81,41 @@ export interface IStorage {
   // Upload History operations
   createUploadHistory(history: InsertUploadHistory): Promise<UploadHistory>;
   getRecentUploads(limit?: number): Promise<UploadHistory[]>;
+  
+  // Receiving History operations
+  upsertReceivingVoucher(voucher: InsertReceivingVoucher): Promise<ReceivingVoucher>;
+  bulkInsertReceivingLines(lines: InsertReceivingLine[]): Promise<number>;
+  getExistingVouchers(vouchers: Array<{
+    voucherNumber: string;
+    store: string;
+    date: string;
+  }>): Promise<Set<string>>;
+  getReceivingVouchers(params?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    store?: string;
+    voucherNumber?: string;
+    exactMatch?: boolean;
+  }): Promise<{
+    vouchers: ReceivingVoucher[];
+    total: number;
+  }>;
+  getVoucherByIdWithLines(id: number): Promise<{
+    voucher: ReceivingVoucher;
+    lines: ReceivingLine[];
+  } | null>;
+  getReceivingStats(): Promise<{
+    totalVouchers: number;
+    totalLines: number;
+    totalCorrectedValue: string;
+    totalQty: number;
+    uniqueStores: number;
+    uniqueVendors: number;
+    qbMismatchCount: number;
+  }>;
+  deleteReceivingVoucher(id: number): Promise<boolean>;
+  deleteAllReceivingVouchers(): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -587,6 +628,210 @@ export class DatabaseStorage implements IStorage {
       .from(uploadHistory)
       .orderBy(desc(uploadHistory.uploadedAt))
       .limit(limit);
+  }
+
+  async upsertReceivingVoucher(voucher: InsertReceivingVoucher): Promise<ReceivingVoucher> {
+    const [upsertedVoucher] = await db
+      .insert(receivingVouchers)
+      .values(voucher)
+      .onConflictDoUpdate({
+        target: [receivingVouchers.voucherNumber, receivingVouchers.store, receivingVouchers.date],
+        set: {
+          vendor: voucher.vendor,
+          type: voucher.type,
+          qbTotal: voucher.qbTotal,
+          correctedTotal: voucher.correctedTotal,
+          totalQty: voucher.totalQty,
+          time: voucher.time,
+          fileName: voucher.fileName,
+        },
+      })
+      .returning();
+    return upsertedVoucher;
+  }
+
+  async bulkInsertReceivingLines(lines: InsertReceivingLine[]): Promise<number> {
+    if (lines.length === 0) return 0;
+    
+    const result = await db
+      .insert(receivingLines)
+      .values(lines)
+      .returning();
+    
+    return result.length;
+  }
+
+  async getExistingVouchers(vouchers: Array<{
+    voucherNumber: string;
+    store: string;
+    date: string;
+  }>): Promise<Set<string>> {
+    if (vouchers.length === 0) return new Set();
+    
+    // Deduplicate vouchers before query
+    const uniqueVouchers = Array.from(
+      new Map(vouchers.map(v => [`${v.voucherNumber}|${v.store}|${v.date}`, v])).values()
+    );
+    
+    const existingKeys = new Set<string>();
+    const chunkSize = 500;
+    
+    for (let i = 0; i < uniqueVouchers.length; i += chunkSize) {
+      const chunk = uniqueVouchers.slice(i, i + chunkSize);
+      
+      // Build OR conditions for NULL-safe comparison
+      const orConditions = chunk.map(v => 
+        and(
+          sql`${receivingVouchers.voucherNumber} IS NOT DISTINCT FROM ${v.voucherNumber}`,
+          sql`${receivingVouchers.store} IS NOT DISTINCT FROM ${v.store}`,
+          sql`${receivingVouchers.date} IS NOT DISTINCT FROM ${v.date}`
+        )
+      );
+      
+      const existing = await db
+        .select({
+          voucherNumber: receivingVouchers.voucherNumber,
+          store: receivingVouchers.store,
+          date: receivingVouchers.date,
+        })
+        .from(receivingVouchers)
+        .where(or(...orConditions));
+      
+      // Add to set with composite key
+      existing.forEach(v => {
+        existingKeys.add(`${v.voucherNumber}|${v.store}|${v.date}`);
+      });
+    }
+    
+    return existingKeys;
+  }
+
+  async getReceivingVouchers(params: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    store?: string;
+    voucherNumber?: string;
+    exactMatch?: boolean;
+  } = {}): Promise<{
+    vouchers: ReceivingVoucher[];
+    total: number;
+  }> {
+    const { limit = 50, offset = 0, search, store, voucherNumber, exactMatch = false } = params;
+    
+    let vouchers: ReceivingVoucher[];
+    let total: number;
+    
+    // Build filters
+    const filters = [];
+    
+    if (store) {
+      filters.push(eq(receivingVouchers.store, store));
+    }
+    
+    if (voucherNumber) {
+      if (exactMatch) {
+        filters.push(eq(receivingVouchers.voucherNumber, voucherNumber));
+      } else {
+        filters.push(ilike(receivingVouchers.voucherNumber, `%${voucherNumber}%`));
+      }
+    }
+    
+    if (search) {
+      filters.push(or(
+        ilike(receivingVouchers.voucherNumber, `%${search}%`),
+        ilike(receivingVouchers.vendor, `%${search}%`),
+        ilike(receivingVouchers.store, `%${search}%`)
+      ));
+    }
+    
+    const whereClause = filters.length > 0 ? and(...filters) : undefined;
+    
+    if (whereClause) {
+      const [vouchersResult, [countResult]] = await Promise.all([
+        db.select().from(receivingVouchers).where(whereClause).orderBy(desc(receivingVouchers.date)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(receivingVouchers).where(whereClause)
+      ]);
+      
+      vouchers = vouchersResult;
+      total = countResult.count;
+    } else {
+      const [vouchersResult, [countResult]] = await Promise.all([
+        db.select().from(receivingVouchers).orderBy(desc(receivingVouchers.date)).limit(limit).offset(offset),
+        db.select({ count: count() }).from(receivingVouchers)
+      ]);
+      
+      vouchers = vouchersResult;
+      total = countResult.count;
+    }
+    
+    return { vouchers, total };
+  }
+
+  async getVoucherByIdWithLines(id: number): Promise<{
+    voucher: ReceivingVoucher;
+    lines: ReceivingLine[];
+  } | null> {
+    const [voucher] = await db
+      .select()
+      .from(receivingVouchers)
+      .where(eq(receivingVouchers.id, id));
+    
+    if (!voucher) return null;
+    
+    const lines = await db
+      .select()
+      .from(receivingLines)
+      .where(eq(receivingLines.voucherId, id));
+    
+    return { voucher, lines };
+  }
+
+  async getReceivingStats(): Promise<{
+    totalVouchers: number;
+    totalLines: number;
+    totalCorrectedValue: string;
+    totalQty: number;
+    uniqueStores: number;
+    uniqueVendors: number;
+    qbMismatchCount: number;
+  }> {
+    const [voucherStats] = await db
+      .select({
+        totalVouchers: count(receivingVouchers.id),
+        totalCorrectedValue: sum(receivingVouchers.correctedTotal),
+        totalQty: sum(receivingVouchers.totalQty),
+        uniqueStores: sql<number>`COUNT(DISTINCT ${receivingVouchers.store})`,
+        uniqueVendors: sql<number>`COUNT(DISTINCT ${receivingVouchers.vendor})`,
+        qbMismatchCount: sql<number>`COUNT(CASE WHEN ${receivingVouchers.qbTotal} != ${receivingVouchers.correctedTotal} THEN 1 END)`,
+      })
+      .from(receivingVouchers);
+    
+    const [lineStats] = await db
+      .select({
+        totalLines: count(receivingLines.id),
+      })
+      .from(receivingLines);
+    
+    return {
+      totalVouchers: voucherStats.totalVouchers,
+      totalLines: lineStats.totalLines,
+      totalCorrectedValue: voucherStats.totalCorrectedValue?.toString() || '0',
+      totalQty: Number(voucherStats.totalQty) || 0,
+      uniqueStores: voucherStats.uniqueStores,
+      uniqueVendors: voucherStats.uniqueVendors,
+      qbMismatchCount: voucherStats.qbMismatchCount,
+    };
+  }
+
+  async deleteReceivingVoucher(id: number): Promise<boolean> {
+    const result = await db.delete(receivingVouchers).where(eq(receivingVouchers.id, id));
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async deleteAllReceivingVouchers(): Promise<number> {
+    const result = await db.delete(receivingVouchers);
+    return result.rowCount || 0;
   }
 }
 

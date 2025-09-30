@@ -1,0 +1,1173 @@
+# Technical Documentation: Receiving History Processing Module
+
+## Project Overview
+Add a complete third processing workflow to the existing Sales Data Processor app to handle QuickBooks Receiving History exports. This module formats, consolidates, flattens, and corrects QuickBooks data quality issues.
+
+---
+
+## 1. System Architecture
+
+### 1.1 New State Variables
+Add the following state variables to the main component:
+
+```javascript
+// Receiving states
+const [receivingFile, setReceivingFile] = useState(null);
+const [receivingStep, setReceivingStep] = useState('upload');
+const [receivingStatus, setReceivingStatus] = useState('');
+const [receivingFormattedWB, setReceivingFormattedWB] = useState(null);
+const [receivingStats, setReceivingStats] = useState(null);
+const [receivingCSV, setReceivingCSV] = useState('');
+const [receivingBusinessStats, setReceivingBusinessStats] = useState(null);
+const [receivingFlatData, setReceivingFlatData] = useState(null);
+
+// Voucher viewer states
+const [voucherFilter, setVoucherFilter] = useState('');
+const [voucherSearchInput, setVoucherSearchInput] = useState('');
+const [storeFilter, setStoreFilter] = useState('');
+const [exactMatch, setExactMatch] = useState(true);
+const [filteredVouchers, setFilteredVouchers] = useState([]);
+const [availableStores, setAvailableStores] = useState([]);
+```
+
+### 1.2 Import Requirements
+```javascript
+import React, { useState, useEffect } from 'react';
+import { Download, Upload, CheckCircle2, FileSpreadsheet, ArrowRight, Package, Search, Filter } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import Papa from 'papaparse';
+import _ from 'lodash';
+```
+
+---
+
+## 2. Tab Navigation System
+
+### 2.1 Tab Structure
+Add a third tab to the existing tab navigation:
+
+```javascript
+<button
+  onClick={() => setActiveTab('receiving')}
+  className={`px-6 py-3 font-semibold transition-colors ${
+    activeTab === 'receiving'
+      ? 'text-indigo-600 border-b-2 border-indigo-600'
+      : 'text-gray-500 hover:text-gray-700'
+  }`}
+>
+  <div className="flex items-center gap-2">
+    <Package className="w-5 h-5" />
+    Receiving Data
+  </div>
+</button>
+```
+
+### 2.2 Conditional Voucher Viewer Tab
+Add after the Receiving tab (only shows when data is processed):
+
+```javascript
+{receivingFlatData && (
+  <button
+    onClick={() => setActiveTab('voucher-viewer')}
+    className={`px-6 py-3 font-semibold transition-colors ${
+      activeTab === 'voucher-viewer'
+        ? 'text-indigo-600 border-b-2 border-indigo-600'
+        : 'text-gray-500 hover:text-gray-700'
+    }`}
+  >
+    <div className="flex items-center gap-2">
+      <Search className="w-5 h-5" />
+      Voucher Viewer
+    </div>
+  </button>
+)}
+```
+
+---
+
+## 3. Step 1: Format & Consolidate Function
+
+### 3.1 File Upload Handler
+```javascript
+const handleReceivingFileChange = (e) => {
+  if (e.target.files && e.target.files[0]) {
+    setReceivingFile(e.target.files[0]);
+    setReceivingStep('ready-to-format');
+  }
+};
+```
+
+### 3.2 Format Function Logic
+
+**Purpose:** Consolidate multiple sheets, delete specific rows/columns, add headers
+
+**Input:** QuickBooks Receiving History Excel file with multiple "Receiving Voucher Detail" sheets
+
+**Process:**
+1. Read all sheets in REVERSE order (Detail_5 → Detail_4 → Detail_3 → Detail_2 → Detail)
+2. Delete top 5 rows from each sheet
+3. Delete columns A, C, E, G, I, K, M, O (alternating columns)
+4. Consolidate all sheets into ONE continuous sheet
+5. Skip header rows on subsequent sheets (keep only first header)
+6. Insert 4 new empty columns after Voucher # (columns D, E, F, G)
+7. Add headers: "Item #", "Item Name", "Qty", "cost"
+8. Rename "Total" to "Total cost"
+
+**Column Mapping:**
+```
+BEFORE deletion (original QB export):
+A [DELETE], B (Date), C [DELETE], D (Store), E [DELETE], F (Voucher #), 
+G [DELETE], H (Type), I [DELETE], J (Vendor), K [DELETE], L (Total Qty), 
+M [DELETE], N (Total), O [DELETE], P (Time)
+
+AFTER deletion:
+0 (Date), 1 (Store), 2 (Voucher #), 3 (Type), 4 (Vendor), 5 (Total Qty), 
+6 (Total), 7 (Time)
+
+AFTER inserting 4 columns at position 3:
+0 (Date), 1 (Store), 2 (Voucher #), 3 (Item #), 4 (Item Name), 5 (Qty), 
+6 (cost), 7 (Type), 8 (Vendor), 9 (Total Qty), 10 (Total cost), 11 (Time)
+```
+
+**Implementation:**
+```javascript
+const formatReceivingFile = async () => {
+  if (!receivingFile) return;
+  setReceivingStep('formatting');
+  setReceivingStatus('Reading file...');
+
+  try {
+    const arrayBuffer = await receivingFile.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+    
+    setReceivingStatus('Formatting and consolidating sheets...');
+    const processedSheets = [];
+    let totalRowsDeleted = 0;
+    const consolidatedSheet = {};
+    let currentRowIndex = 0;
+    let maxCol = 0;
+    
+    // Reverse the sheet order to process in correct chronological order
+    const sheetsInOrder = [...workbook.SheetNames].reverse();
+    
+    // Process each sheet in reverse order
+    sheetsInOrder.forEach((sheetName, sheetIdx) => {
+      if (!/^Receiving Voucher Detail/i.test(sheetName)) return;
+      
+      const worksheet = workbook.Sheets[sheetName];
+      const range = XLSX.utils.decode_range(worksheet['!ref']);
+      
+      totalRowsDeleted += 5;
+      
+      // Delete top 5 rows and columns in one pass
+      const colMap = {};
+      let newCol = 0;
+      for (let oldCol = 0; oldCol <= range.e.c; oldCol++) {
+        if (![0, 2, 4, 6, 8, 10, 12, 14].includes(oldCol)) {
+          colMap[oldCol] = newCol++;
+        }
+      }
+      
+      maxCol = Math.max(maxCol, newCol - 1);
+      
+      for (let R = range.s.r + 5; R <= range.e.r; R++) {
+        const localRow = R - (range.s.r + 5);
+        
+        // Skip header row on subsequent sheets
+        if (sheetIdx > 0 && localRow === 0) continue;
+        
+        for (let C = range.s.c; C <= range.e.c; C++) {
+          if (colMap[C] !== undefined) {
+            const oldAddr = XLSX.utils.encode_cell({r: R, c: C});
+            const cell = worksheet[oldAddr];
+            
+            if (cell) {
+              let targetCol = colMap[C];
+              
+              // Insert 4 empty columns after Voucher # (column 2)
+              if (targetCol >= 3) {
+                targetCol += 4;
+              }
+              
+              const newAddr = XLSX.utils.encode_cell({r: currentRowIndex, c: targetCol});
+              consolidatedSheet[newAddr] = cell;
+            }
+          }
+        }
+        currentRowIndex++;
+      }
+      
+      processedSheets.push(sheetName);
+    });
+    
+    // Update maxCol to account for the 4 new columns
+    maxCol += 4;
+    
+    // Add headers for the new columns
+    consolidatedSheet['D1'] = {t: 's', v: 'Item #'};
+    consolidatedSheet['E1'] = {t: 's', v: 'Item Name'};
+    consolidatedSheet['F1'] = {t: 's', v: 'Qty'};
+    consolidatedSheet['G1'] = {t: 's', v: 'cost'};
+    
+    // Update "Total" header to "Total cost"
+    consolidatedSheet['K1'] = {t: 's', v: 'Total cost'};
+    
+    // Set the range
+    consolidatedSheet['!ref'] = XLSX.utils.encode_range({
+      s: {r: 0, c: 0},
+      e: {r: currentRowIndex - 1, c: maxCol}
+    });
+    
+    // Create new workbook
+    const newWorkbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(newWorkbook, consolidatedSheet, 'Consolidated Receiving Data');
+    
+    setReceivingStats({
+      sheetsProcessed: processedSheets.length,
+      rowsDeleted: totalRowsDeleted,
+      sheetNames: processedSheets,
+      totalRows: currentRowIndex
+    });
+    
+    setReceivingFormattedWB(newWorkbook);
+    setReceivingStep('ready-to-flatten');
+    
+  } catch (error) {
+    console.error('Formatting error:', error);
+    setReceivingStatus('Error: ' + error.message);
+    setReceivingStep('ready-to-format');
+    alert('Error formatting file: ' + error.message);
+  }
+};
+```
+
+**Output:** Single consolidated Excel sheet with proper headers and empty columns ready for flattening
+
+---
+
+## 4. Step 2: Flatten Function
+
+### 4.1 Purpose
+Transform hierarchical voucher structure into flat table (one row per line item)
+
+### 4.2 Data Structure Recognition
+
+**Voucher Header Row Pattern:**
+- Column A (Date): Contains Date object
+- Column B (Store): Store code (e.g., "MM", "HQ", "GM")
+- Column C (Voucher #): Numeric voucher number
+- Columns D-G: Empty (placeholder columns added in Step 1)
+- Column H (Type): "Receiving" or other transaction type
+- Column I (Vendor): Vendor name
+- Column J (Total Qty): Total quantity for entire voucher
+- Column K (Total cost): Total cost (BUGGY - see section 4.5)
+- Column L (Time): Time of transaction
+
+**Line Item Row Pattern:**
+- Column A (Date): Empty (no date)
+- Column B: Item # (SKU)
+- Column C: Item Name
+- Columns D-G: Empty
+- Column H: Quantity for this line item
+- Column I: Unit cost for this line item
+- Remaining columns: Empty or zero
+
+### 4.3 QuickBooks Bug Handling
+
+**The Bug:**
+When users manually update quantity after scanning an item, QuickBooks:
+1. Adds first item cost to voucher total (1 × cost)
+2. Quantity gets manually updated to higher number (e.g., 5)
+3. **QuickBooks FAILS to recalculate the voucher total**
+4. Result: Voucher "Total cost" is incorrect
+
+**Example:**
+- Item scanned once: Cost = $18
+- QuickBooks adds $18 to voucher total
+- User manually changes Qty to 6
+- Voucher total stays at $18 (WRONG!)
+- Correct total should be: 6 × $18 = $108
+
+**Solution:**
+Always use absolute value of unit cost and calculate totals from line items
+
+### 4.4 Negative Quantity Handling
+
+**Pattern:** Returns/Reversals have negative quantities
+
+**Logic:**
+- Use `Math.abs()` on unit cost (always positive)
+- Keep quantity sign (negative for returns)
+- Line total = Qty × |Cost| (preserves negative)
+- Change transaction Type to "Reversal" when Qty < 0
+
+### 4.5 Implementation
+
+```javascript
+const flattenReceivingData = async () => {
+  if (!receivingFormattedWB) return;
+  setReceivingStep('flattening');
+  setReceivingStatus('Flattening voucher data from consolidated sheet...');
+
+  try {
+    let allVouchers = [];
+    let currentVoucher = null;
+    
+    const sheetName = receivingFormattedWB.SheetNames[0];
+    const sheet = receivingFormattedWB.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    
+    for (let row = 1; row <= range.e.r; row++) {
+      const getCell = (col) => {
+        const addr = XLSX.utils.encode_cell({r: row, c: col});
+        return sheet[addr]?.v;
+      };
+      
+      const A = getCell(0); // Date
+      const B = getCell(1); // Store or Item #
+      const C = getCell(2); // Voucher # or Item Name
+      const H = getCell(7); // Type or Qty
+      const I = getCell(8); // Vendor or Unit Cost
+      const J = getCell(9); // Total Qty
+      const K = getCell(10); // Total cost (BUGGY)
+      const L = getCell(11); // Time
+      
+      // Voucher header detection
+      if (A && typeof A === 'object') {
+        if (currentVoucher && currentVoucher.lineItems.length > 0) {
+          allVouchers.push(currentVoucher);
+        }
+        
+        currentVoucher = {
+          date: A instanceof Date ? A.toISOString().split('T')[0] : A,
+          store: B,
+          voucherNumber: C,
+          type: H,
+          vendor: I,
+          totalQty: J,
+          totalCost: K, // Keep QB's buggy value for reference
+          time: L instanceof Date ? L.toISOString().split('T')[1].split('.')[0] : (L ? String(L) : ''),
+          lineItems: []
+        };
+      } 
+      // Line item detection
+      else if (B && C && !A && currentVoucher) {
+        currentVoucher.lineItems.push({
+          itemNumber: B,
+          itemName: C,
+          qty: H || 0,
+          cost: I || 0
+        });
+      }
+    }
+    
+    // Don't forget last voucher
+    if (currentVoucher && currentVoucher.lineItems.length > 0) {
+      allVouchers.push(currentVoucher);
+    }
+    
+    // Flatten to array format
+    const flattenedData = [];
+    allVouchers.forEach(voucher => {
+      // Calculate CORRECT total for this voucher
+      const correctVoucherTotal = _.sumBy(voucher.lineItems, item => {
+        const absoluteCost = Math.abs(item.cost);
+        return item.qty * absoluteCost;
+      });
+      
+      voucher.lineItems.forEach(item => {
+        // Determine transaction type
+        const transactionType = item.qty < 0 ? 'Reversal' : voucher.type;
+        
+        // Use absolute cost, let quantity sign drive total
+        const absoluteCost = Math.abs(item.cost);
+        const lineTotal = item.qty * absoluteCost;
+        
+        flattenedData.push({
+          'Date': voucher.date,
+          'Store': voucher.store,
+          'Voucher #': voucher.voucherNumber,
+          'Item #': item.itemNumber,
+          'Item Name': item.itemName,
+          'Qty': item.qty,
+          'cost': absoluteCost,
+          'Type': transactionType,
+          'Vendor': voucher.vendor,
+          'Total Qty': voucher.totalQty,
+          'QuickBooks Total': voucher.totalCost,
+          'Corrected Total': correctVoucherTotal,
+          'Time': voucher.time,
+          'Line Total': lineTotal
+        });
+      });
+    });
+    
+    // Create Excel workbook with flattened data
+    const flattenedWorksheet = XLSX.utils.json_to_sheet(flattenedData);
+    const flattenedWorkbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(flattenedWorkbook, flattenedWorksheet, 'Flattened Receiving Data');
+    
+    // Store flattened data
+    setReceivingFlatData(flattenedData);
+    
+    // Get unique stores
+    const stores = [...new Set(flattenedData.map(item => item.Store))].sort();
+    setAvailableStores(stores);
+    
+    // Calculate statistics
+    const voucherTotals = _.chain(allVouchers)
+      .map(v => {
+        const calculatedTotal = _.sumBy(v.lineItems, li => {
+          const absoluteCost = Math.abs(li.cost);
+          return li.qty * absoluteCost;
+        });
+        
+        return {
+          voucherNumber: v.voucherNumber,
+          store: v.store,
+          vendor: v.vendor,
+          date: v.date,
+          declaredTotal: v.totalCost,
+          calculatedTotal: calculatedTotal,
+          difference: Math.abs(v.totalCost - calculatedTotal)
+        };
+      })
+      .value();
+    
+    const topVendors = _.chain(allVouchers)
+      .groupBy('vendor')
+      .map((vouchers, vendor) => ({
+        vendor,
+        voucherCount: vouchers.length,
+        totalCost: _.sumBy(vouchers, v => {
+          return _.sumBy(v.lineItems, li => {
+            const absoluteCost = Math.abs(li.cost);
+            return li.qty * absoluteCost;
+          });
+        }),
+        avgVoucherValue: _.meanBy(vouchers, v => {
+          return _.sumBy(v.lineItems, li => {
+            const absoluteCost = Math.abs(li.cost);
+            return li.qty * absoluteCost;
+          });
+        })
+      }))
+      .orderBy('totalCost', 'desc')
+      .take(10)
+      .value();
+
+    setReceivingCSV(Papa.unparse(flattenedData, { header: true }));
+    
+    // Store FLATTENED workbook (not formatted)
+    setReceivingFormattedWB(flattenedWorkbook);
+    
+    setReceivingBusinessStats({
+      totalVouchers: allVouchers.length,
+      totalLineItems: flattenedData.length,
+      totalCost: _.sumBy(flattenedData, item => {
+        return item.Qty * item.cost;
+      }),
+      avgVoucherValue: _.meanBy(allVouchers, v => {
+        return _.sumBy(v.lineItems, li => {
+          const absoluteCost = Math.abs(li.cost);
+          return li.qty * absoluteCost;
+        });
+      }),
+      uniqueVendors: new Set(allVouchers.map(v => v.vendor)).size,
+      uniqueStores: new Set(allVouchers.map(v => v.store)).size,
+      uniqueSKUs: new Set(flattenedData.map(d => d['Item #'])).size,
+      topVendors,
+      voucherValidation: voucherTotals.filter(v => v.difference > 0.01)
+    });
+
+    setReceivingStep('complete');
+  } catch (error) {
+    console.error('Flattening error:', error);
+    setReceivingStatus('Error: ' + error.message);
+    setReceivingStep('ready-to-flatten');
+    alert('Error flattening data: ' + error.message);
+  }
+};
+```
+
+**Output CSV Columns:**
+- Date
+- Store
+- Voucher #
+- Item #
+- Item Name
+- Qty (can be negative for reversals)
+- cost (always positive, absolute value)
+- Type (changes to "Reversal" if Qty < 0)
+- Vendor
+- Total Qty
+- QuickBooks Total (original, buggy)
+- Corrected Total (calculated correctly)
+- Time
+- Line Total (calculated: Qty × cost)
+
+---
+
+## 5. Voucher Viewer Component
+
+### 5.1 Purpose
+Interactive search and inspection tool for individual vouchers
+
+### 5.2 Features
+- Search by voucher number (exact or partial match)
+- Filter by store
+- Display voucher header details
+- Show all line items in table
+- Calculate and display correct totals
+- Highlight QuickBooks bug discrepancies
+
+### 5.3 Search Logic
+
+```javascript
+// Filter vouchers based on search
+useEffect(() => {
+  if (!receivingFlatData || !voucherFilter) {
+    setFilteredVouchers([]);
+    return;
+  }
+
+  const filtered = receivingFlatData.filter(item => {
+    const voucherNum = String(item['Voucher #']).toLowerCase();
+    const searchTerm = voucherFilter.toLowerCase();
+    
+    // Check voucher match
+    let voucherMatches = false;
+    if (exactMatch) {
+      voucherMatches = voucherNum === searchTerm;
+    } else {
+      voucherMatches = voucherNum.includes(searchTerm);
+    }
+    
+    // Check store match
+    const storeMatches = !storeFilter || item.Store === storeFilter;
+    
+    return voucherMatches && storeMatches;
+  });
+  
+  setFilteredVouchers(filtered);
+}, [voucherFilter, storeFilter, receivingFlatData, exactMatch]);
+
+const handleSearch = () => {
+  setVoucherFilter(voucherSearchInput);
+};
+
+const handleKeyPress = (e) => {
+  if (e.key === 'Enter') {
+    handleSearch();
+  }
+};
+```
+
+### 5.4 Statistics Calculator
+
+```javascript
+const getFilteredStats = () => {
+  if (filteredVouchers.length === 0) return null;
+  
+  const uniqueVouchers = new Set(filteredVouchers.map(v => v['Voucher #']));
+  
+  // Use corrected total calculation
+  const totalCost = _.sumBy(filteredVouchers, item => {
+    const absoluteCost = Math.abs(Number(item.cost));
+    return Number(item.Qty) * absoluteCost;
+  });
+  const totalQty = _.sumBy(filteredVouchers, 'Qty');
+  
+  // Get QB vs Corrected comparison
+  const firstItem = filteredVouchers[0];
+  const qbTotal = firstItem['QuickBooks Total'];
+  const correctedTotal = firstItem['Corrected Total'];
+  
+  return {
+    voucherCount: uniqueVouchers.size,
+    itemCount: filteredVouchers.length,
+    totalCost,
+    totalQty,
+    qbTotal,
+    correctedTotal,
+    avgItemCost: filteredVouchers.length > 0 ? totalCost / filteredVouchers.length : 0
+  };
+};
+```
+
+### 5.5 UI Components
+
+**Search Bar:**
+```jsx
+<div className="flex gap-3 mb-3">
+  <div className="relative flex-1">
+    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+    <input
+      type="text"
+      placeholder="Enter Voucher # (e.g., 597, 1414)..."
+      value={voucherSearchInput}
+      onChange={(e) => setVoucherSearchInput(e.target.value)}
+      onKeyPress={handleKeyPress}
+      className="w-full pl-10 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+    />
+  </div>
+  <select
+    value={storeFilter}
+    onChange={(e) => setStoreFilter(e.target.value)}
+    className="px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+  >
+    <option value="">All Stores</option>
+    {availableStores.map(store => (
+      <option key={store} value={store}>{store}</option>
+    ))}
+  </select>
+  <button
+    onClick={handleSearch}
+    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap"
+  >
+    <Search className="w-5 h-5" />
+    Search
+  </button>
+</div>
+```
+
+**QuickBooks Bug Warning:**
+```jsx
+{stats.qbTotal !== stats.correctedTotal && (
+  <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mt-4">
+    <div className="text-xs font-semibold text-yellow-800 mb-1">⚠️ QuickBooks Bug Detected</div>
+    <div className="grid grid-cols-2 gap-2 text-xs">
+      <div>
+        <span className="text-yellow-700">QB Total:</span>
+        <span className="font-semibold text-yellow-900 ml-2">${Number(stats.qbTotal).toFixed(2)}</span>
+      </div>
+      <div>
+        <span className="text-green-700">Corrected:</span>
+        <span className="font-semibold text-green-900 ml-2">${Number(stats.correctedTotal).toFixed(2)}</span>
+      </div>
+    </div>
+  </div>
+)}
+```
+
+**Items Table:**
+```jsx
+<table className="w-full">
+  <thead className="bg-gray-100 border-b border-gray-200">
+    <tr>
+      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700">Voucher #</th>
+      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700">Item #</th>
+      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700">Item Name</th>
+      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700">Qty</th>
+      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700">Unit Cost</th>
+      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700">Line Total</th>
+    </tr>
+  </thead>
+  <tbody className="divide-y divide-gray-200">
+    {filteredVouchers.map((item, idx) => {
+      const absoluteCost = Math.abs(Number(item.cost));
+      const lineTotal = Number(item.Qty) * absoluteCost;
+      return (
+        <tr key={idx} className="hover:bg-gray-50">
+          <td className="px-4 py-3 text-sm text-gray-900">{item['Voucher #']}</td>
+          <td className="px-4 py-3 text-sm text-gray-900">{item['Item #']}</td>
+          <td className="px-4 py-3 text-sm text-gray-900">{item['Item Name']}</td>
+          <td className="px-4 py-3 text-sm text-gray-900 text-right">{item.Qty}</td>
+          <td className="px-4 py-3 text-sm text-gray-900 text-right">${absoluteCost.toFixed(2)}</td>
+          <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right">
+            {lineTotal < 0 ? '-' : ''}${Math.abs(lineTotal).toFixed(2)}
+          </td>
+        </tr>
+      );
+    })}
+  </tbody>
+  <tfoot className="bg-gray-50 border-t-2 border-gray-300">
+    <tr>
+      <td colSpan="3" className="px-4 py-3 text-sm font-bold text-gray-900">TOTAL</td>
+      <td className="px-4 py-3 text-sm font-bold text-gray-900 text-right">{stats.totalQty}</td>
+      <td className="px-4 py-3 text-sm font-bold text-gray-900 text-right">-</td>
+      <td className="px-4 py-3 text-sm font-bold text-gray-900 text-right">
+        {stats.correctedTotal < 0 ? '-' : ''}${Math.abs(stats.correctedTotal).toFixed(2)}
+      </td>
+    </tr>
+  </tfoot>
+</table>
+```
+
+---
+
+## 6. Validation & Discrepancy Export
+
+### 6.1 Validation Warning Display
+
+```jsx
+{receivingBusinessStats.voucherValidation.length > 0 && (
+  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+    <h3 className="font-semibold text-yellow-900 mb-2">⚠️ Validation Warnings</h3>
+    <p className="text-sm text-yellow-800 mb-2">
+      {receivingBusinessStats.voucherValidation.length} voucher(s) have discrepancies between declared and calculated totals
+    </p>
+    <p className="text-xs text-yellow-700 mb-3">
+      <strong>Note:</strong> Discrepancies often occur when vouchers contain returns/reversals (negative quantities). 
+      Our calculation correctly handles negative values, but QuickBooks may store incorrect totals in the voucher header. 
+      Use the Voucher Viewer to inspect specific vouchers and verify the line items.
+    </p>
+    <button
+      onClick={() => {
+        try {
+          const discrepancyData = receivingBusinessStats.voucherValidation.map(v => ({
+            'Voucher #': v.voucherNumber,
+            'Store': v.store,
+            'Vendor': v.vendor,
+            'Date': v.date,
+            'Declared Total': v.declaredTotal,
+            'Calculated Total': v.calculatedTotal.toFixed(2),
+            'Difference': v.difference.toFixed(2)
+          }));
+          const csv = Papa.unparse(discrepancyData, { header: true });
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.setAttribute('href', url);
+          link.setAttribute('download', 'Voucher_Discrepancies.csv');
+          link.style.visibility = 'hidden';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch (error) {
+          alert('Error exporting discrepancies: ' + error.message);
+        }
+      }}
+      className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-semibold rounded transition-colors"
+    >
+      Export Discrepancies CSV
+    </button>
+  </div>
+)}
+```
+
+### 6.2 Discrepancy CSV Columns
+- Voucher #
+- Store
+- Vendor
+- Date
+- Declared Total (from QuickBooks)
+- Calculated Total (correct value)
+- Difference (absolute difference)
+
+---
+
+## 7. Download Functions
+
+### 7.1 Download Formatted Excel
+```javascript
+const downloadReceivingExcel = () => {
+  if (!receivingFormattedWB) return;
+  XLSX.writeFile(receivingFormattedWB, 'Flattened_Receiving_Data.xlsx', { compression: true });
+};
+```
+
+### 7.2 Download Flattened CSV
+```javascript
+const downloadReceivingCSV = () => {
+  if (!receivingCSV) return;
+  const blob = new Blob([receivingCSV], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'Consolidated_Receiving_Data.csv';
+  link.click();
+};
+```
+
+---
+
+## 8. UI Flow & User Experience
+
+### 8.1 Step Progression
+1. **Upload**: User selects Receiving History Excel file
+2. **Ready to Format**: Button appears to start Step 1
+3. **Formatting**: Progress indicator while processing
+4. **Ready to Flatten**: Shows stats, optional Excel download, button for Step 2
+5. **Flattening**: Progress indicator
+6. **Complete**: Shows statistics, validation warnings, download options, Voucher Viewer tab appears
+
+### 8.2 Progress Indicators
+```jsx
+// Formatting spinner
+{receivingStep === 'formatting' && (
+  <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+    <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+    <p className="text-blue-800 font-medium">{receivingStatus}</p>
+  </div>
+)}
+```
+
+### 8.3 Stats Display
+After completion, show:
+- Total vouchers processed
+- Total line items
+- Total cost (corrected)
+- Average voucher value
+- Unique vendors count
+- Unique stores count
+- Unique SKUs count
+- Top 10 vendors by cost
+- Validation warnings count
+
+---
+
+## 9. Error Handling
+
+### 9.1 File Reading Errors
+```javascript
+try {
+  const arrayBuffer = await receivingFile.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { cellDates: true, cellStyles: true });
+  // ... processing
+} catch (error) {
+  console.error('Formatting error:', error);
+  setReceivingStatus('Error: ' + error.message);
+  setReceivingStep('ready-to-format');
+  alert('Error formatting file: ' + error.message);
+}
+```
+
+### 9.2 Sheet Name Validation
+```javascript
+sheetsInOrder.forEach((sheetName, sheetIdx) => {
+  if (!/^Receiving Voucher Detail/i.test(sheetName)) return;
+  // ... process only matching sheets
+});
+```
+
+### 9.3 Data Validation
+- Check for Date objects to identify voucher headers
+- Verify line items have Item # and Item Name
+- Handle missing or null values with `|| 0` defaults
+- Use `Math.abs()` to prevent negative cost display issues
+
+---
+
+## 10. Testing Checklist
+
+### 10.1 Format Function Tests
+- [ ] Single sheet file processes correctly
+- [ ] Multi-sheet file (2-5 sheets) consolidates properly
+- [ ] Top 5 rows deleted from each sheet
+- [ ] Columns A, C, E, G, I, K, M, O deleted correctly
+- [ ] Header row appears only once (not repeated from each sheet)
+- [ ] 4 new columns inserted at correct position
+- [ ] Column headers added: "Item #", "Item Name", "Qty", "cost"
+- [ ] "Total" renamed to "Total cost"
+- [ ] Sheet order preserved (oldest data first)
+- [ ] Stats show correct sheet count and row count
+
+### 10.2 Flatten Function Tests
+- [ ] Voucher headers correctly identified (Date in column A)
+- [ ] Line items correctly parsed (no Date, has Item # and Name)
+- [ ] Multiple line items per voucher handled
+- [ ] Single line item vouchers work
+- [ ] Negative quantities handled (returns/reversals)
+- [ ] Type changes to "Reversal" when Qty < 0
+- [ ] Unit cost always positive (absolute value)
+- [ ] Line totals calculated correctly (Qty × |Cost|)
+- [ ] QuickBooks Total preserved as-is
+- [ ] Corrected Total calculated accurately
+- [ ] CSV export includes all columns
+- [ ] Excel export includes all columns
+
+### 10.3 QuickBooks Bug Handling Tests
+- [ ] Manually adjusted quantity vouchers identified
+- [ ] Corrected Total ≠ QuickBooks Total for buggy vouchers
+- [ ] Corrected Total = QuickBooks Total for clean vouchers
+- [ ] Validation warnings count matches expected discrepancies
+- [ ] Discrepancy export includes all required columns
+- [ ] Discrepancy export downloads successfully
+
+### 10.4 Voucher Viewer Tests
+- [ ] Search by voucher number works (exact match)
+- [ ] Search by voucher number works (partial match)
+- [ ] Exact match checkbox toggles correctly
+- [ ] Store filter dropdown populated with all stores
+- [ ] Store filter + voucher search work together
+- [ ] Enter key triggers search
+- [ ] Search button triggers search
+- [ ] Voucher details display correctly
+- [ ] Bug warning appears when totals mismatch
+- [ ] Bug warning shows both QB and Corrected totals
+- [ ] Items table displays all line items
+- [ ] Negative quantities show negative line totals
+- [ ] Footer totals calculated correctly
+- [ ] Empty search shows helpful message
+- [ ] No results shows helpful message
+
+### 10.5 Edge Cases
+- [ ] File with only 1 sheet works
+- [ ] Voucher split across sheets handled correctly
+- [ ] Last voucher on last sheet included
+- [ ] Empty voucher (header only) handled gracefully
+- [ ] Voucher with all negative items (full return) calculates correctly
+- [ ] Mixed positive/negative items in same voucher
+- [ ] Zero quantity items handled
+- [ ] Very large files (100k+ rows) process without crashing
+- [ ] Special characters in item names don't break CSV
+- [ ] Date formats from different QB versions handled
+
+### 10.6 UI/UX Tests
+- [ ] Tab navigation works smoothly
+- [ ] Voucher Viewer tab only appears after flattening
+- [ ] Progress spinners show during processing
+- [ ] Success messages display after each step
+- [ ] Stats display correctly formatted numbers
+- [ ] Download buttons work for Excel
+- [ ] Download buttons work for CSV
+- [ ] Export Discrepancies button works
+- [ ] "Process Another File" resets state correctly
+- [ ] Mobile responsive (if applicable)
+- [ ] Error alerts appear for failures
+- [ ] Console logs for debugging present
+
+### 10.7 Data Integrity Tests
+- [ ] Total vouchers count matches expected
+- [ ] Total line items = sum of all voucher line items
+- [ ] No data loss during consolidation
+- [ ] No duplicate rows in output
+- [ ] All stores from original file present
+- [ ] All vendors from original file present
+- [ ] Date range preserved (oldest to newest)
+- [ ] Time stamps preserved correctly
+- [ ] SKU numbers maintained accurately
+
+### 10.8 Performance Tests
+- [ ] 1,000 vouchers process in < 5 seconds
+- [ ] 10,000 vouchers process in < 30 seconds
+- [ ] 100,000+ rows handle without browser freeze
+- [ ] Memory usage stays reasonable
+- [ ] No memory leaks on repeated processing
+- [ ] UI remains responsive during processing
+
+### 10.9 Integration Tests
+- [ ] Receiving tab doesn't affect Sales tab
+- [ ] Sales tab doesn't affect Receiving tab
+- [ ] State management isolated between tabs
+- [ ] Tab switching preserves processed data
+- [ ] Multiple files can be processed in sequence
+- [ ] Browser refresh requirement documented
+
+### 10.10 Documentation Tests
+- [ ] Code comments present for complex logic
+- [ ] Column mapping documented in comments
+- [ ] QuickBooks bug explanation in UI
+- [ ] Validation warning explains discrepancies
+- [ ] Help text guides users through workflow
+- [ ] Technical documentation complete
+- [ ] User-facing documentation exists
+
+---
+
+## 11. Known Limitations & Future Enhancements
+
+### 11.1 Current Limitations
+- Cannot fix QuickBooks bug in original file
+- Validation warnings don't auto-update QB
+- No batch file processing
+- No undo functionality
+- Limited to browser memory constraints
+
+### 11.2 Potential Enhancements
+- Export corrected data back to QuickBooks format
+- Automated QB bug repair suggestions
+- Batch processing multiple files
+- Progressive loading for huge files (>500k rows)
+- Advanced filtering (date range, vendor, store)
+- Charts and visualizations
+- Comparison between multiple time periods
+- Integration with accounting systems
+
+---
+
+## 12. Dependencies
+
+```json
+{
+  "react": "^18.x",
+  "lucide-react": "latest",
+  "xlsx": "latest",
+  "papaparse": "latest",
+  "lodash": "latest"
+}
+```
+
+---
+
+## 13. File Structure
+
+```
+src/
+├── components/
+│   ├── DataProcessor.jsx          (main component)
+│   ├── ReceivingTab.jsx           (receiving workflow)
+│   ├── VoucherViewer.jsx          (voucher search)
+│   └── ValidationWarnings.jsx     (discrepancy display)
+├── utils/
+│   ├── receivingFormatter.js      (Step 1 logic)
+│   ├── receivingFlattener.js      (Step 2 logic)
+│   └── voucherValidator.js        (validation logic)
+└── styles/
+    └── dataprocessor.css          (custom styles)
+```
+
+---
+
+## ✅ IMPLEMENTATION CHECKLIST
+
+### Phase 1: Core Structure
+- [ ] Add all required state variables
+- [ ] Import all required libraries (React, XLSX, Papa, lodash, lucide-react)
+- [ ] Add Receiving Data tab to navigation
+- [ ] Add conditional Voucher Viewer tab
+- [ ] Set up tab switching logic
+
+### Phase 2: Step 1 - Format & Consolidate
+- [ ] Implement `handleReceivingFileChange` function
+- [ ] Implement `formatReceivingFile` function
+- [ ] Add sheet order reversal logic
+- [ ] Add top 5 row deletion logic
+- [ ] Add column deletion logic (A, C, E, G, I, K, M, O)
+- [ ] Add sheet consolidation logic
+- [ ] Skip header rows on subsequent sheets
+- [ ] Insert 4 empty columns at position 3
+- [ ] Add new column headers (Item #, Item Name, Qty, cost)
+- [ ] Rename "Total" to "Total cost"
+- [ ] Create consolidated workbook
+- [ ] Set stats (sheets processed, rows deleted, total rows)
+- [ ] Add error handling with try-catch
+- [ ] Add console logging for debugging
+- [ ] Add progress status updates
+
+### Phase 3: Step 2 - Flatten Data
+- [ ] Implement `flattenReceivingData` function
+- [ ] Add voucher header detection logic (Date object in column A)
+- [ ] Add line item detection logic (no Date, has Item # and Name)
+- [ ] Implement QuickBooks bug correction (use Math.abs on cost)
+- [ ] Handle negative quantities (returns/reversals)
+- [ ] Change Type to "Reversal" when Qty < 0
+- [ ] Calculate correct voucher totals from line items
+- [ ] Store both QuickBooks Total and Corrected Total
+- [ ] Create flattened data array
+- [ ] Convert to Excel workbook
+- [ ] Convert to CSV string
+- [ ] Extract unique stores for filter dropdown
+- [ ] Calculate validation discrepancies
+- [ ] Calculate top vendors statistics
+- [ ] Set all business statistics
+- [ ] Replace formatted workbook with flattened workbook
+- [ ] Add error handling
+
+### Phase 4: Voucher Viewer
+- [ ] Implement search filter with useEffect
+- [ ] Add exact match vs partial match logic
+- [ ] Add store filter logic
+- [ ] Implement `handleSearch` function
+- [ ] Implement `handleKeyPress` for Enter key
+- [ ] Implement `getFilteredStats` function
+- [ ] Add search input field with icon
+- [ ] Add store dropdown filter
+- [ ] Add Search button
+- [ ] Add exact match checkbox
+- [ ] Display voucher details panel
+- [ ] Show QuickBooks bug warning when detected
+- [ ] Display stats cards (vouchers, items, qty, cost)
+- [ ] Create items table with all columns
+- [ ] Add table header row
+- [ ] Add table body with line items
+- [ ] Calculate line totals on-the-fly with Math.abs
+- [ ] Handle negative line total display
+- [ ] Add footer row with totals
+- [ ] Show empty state message
+- [ ] Show no results message
+
+### Phase 5: Validation & Export
+- [ ] Display validation warning section
+- [ ] Show discrepancy count
+- [ ] Add explanatory note about QB bug
+- [ ] Implement Export Discrepancies button
+- [ ] Create discrepancy CSV with all columns
+- [ ] Add proper CSV download with error handling
+- [ ] Clean up blob URLs after download
+- [ ] Add success/error alerts
+
+### Phase 6: Download Functions
+- [ ] Implement `downloadReceivingExcel` function
+- [ ] Implement `downloadReceivingCSV` function
+- [ ] Add Excel download button
+- [ ] Add CSV download button
+- [ ] Test both download functions
+
+### Phase 7: UI Polish
+- [ ] Add upload section UI
+- [ ] Add ready-to-format state UI
+- [ ] Add formatting progress spinner
+- [ ] Add ready-to-flatten state UI with stats
+- [ ] Add flattening progress spinner
+- [ ] Add complete state UI with all stats
+- [ ] Add top vendors display
+- [ ] Add "Process Another File" button
+- [ ] Style all buttons consistently
+- [ ] Add hover effects
+- [ ] Add responsive grid layouts
+- [ ] Add color-coded stat cards
+- [ ] Add proper spacing and padding
+
+### Phase 8: Testing (Use Section 10 checklist)
+- [ ] Test with single sheet file
+- [ ] Test with multi-sheet file (2-5 sheets)
+- [ ] Test with voucher split across sheets
+- [ ] Test with negative quantities (returns)
+- [ ] Test with manually adjusted quantities (QB bug)
+- [ ] Test exact match search
+- [ ] Test partial match search
+- [ ] Test store filter
+- [ ] Test combined voucher + store filter
+- [ ] Test Enter key search trigger
+- [ ] Test all download buttons
+- [ ] Test Export Discrepancies
+- [ ] Test validation warnings display
+- [ ] Test edge cases (empty vouchers, zero qty, etc.)
+- [ ] Test with large files (10k+ vouchers)
+- [ ] Test error scenarios
+- [ ] Verify no console errors
+- [ ] Check mobile responsiveness
+
+### Phase 9: Documentation & Cleanup
+- [ ] Add code comments for complex logic
+- [ ] Document QuickBooks bug in code
+- [ ] Add JSDoc comments for functions
+- [ ] Clean up unused variables
+- [ ] Remove debug console.logs (keep essential ones)
+- [ ] Verify all state updates are correct
+- [ ] Check for memory leaks
+- [ ] Optimize performance if needed
+- [ ] Update README with new features
+- [ ] Create user guide document
+
+### Phase 10: Final Verification
+- [ ] Run full workflow from upload to download
+- [ ] Verify CSV output columns match specification
+- [ ] Verify Excel output columns match specification
+- [ ] Verify Corrected Total ≠ QuickBooks Total for buggy vouchers
+- [ ] Verify Voucher Viewer shows correct totals
+- [ ] Verify bug warning appears when expected
+- [ ] Verify all stats calculations are accurate
+- [ ] Cross-check sample vouchers manually
+- [ ] Confirm no data loss during processing
+- [ ] Verify all 10 testing categories pass
+- [ ] Code review complete
+- [ ] Ready for production deployment
+
+---
+
+**END OF DOCUMENTATION**
+
+This comprehensive technical documentation provides everything needed to implement the Receiving History processing module. Follow the checklist in order to ensure nothing is missed.

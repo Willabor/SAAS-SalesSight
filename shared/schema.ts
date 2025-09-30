@@ -55,13 +55,40 @@ export const salesTransactions = pgTable("sales_transactions", {
 export const uploadHistory = pgTable("upload_history", {
   id: serial("id").primaryKey(),
   fileName: text("file_name").notNull(),
-  uploadType: text("upload_type").notNull(), // 'item_list' or 'sales_transactions'
+  uploadType: text("upload_type").notNull(), // 'item_list', 'sales_transactions', or 'receiving_history'
   uploadMode: text("upload_mode"), // 'initial' or 'weekly_update' for item_list
   totalRecords: integer("total_records").default(0),
   successfulRecords: integer("successful_records").default(0),
   failedRecords: integer("failed_records").default(0),
   skippedRecords: integer("skipped_records").default(0), // Duplicate receipt numbers skipped
   errors: text("errors"), // JSON string of error messages
+  uploadedAt: timestamp("uploaded_at").defaultNow(),
+});
+
+export const receivingVouchers = pgTable("receiving_vouchers", {
+  id: serial("id").primaryKey(),
+  voucherNumber: text("voucher_number").notNull(),
+  date: date("date").notNull(),
+  store: text("store").notNull(),
+  vendor: text("vendor"),
+  type: text("type").notNull(), // 'Receiving' or 'Reversal'
+  qbTotal: numeric("qb_total"), // QuickBooks total (potentially buggy)
+  correctedTotal: numeric("corrected_total"), // Calculated correct total
+  totalQty: integer("total_qty").default(0),
+  time: text("time"), // Time of transaction
+  fileName: text("file_name"),
+  uploadedAt: timestamp("uploaded_at").defaultNow(),
+}, (table) => ({
+  uniqueVoucher: sql`UNIQUE(${table.voucherNumber}, ${table.store}, ${table.date})`,
+}));
+
+export const receivingLines = pgTable("receiving_lines", {
+  id: serial("id").primaryKey(),
+  voucherId: integer("voucher_id").notNull().references(() => receivingVouchers.id, { onDelete: 'cascade' }),
+  itemNumber: text("item_number"),
+  itemName: text("item_name"),
+  qty: integer("qty").notNull(), // Can be negative for reversals
+  cost: numeric("cost").notNull(), // Always positive (absolute value)
   uploadedAt: timestamp("uploaded_at").defaultNow(),
 });
 
@@ -74,6 +101,17 @@ export const salesTransactionsRelations = relations(salesTransactions, ({ one })
   item: one(itemList, {
     fields: [salesTransactions.sku],
     references: [itemList.itemNumber],
+  }),
+}));
+
+export const receivingVouchersRelations = relations(receivingVouchers, ({ many }) => ({
+  lines: many(receivingLines),
+}));
+
+export const receivingLinesRelations = relations(receivingLines, ({ one }) => ({
+  voucher: one(receivingVouchers, {
+    fields: [receivingLines.voucherId],
+    references: [receivingVouchers.id],
   }),
 }));
 
@@ -98,6 +136,16 @@ export const insertUploadHistorySchema = createInsertSchema(uploadHistory).omit(
   uploadedAt: true,
 });
 
+export const insertReceivingVoucherSchema = createInsertSchema(receivingVouchers).omit({
+  id: true,
+  uploadedAt: true,
+});
+
+export const insertReceivingLineSchema = createInsertSchema(receivingLines).omit({
+  id: true,
+  uploadedAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -107,3 +155,7 @@ export type SalesTransaction = typeof salesTransactions.$inferSelect;
 export type InsertSalesTransaction = z.infer<typeof insertSalesTransactionSchema>;
 export type UploadHistory = typeof uploadHistory.$inferSelect;
 export type InsertUploadHistory = z.infer<typeof insertUploadHistorySchema>;
+export type ReceivingVoucher = typeof receivingVouchers.$inferSelect;
+export type InsertReceivingVoucher = z.infer<typeof insertReceivingVoucherSchema>;
+export type ReceivingLine = typeof receivingLines.$inferSelect;
+export type InsertReceivingLine = z.infer<typeof insertReceivingLineSchema>;
