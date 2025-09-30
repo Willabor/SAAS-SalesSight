@@ -151,43 +151,25 @@ export default function ItemListPage() {
     },
   });
 
-  // Calculate statistics
-  const stats = useMemo(() => {
-    if (!itemData?.items) return { totalValue: 0, potentialProfit: 0, lowStock: 0 };
-    
-    const totalValue = itemData.items.reduce((sum, item) => {
-      const qty = item.availQty || 0;
-      const price = parseFloat(item.sellingPrice || '0');
-      return sum + (qty * price);
-    }, 0);
-    
-    const totalCost = itemData.items.reduce((sum, item) => {
-      const qty = item.availQty || 0;
-      const cost = parseFloat(item.orderCost || '0');
-      return sum + (qty * cost);
-    }, 0);
-    
-    const lowStock = itemData.items.filter(item => 
-      (item.availQty || 0) > 0 && (item.availQty || 0) <= 2
-    ).length;
-    
-    return {
-      totalValue,
-      potentialProfit: totalValue - totalCost,
-      lowStock
-    };
-  }, [itemData]);
+  // Fetch enhanced statistics from server
+  const { data: stats } = useQuery({
+    queryKey: ["/api/stats/item-list-enhanced"],
+    queryFn: async () => {
+      const response = await fetch("/api/stats/item-list-enhanced");
+      if (!response.ok) throw new Error("Failed to fetch stats");
+      return response.json();
+    },
+  });
 
-  // Get unique values for filters
-  const filterOptions = useMemo(() => {
-    if (!itemData?.items) return { categories: [], genders: [], vendors: [] };
-    
-    const categories = Array.from(new Set(itemData.items.map(i => i.category).filter(Boolean) as string[])).sort();
-    const genders = Array.from(new Set(itemData.items.map(i => i.gender).filter(Boolean) as string[])).sort();
-    const vendors = Array.from(new Set(itemData.items.map(i => i.vendorName).filter(Boolean) as string[])).sort();
-    
-    return { categories, genders, vendors };
-  }, [itemData]);
+  // Fetch filter options from server
+  const { data: filterOptions } = useQuery<{ categories: string[]; genders: string[]; vendors: string[] }>({
+    queryKey: ["/api/item-list/filter-options"],
+    queryFn: async () => {
+      const response = await fetch("/api/item-list/filter-options");
+      if (!response.ok) throw new Error("Failed to fetch filter options");
+      return response.json();
+    },
+  });
 
   // Apply filters and sorting
   const filteredAndSortedItems = useMemo(() => {
@@ -231,6 +213,8 @@ export default function ItemListPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/item-list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list-enhanced"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/item-list/filter-options"] });
       toast({
         title: "Item deleted",
         description: "Item has been successfully removed from the database.",
@@ -258,6 +242,8 @@ export default function ItemListPage() {
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/item-list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list-enhanced"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/item-list/filter-options"] });
       toast({
         title: "Database cleared",
         description: `Successfully removed ${result.deletedCount} items from the database.`,
@@ -303,38 +289,58 @@ export default function ItemListPage() {
     }));
   };
 
-  const handleExport = (type: 'all' | 'filtered') => {
-    const dataToExport = type === 'all' ? (itemData?.items || []) : filteredAndSortedItems;
-    
-    const visibleColumns = columns.filter(col => col.visible);
-    const headers = visibleColumns.map(col => col.label);
-    
-    const csvContent = [
-      headers.join(','),
-      ...dataToExport.map(item => 
-        visibleColumns.map(col => {
-          const value = item[col.key];
-          if (value == null) return '';
-          const formatted = col.format ? col.format(value) : String(value);
-          return `"${formatted.replace(/"/g, '""')}"`;
-        }).join(',')
-      )
-    ].join('\n');
+  const handleExport = async (type: 'all' | 'filtered') => {
+    try {
+      const searchParams = new URLSearchParams();
+      
+      if (type === 'filtered') {
+        if (filterCategory && filterCategory !== 'all') searchParams.append('category', filterCategory);
+        if (filterGender && filterGender !== 'all') searchParams.append('gender', filterGender);
+        if (filterVendor && filterVendor !== 'all') searchParams.append('vendor', filterVendor);
+        if (debouncedSearch) searchParams.append('search', debouncedSearch);
+      }
+      
+      const response = await fetch(`/api/item-list/export?${searchParams}`);
+      if (!response.ok) throw new Error("Failed to export items");
+      
+      const dataToExport: ItemList[] = await response.json();
+      
+      const visibleColumns = columns.filter(col => col.visible);
+      const headers = visibleColumns.map(col => col.label);
+      
+      const csvContent = [
+        headers.join(','),
+        ...dataToExport.map(item => 
+          visibleColumns.map(col => {
+            const value = item[col.key];
+            if (value == null) return '';
+            const formatted = col.format ? col.format(value) : String(value);
+            return `"${formatted.replace(/"/g, '""')}"`;
+          }).join(',')
+        )
+      ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `item_list_${type}_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    
-    toast({
-      title: "Export successful",
-      description: `Downloaded ${dataToExport.length} items as CSV`,
-    });
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', `item_list_${type}_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast({
+        title: "Export successful",
+        description: `Downloaded ${dataToExport.length} items as CSV`,
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: "Failed to export items. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const getSortIcon = (columnKey: keyof ItemList) => {
@@ -358,7 +364,7 @@ export default function ItemListPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-blue-100 text-sm font-medium">Total Items</p>
-                  <p className="text-3xl font-bold mt-1">{itemData?.total || 0}</p>
+                  <p className="text-3xl font-bold mt-1">{stats?.totalItems || 0}</p>
                 </div>
                 <Package className="w-10 h-10 opacity-80" />
               </div>
@@ -370,7 +376,7 @@ export default function ItemListPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-green-100 text-sm font-medium">Inventory Value</p>
-                  <p className="text-3xl font-bold mt-1">${stats.totalValue.toLocaleString()}</p>
+                  <p className="text-3xl font-bold mt-1">${(stats?.totalValue || 0).toLocaleString()}</p>
                 </div>
                 <DollarSign className="w-10 h-10 opacity-80" />
               </div>
@@ -382,7 +388,7 @@ export default function ItemListPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-purple-100 text-sm font-medium">Potential Profit</p>
-                  <p className="text-3xl font-bold mt-1">${stats.potentialProfit.toLocaleString()}</p>
+                  <p className="text-3xl font-bold mt-1">${(stats?.potentialProfit || 0).toLocaleString()}</p>
                 </div>
                 <TrendingUp className="w-10 h-10 opacity-80" />
               </div>
@@ -394,7 +400,7 @@ export default function ItemListPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-orange-100 text-sm font-medium">Low Stock Items</p>
-                  <p className="text-3xl font-bold mt-1">{stats.lowStock}</p>
+                  <p className="text-3xl font-bold mt-1">{stats?.lowStock || 0}</p>
                 </div>
                 <AlertCircle className="w-10 h-10 opacity-80" />
               </div>
@@ -501,7 +507,7 @@ export default function ItemListPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Categories</SelectItem>
-                  {filterOptions.categories.map(cat => (
+                  {filterOptions?.categories.map(cat => (
                     <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                   ))}
                 </SelectContent>
@@ -513,7 +519,7 @@ export default function ItemListPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Genders</SelectItem>
-                  {filterOptions.genders.map(gender => (
+                  {filterOptions?.genders.map(gender => (
                     <SelectItem key={gender} value={gender}>{gender}</SelectItem>
                   ))}
                 </SelectContent>
@@ -525,7 +531,7 @@ export default function ItemListPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Vendors</SelectItem>
-                  {filterOptions.vendors.map(vendor => (
+                  {filterOptions?.vendors.map(vendor => (
                     <SelectItem key={vendor} value={vendor}>{vendor}</SelectItem>
                   ))}
                 </SelectContent>
