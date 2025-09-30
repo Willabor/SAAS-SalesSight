@@ -3,11 +3,17 @@
 This is an Excel Sales Data Processor application built as a full-stack web application. The system allows users to upload Excel files containing item lists, sales transaction data, and receiving history from QuickBooks. The application processes these files and provides a dashboard with analytics and statistics. Key features include file upload capabilities, data visualization, multi-step processing workflows, real-time progress tracking, and **secure user authentication** using Replit Auth.
 
 The system now includes three major workflows and comprehensive analytics:
-1. **Item List Management**: Upload and manage product inventory data
+1. **Item List Management** (ENHANCED): Upload and manage product inventory data with advanced features:
+   - View all 24 database columns with customizable column visibility
+   - Dynamic filtering by category, gender, and vendor
+   - Sortable columns with visual indicators
+   - Export to CSV (all items or filtered results)
+   - Real-time statistics cards (inventory value, potential profit, low stock alerts)
+   - Advanced search across multiple fields
 2. **Sales Data Processing**: Process sales transactions with duplicate detection
 3. **Receiving History**: Process QuickBooks receiving vouchers with format & consolidate, flatten operations, voucher viewer with search capabilities, and automatic handling of QuickBooks calculation bugs and reversals
 4. **Sales & Inventory Analytics**: Advanced analytics including sales insights and inventory turnover reporting with dead stock identification, overstock/understock analysis, and category-level inventory metrics
-5. **User Authentication** (NEW): Secure login with Replit Auth supporting Google, GitHub, and email/password authentication. All application features are protected behind authentication.
+5. **User Authentication**: Secure login with Replit Auth supporting Google, GitHub, and email/password authentication. All application features are protected behind authentication.
 
 # User Preferences
 

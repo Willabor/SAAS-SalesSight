@@ -43,6 +43,18 @@ export interface IStorage {
     totalCategories: number;
     totalAvailable: number;
   }>;
+  getItemListFilterOptions(): Promise<{
+    categories: string[];
+    genders: string[];
+    vendors: string[];
+  }>;
+  getItemListEnhancedStats(): Promise<{
+    totalItems: number;
+    totalValue: number;
+    potentialProfit: number;
+    lowStock: number;
+  }>;
+  getAllItemListForExport(category?: string, gender?: string, vendor?: string, search?: string): Promise<ItemList[]>;
   
   // Sales Transactions operations
   createSalesTransaction(transaction: InsertSalesTransaction): Promise<SalesTransaction>;
@@ -136,7 +148,7 @@ export interface IStorage {
     daysSinceLastSale: number | null;
     stockStatus: string;
   }>>;
-  getOverstockUnderstockAnalysis(daysRange: number): Promise<Array<{
+  getOverstockUnderstockAnalysis(daysRange: number, limit?: number, overstockThreshold?: number, understockThreshold?: number): Promise<Array<{
     itemNumber: string;
     itemName: string;
     category: string | null;
@@ -149,7 +161,7 @@ export interface IStorage {
     daysOfSupply: number;
     stockStatus: string;
   }>>;
-  getCategoryInventoryAnalysis(): Promise<Array<{
+  getCategoryInventoryAnalysis(daysRange?: number): Promise<Array<{
     category: string;
     totalInventoryValue: number;
     totalUnits: number;
@@ -295,6 +307,117 @@ export class DatabaseStorage implements IStorage {
       totalCategories: stats.totalCategories,
       totalAvailable: Number(stats.totalAvailable) || 0,
     };
+  }
+
+  async getItemListFilterOptions(): Promise<{
+    categories: string[];
+    genders: string[];
+    vendors: string[];
+  }> {
+    const [categoriesResult] = await db
+      .selectDistinct({ value: itemList.category })
+      .from(itemList)
+      .where(sql`${itemList.category} IS NOT NULL AND ${itemList.category} != ''`);
+    
+    const [gendersResult] = await db
+      .selectDistinct({ value: itemList.gender })
+      .from(itemList)
+      .where(sql`${itemList.gender} IS NOT NULL AND ${itemList.gender} != ''`);
+    
+    const [vendorsResult] = await db
+      .selectDistinct({ value: itemList.vendorName })
+      .from(itemList)
+      .where(sql`${itemList.vendorName} IS NOT NULL AND ${itemList.vendorName} != ''`);
+
+    const categories = (await db
+      .selectDistinct({ value: itemList.category })
+      .from(itemList)
+      .where(sql`${itemList.category} IS NOT NULL AND ${itemList.category} != ''`))
+      .map(r => r.value!)
+      .sort();
+
+    const genders = (await db
+      .selectDistinct({ value: itemList.gender })
+      .from(itemList)
+      .where(sql`${itemList.gender} IS NOT NULL AND ${itemList.gender} != ''`))
+      .map(r => r.value!)
+      .sort();
+
+    const vendors = (await db
+      .selectDistinct({ value: itemList.vendorName })
+      .from(itemList)
+      .where(sql`${itemList.vendorName} IS NOT NULL AND ${itemList.vendorName} != ''`))
+      .map(r => r.value!)
+      .sort();
+
+    return { categories, genders, vendors };
+  }
+
+  async getItemListEnhancedStats(): Promise<{
+    totalItems: number;
+    totalValue: number;
+    potentialProfit: number;
+    lowStock: number;
+  }> {
+    // Get all items with pricing info
+    const items = await db.select().from(itemList);
+    
+    const totalItems = items.length;
+    
+    const totalValue = items.reduce((sum, item) => {
+      const qty = item.availQty || 0;
+      const price = parseFloat(item.sellingPrice || '0');
+      return sum + (qty * price);
+    }, 0);
+    
+    const totalCost = items.reduce((sum, item) => {
+      const qty = item.availQty || 0;
+      const cost = parseFloat(item.orderCost || '0');
+      return sum + (qty * cost);
+    }, 0);
+    
+    const lowStock = items.filter(item => 
+      (item.availQty || 0) > 0 && (item.availQty || 0) <= 2
+    ).length;
+
+    return {
+      totalItems,
+      totalValue,
+      potentialProfit: totalValue - totalCost,
+      lowStock
+    };
+  }
+
+  async getAllItemListForExport(category?: string, gender?: string, vendor?: string, search?: string): Promise<ItemList[]> {
+    const conditions = [];
+    
+    if (category && category !== 'all') {
+      conditions.push(eq(itemList.category, category));
+    }
+    if (gender && gender !== 'all') {
+      conditions.push(eq(itemList.gender, gender));
+    }
+    if (vendor && vendor !== 'all') {
+      conditions.push(eq(itemList.vendorName, vendor));
+    }
+    if (search) {
+      conditions.push(
+        or(
+          ilike(itemList.itemNumber, `%${search}%`),
+          ilike(itemList.itemName, `%${search}%`),
+          ilike(itemList.vendorName, `%${search}%`),
+          ilike(itemList.category, `%${search}%`)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    
+    if (whereClause) {
+      return await db.select().from(itemList).where(whereClause).orderBy(desc(itemList.uploadedAt));
+    } else {
+      return await db.select().from(itemList).orderBy(desc(itemList.uploadedAt));
+    }
   }
 
   async createSalesTransaction(transaction: InsertSalesTransaction): Promise<SalesTransaction> {
@@ -952,7 +1075,12 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
-  async getOverstockUnderstockAnalysis(daysRange: number = 30): Promise<Array<{
+  async getOverstockUnderstockAnalysis(
+    daysRange: number = 30,
+    limit: number = 100,
+    overstockThreshold: number = 90,
+    understockThreshold: number = 7
+  ): Promise<Array<{
     itemNumber: string;
     itemName: string;
     category: string | null;
@@ -992,16 +1120,17 @@ export class DatabaseStorage implements IStorage {
         itemList.vendorName,
         itemList.availQty,
         itemList.orderCost
-      );
+      )
+      .limit(limit);
 
     return result.map(row => {
       const avgDailySales = Number(row.unitsSold) / daysRange;
       const daysOfSupply = avgDailySales > 0 ? (row.availQty || 0) / avgDailySales : 999;
-      
+
       let stockStatus = 'Normal';
-      if (daysOfSupply > 90) {
+      if (daysOfSupply > overstockThreshold) {
         stockStatus = 'Overstock';
-      } else if (daysOfSupply < 7 && avgDailySales > 0) {
+      } else if (daysOfSupply < understockThreshold && avgDailySales > 0) {
         stockStatus = 'Understock';
       } else if (avgDailySales === 0 && (row.availQty || 0) > 0) {
         stockStatus = 'No Sales';
@@ -1023,7 +1152,7 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async getCategoryInventoryAnalysis(): Promise<Array<{
+  async getCategoryInventoryAnalysis(daysRange: number = 30): Promise<Array<{
     category: string;
     totalInventoryValue: number;
     totalUnits: number;
@@ -1044,7 +1173,7 @@ export class DatabaseStorage implements IStorage {
         salesTransactions,
         and(
           sql`${salesTransactions.sku} = ${itemList.itemNumber}`,
-          sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '30 days'`
+          sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '${sql.raw(daysRange.toString())} days'`
         )
       )
       .where(sql`${itemList.availQty} > 0`)

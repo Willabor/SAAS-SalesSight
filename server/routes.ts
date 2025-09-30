@@ -83,6 +83,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get item list enhanced statistics
+  app.get("/api/stats/item-list-enhanced", isAuthenticated, async (req, res) => {
+    try {
+      const stats = await storage.getItemListEnhancedStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching enhanced item list stats:", error);
+      res.status(500).json({ error: "Failed to fetch enhanced item list statistics" });
+    }
+  });
+
+  // Get item list filter options
+  app.get("/api/item-list/filter-options", isAuthenticated, async (req, res) => {
+    try {
+      const options = await storage.getItemListFilterOptions();
+      res.json(options);
+    } catch (error) {
+      console.error("Error fetching filter options:", error);
+      res.status(500).json({ error: "Failed to fetch filter options" });
+    }
+  });
+
+  // Export item list
+  app.get("/api/item-list/export", isAuthenticated, async (req, res) => {
+    try {
+      const category = req.query.category as string | undefined;
+      const gender = req.query.gender as string | undefined;
+      const vendor = req.query.vendor as string | undefined;
+      const search = req.query.search as string | undefined;
+      
+      const items = await storage.getAllItemListForExport(category, gender, vendor, search);
+      res.json(items);
+    } catch (error) {
+      console.error("Error exporting item list:", error);
+      res.status(500).json({ error: "Failed to export item list" });
+    }
+  });
+
   // Get all item list data with pagination and search
   app.get("/api/item-list", isAuthenticated, async (req, res) => {
     try {
@@ -727,7 +765,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/inventory/overstock-understock", isAuthenticated, async (req, res) => {
     try {
       const daysRange = parseInt(req.query.days as string) || 30;
-      const analysis = await storage.getOverstockUnderstockAnalysis(daysRange);
+      const limit = parseInt(req.query.limit as string) || 100;
+      const overstockThreshold = parseInt(req.query.overstockThreshold as string) || 90;
+      const understockThreshold = parseInt(req.query.understockThreshold as string) || 7;
+      const analysis = await storage.getOverstockUnderstockAnalysis(daysRange, limit, overstockThreshold, understockThreshold);
       res.json(analysis);
     } catch (error) {
       console.error("Error fetching overstock/understock analysis:", error);
@@ -737,7 +778,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/inventory/category-analysis", isAuthenticated, async (req, res) => {
     try {
-      const categoryAnalysis = await storage.getCategoryInventoryAnalysis();
+      const daysRange = parseInt(req.query.days as string) || 30;
+      const categoryAnalysis = await storage.getCategoryInventoryAnalysis(daysRange);
       res.json(categoryAnalysis);
     } catch (error) {
       console.error("Error fetching category inventory analysis:", error);

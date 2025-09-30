@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Card,
@@ -25,6 +26,13 @@ import {
   Download,
 } from "lucide-react";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
+import { InventorySettingsDialog } from "@/components/inventory-settings-dialog";
+import {
+  InventorySettings,
+  loadSettings,
+  saveSettings,
+  resetSettings as resetSettingsToDefaults,
+} from "@/lib/inventory-settings";
 
 interface TurnoverMetrics {
   totalInventoryValue: number;
@@ -71,37 +79,55 @@ interface CategoryAnalysis {
 }
 
 export default function InventoryTurnoverDashboard() {
+  const [settings, setSettings] = useState<InventorySettings>(() => loadSettings());
+
+  useEffect(() => {
+    setSettings(loadSettings());
+  }, []);
+
+  const handleSaveSettings = (newSettings: InventorySettings) => {
+    saveSettings(newSettings);
+    setSettings(newSettings);
+  };
+
+  const handleResetSettings = () => {
+    const defaults = resetSettingsToDefaults();
+    setSettings(defaults);
+  };
+
   const { data: metrics, isLoading: metricsLoading } = useQuery<TurnoverMetrics>({
-    queryKey: ["inventory", "turnover-metrics"],
+    queryKey: ["inventory", "turnover-metrics", settings.slowMovingDays],
     queryFn: async () => {
-      const response = await fetch("/api/inventory/turnover-metrics");
+      const response = await fetch(`/api/inventory/turnover-metrics?deadStockDays=${settings.slowMovingDays}`);
       if (!response.ok) throw new Error("Failed to fetch turnover metrics");
       return response.json();
     },
   });
 
   const { data: slowMoving, isLoading: slowMovingLoading } = useQuery<SlowMovingItem[]>({
-    queryKey: ["inventory", "slow-moving", 90, 20],
+    queryKey: ["inventory", "slow-moving", settings.slowMovingDays, settings.slowMovingLimit],
     queryFn: async () => {
-      const response = await fetch("/api/inventory/slow-moving?days=90&limit=20");
+      const response = await fetch(`/api/inventory/slow-moving?days=${settings.slowMovingDays}&limit=${settings.slowMovingLimit}`);
       if (!response.ok) throw new Error("Failed to fetch slow-moving stock");
       return response.json();
     },
   });
 
   const { data: stockAnalysis, isLoading: stockAnalysisLoading } = useQuery<OverstockItem[]>({
-    queryKey: ["inventory", "overstock-understock", 30],
+    queryKey: ["inventory", "overstock-understock", settings.salesAnalysisDays, settings.stockAnalysisLimit, settings.overstockDays, settings.understockDays],
     queryFn: async () => {
-      const response = await fetch("/api/inventory/overstock-understock?days=30");
+      const response = await fetch(
+        `/api/inventory/overstock-understock?days=${settings.salesAnalysisDays}&limit=${settings.stockAnalysisLimit}&overstockThreshold=${settings.overstockDays}&understockThreshold=${settings.understockDays}`
+      );
       if (!response.ok) throw new Error("Failed to fetch stock analysis");
       return response.json();
     },
   });
 
   const { data: categoryAnalysis, isLoading: categoryLoading } = useQuery<CategoryAnalysis[]>({
-    queryKey: ["inventory", "category-analysis"],
+    queryKey: ["inventory", "category-analysis", settings.categoryAnalysisDays],
     queryFn: async () => {
-      const response = await fetch("/api/inventory/category-analysis");
+      const response = await fetch(`/api/inventory/category-analysis?days=${settings.categoryAnalysisDays}`);
       if (!response.ok) throw new Error("Failed to fetch category analysis");
       return response.json();
     },
@@ -301,8 +327,13 @@ export default function InventoryTurnoverDashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Export All Button */}
-      <div className="flex justify-end">
+      {/* Toolbar: Settings and Export */}
+      <div className="flex justify-between items-center">
+        <InventorySettingsDialog
+          settings={settings}
+          onSave={handleSaveSettings}
+          onReset={handleResetSettings}
+        />
         <Button
           onClick={handleExportAll}
           variant="default"
@@ -401,7 +432,9 @@ export default function InventoryTurnoverDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Slow Moving & Dead Stock</CardTitle>
-              <CardDescription>Items with no sales in the last 90+ days</CardDescription>
+              <CardDescription>
+                Items with no sales in the last {settings.slowMovingDays}+ days (showing up to {settings.slowMovingLimit} items)
+              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="secondary">{slowMoving?.length || 0} items</Badge>
@@ -462,7 +495,9 @@ export default function InventoryTurnoverDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Overstock & Understock Analysis</CardTitle>
-              <CardDescription>Based on last 30 days of sales activity</CardDescription>
+              <CardDescription>
+                Based on last {settings.salesAnalysisDays} days of sales activity (showing up to {settings.stockAnalysisLimit} items)
+              </CardDescription>
             </div>
             <Button
               onClick={handleExportStockAnalysis}
