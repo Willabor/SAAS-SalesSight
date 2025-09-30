@@ -60,6 +60,7 @@ export const uploadHistory = pgTable("upload_history", {
   totalRecords: integer("total_records").default(0),
   successfulRecords: integer("successful_records").default(0),
   failedRecords: integer("failed_records").default(0),
+  skippedRecords: integer("skipped_records").default(0), // Duplicate receipt numbers skipped
   errors: text("errors"), // JSON string of error messages
   uploadedAt: timestamp("uploaded_at").defaultNow(),
 });

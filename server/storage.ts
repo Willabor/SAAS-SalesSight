@@ -39,6 +39,7 @@ export interface IStorage {
   
   // Sales Transactions operations
   createSalesTransaction(transaction: InsertSalesTransaction): Promise<SalesTransaction>;
+  getExistingReceiptNumbers(receiptNumbers: string[]): Promise<Set<string>>;
   getAllSalesTransactions(limit?: number, offset?: number, search?: string, year?: number, month?: number): Promise<{
     transactions: SalesTransaction[];
     total: number;
@@ -208,6 +209,19 @@ export class DatabaseStorage implements IStorage {
       .values(transaction)
       .returning();
     return createdTransaction;
+  }
+
+  async getExistingReceiptNumbers(receiptNumbers: string[]): Promise<Set<string>> {
+    if (receiptNumbers.length === 0) {
+      return new Set();
+    }
+    
+    const existingReceipts = await db
+      .selectDistinct({ receiptNumber: salesTransactions.receiptNumber })
+      .from(salesTransactions)
+      .where(sql`${salesTransactions.receiptNumber} IN ${receiptNumbers}`);
+    
+    return new Set(existingReceipts.map(r => r.receiptNumber).filter((r): r is string => r !== null));
   }
 
   async getAllSalesTransactions(limit = 50, offset = 0, search?: string, year?: number, month?: number): Promise<{

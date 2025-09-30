@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema } from "@shared/schema";
+import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, type InsertSalesTransaction } from "@shared/schema";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -171,9 +171,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid data format" });
       }
 
-      let uploaded = 0;
-      let failed = 0;
+      // Step 1: Validate all transactions and extract receipt numbers
+      const validatedTransactions: Array<{ transaction: InsertSalesTransaction; receiptNumber: string; index: number }> = [];
       const errors: string[] = [];
+      let failed = 0;
 
       for (let index = 0; index < data.length; index++) {
         const transaction = data[index];
@@ -201,12 +202,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
             sheet: rawData.sheet != null ? String(rawData.sheet) : null,
           });
 
-          await storage.createSalesTransaction(validatedTransaction);
-          uploaded++;
+          validatedTransactions.push({
+            transaction: validatedTransaction,
+            receiptNumber: validatedTransaction.receiptNumber || "",
+            index: index + 1
+          });
         } catch (error) {
           failed++;
           const errorMessage = error instanceof Error ? error.message : "Unknown error";
           errors.push(`Row ${index + 1}: ${errorMessage}`);
+        }
+      }
+
+      // Step 2: Check for existing receipt numbers in database
+      const receiptNumbersToCheck = validatedTransactions
+        .map(v => v.receiptNumber)
+        .filter(r => r && r.trim() !== "");
+      
+      const existingReceiptNumbers = await storage.getExistingReceiptNumbers(receiptNumbersToCheck);
+
+      // Step 3: Filter out duplicates and insert only new transactions
+      let uploaded = 0;
+      let skipped = 0;
+      const skippedReceiptNumbers: string[] = [];
+
+      for (const { transaction, receiptNumber, index } of validatedTransactions) {
+        if (receiptNumber && existingReceiptNumbers.has(receiptNumber)) {
+          skipped++;
+          if (skippedReceiptNumbers.length < 10) {
+            skippedReceiptNumbers.push(receiptNumber);
+          }
+        } else {
+          try {
+            await storage.createSalesTransaction(transaction);
+            uploaded++;
+          } catch (error) {
+            failed++;
+            const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            errors.push(`Row ${index}: Database error - ${errorMessage}`);
+          }
         }
       }
 
@@ -217,15 +251,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalRecords: data.length,
         successfulRecords: uploaded,
         failedRecords: failed,
+        skippedRecords: skipped,
         errors: JSON.stringify(errors.slice(0, 100)), // Limit to first 100 errors
       });
 
       res.json({
         success: true,
         uploaded,
+        skipped,
         failed,
         total: data.length,
         errors: errors.slice(0, 5), // Return first 5 errors
+        duplicateReceiptNumbers: skippedReceiptNumbers, // Sample of skipped receipt numbers
       });
     } catch (error) {
       console.error("Upload error:", error);
