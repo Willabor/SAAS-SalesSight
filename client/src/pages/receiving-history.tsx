@@ -30,6 +30,7 @@ import { Link } from "wouter";
 import {
   formatReceivingFile,
   flattenReceivingData,
+  exportFlattenedToExcel,
   type ReceivingVoucher,
   type ReceivingProcessingStats,
 } from "@/lib/excel-processor";
@@ -419,18 +420,37 @@ export default function ReceivingHistoryPage() {
                   </Alert>
                 )}
 
-                <div className="flex justify-between">
+                <div className="flex justify-between items-center gap-2">
                   <Button variant="outline" onClick={resetWorkflow} data-testid="button-reset">
                     Start Over
                   </Button>
-                  <Button
-                    onClick={handleUpload}
-                    disabled={uploadMutation.isPending}
-                    data-testid="button-upload-database"
-                  >
-                    <Database className="w-4 h-4 mr-2" />
-                    {uploadMutation.isPending ? "Uploading..." : "Upload to Database"}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (flattenedData && selectedFile) {
+                          const fileName = selectedFile.name.replace(/\.[^/.]+$/, '-flattened.xlsx');
+                          exportFlattenedToExcel(flattenedData, fileName);
+                          toast({
+                            title: "Download Started",
+                            description: "Flattened Excel file is being downloaded.",
+                          });
+                        }
+                      }}
+                      data-testid="button-download-flattened"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Excel
+                    </Button>
+                    <Button
+                      onClick={handleUpload}
+                      disabled={uploadMutation.isPending}
+                      data-testid="button-upload-database"
+                    >
+                      <Database className="w-4 h-4 mr-2" />
+                      {uploadMutation.isPending ? "Uploading..." : "Upload to Database"}
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}

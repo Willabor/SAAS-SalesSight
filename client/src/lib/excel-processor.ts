@@ -453,3 +453,55 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     throw new Error(`Failed to flatten data: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+/**
+ * Export flattened voucher data to Excel workbook for download
+ */
+export function exportFlattenedToExcel(vouchers: ReceivingVoucher[], fileName: string = 'flattened-vouchers.xlsx'): void {
+  // Create flat table data
+  const rows: any[] = [];
+  
+  // Add header row
+  rows.push([
+    'Date',
+    'Store',
+    'Voucher #',
+    'Type',
+    'Vendor',
+    'Item #',
+    'Item Name',
+    'Qty',
+    'Cost',
+    'QB Total',
+    'Corrected Total',
+    'Time'
+  ]);
+  
+  // Add data rows
+  vouchers.forEach(voucher => {
+    voucher.lines.forEach((line, index) => {
+      rows.push([
+        voucher.date,
+        voucher.store,
+        voucher.voucherNumber,
+        voucher.type,
+        voucher.vendor,
+        line.itemNumber,
+        line.itemName,
+        line.qty,
+        line.cost,
+        index === 0 ? voucher.qbTotal : '', // Show QB total only on first line
+        index === 0 ? voucher.correctedTotal : '', // Show corrected total only on first line
+        index === 0 ? voucher.time : '' // Show time only on first line
+      ]);
+    });
+  });
+  
+  // Create worksheet and workbook
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Flattened Vouchers');
+  
+  // Download file
+  XLSX.writeFile(workbook, fileName);
+}
