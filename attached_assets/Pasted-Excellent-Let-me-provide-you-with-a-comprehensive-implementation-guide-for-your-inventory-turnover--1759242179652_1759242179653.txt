@@ -1,0 +1,1138 @@
+Excellent! Let me provide you with a comprehensive implementation guide for your inventory turnover reporting system.
+
+## 1. **Database Schema Design**
+
+### Create Essential Tables
+
+```sql
+-- Historical inventory snapshots (run daily)
+CREATE TABLE inventory_snapshots (
+    snapshot_id INT PRIMARY KEY AUTO_INCREMENT,
+    snapshot_date DATE NOT NULL,
+    item_number VARCHAR(20),
+    item_name VARCHAR(255),
+    quantity_on_hand INT,
+    unit_cost DECIMAL(10,2),
+    total_value DECIMAL(12,2),
+    vendor_name VARCHAR(100),
+    category VARCHAR(50),
+    store_id INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_snapshot_date (snapshot_date),
+    INDEX idx_item_date (item_number, snapshot_date)
+);
+
+-- Aggregated turnover metrics (pre-calculated)
+CREATE TABLE turnover_metrics (
+    metric_id INT PRIMARY KEY AUTO_INCREMENT,
+    calculation_date DATE NOT NULL,
+    period_type ENUM('DAILY','WEEKLY','MONTHLY','QUARTERLY','YEARLY'),
+    period_start DATE,
+    period_end DATE,
+    item_number VARCHAR(20),
+    item_name VARCHAR(255),
+    category VARCHAR(50),
+    vendor_name VARCHAR(100),
+    beginning_inventory_value DECIMAL(12,2),
+    ending_inventory_value DECIMAL(12,2),
+    average_inventory_value DECIMAL(12,2),
+    cogs DECIMAL(12,2),
+    sales_revenue DECIMAL(12,2),
+    units_sold INT,
+    units_received INT,
+    turnover_ratio DECIMAL(8,4),
+    days_sales_inventory INT,
+    sell_through_rate DECIMAL(5,2),
+    weeks_of_supply DECIMAL(8,2),
+    is_dead_stock BOOLEAN DEFAULT FALSE,
+    INDEX idx_calc_date (calculation_date),
+    INDEX idx_turnover_ratio (turnover_ratio),
+    INDEX idx_category (category)
+);
+
+-- Inventory movements consolidated view
+CREATE TABLE inventory_movements (
+    movement_id INT PRIMARY KEY AUTO_INCREMENT,
+    movement_date DATETIME,
+    movement_type ENUM('RECEIVING','SALE','ADJUSTMENT','RETURN','TRANSFER'),
+    item_number VARCHAR(20),
+    quantity INT,
+    unit_cost DECIMAL(10,2),
+    total_cost DECIMAL(12,2),
+    reference_number VARCHAR(50),
+    store_id INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_movement_date (movement_date),
+    INDEX idx_item_movement (item_number, movement_date)
+);
+```
+
+## 2. **Core SQL Queries for Calculations**
+
+### Calculate Inventory Turnover by Item
+
+```sql
+-- Calculate turnover ratio for a specific period
+WITH inventory_calc AS (
+    SELECT 
+        i.item_number,
+        i.item_name,
+        i.category,
+        i.vendor_name,
+        -- Get beginning inventory value
+        (SELECT COALESCE(SUM(quantity_on_hand * unit_cost), 0)
+         FROM inventory_snapshots 
+         WHERE item_number = i.item_number 
+         AND snapshot_date = '2024-01-01') as beginning_inv_value,
+        
+        -- Get ending inventory value  
+        (SELECT COALESCE(SUM(quantity_on_hand * unit_cost), 0)
+         FROM inventory_snapshots 
+         WHERE item_number = i.item_number 
+         AND snapshot_date = '2024-12-31') as ending_inv_value,
+        
+        -- Calculate COGS from sales
+        (SELECT COALESCE(SUM(quantity * unit_cost), 0)
+         FROM sales_transactions 
+         WHERE item_number = i.item_number 
+         AND sale_date BETWEEN '2024-01-01' AND '2024-12-31') as cogs,
+        
+        -- Total units sold
+        (SELECT COALESCE(SUM(quantity), 0)
+         FROM sales_transactions 
+         WHERE item_number = i.item_number 
+         AND sale_date BETWEEN '2024-01-01' AND '2024-12-31') as units_sold,
+         
+        -- Total units received
+        (SELECT COALESCE(SUM(qty), 0)
+         FROM receiving_history 
+         WHERE item_number = i.item_number 
+         AND receiving_date BETWEEN '2024-01-01' AND '2024-12-31') as units_received
+    FROM items i
+)
+SELECT 
+    *,
+    (beginning_inv_value + ending_inv_value) / 2 as avg_inventory_value,
+    CASE 
+        WHEN (beginning_inv_value + ending_inv_value) / 2 > 0 
+        THEN cogs / ((beginning_inv_value + ending_inv_value) / 2)
+        ELSE 0 
+    END as turnover_ratio,
+    CASE 
+        WHEN cogs > 0 
+        THEN 365 / (cogs / ((beginning_inv_value + ending_inv_value) / 2))
+        ELSE 999 
+    END as days_sales_inventory,
+    CASE 
+        WHEN (units_sold + ending_inv_value/NULLIF((ending_inv_value/NULLIF(units_received,0)),0)) > 0
+        THEN (units_sold * 100.0) / (units_sold + (ending_inv_value/NULLIF((ending_inv_value/NULLIF(units_received,0)),0)))
+        ELSE 0
+    END as sell_through_rate
+FROM inventory_calc
+ORDER BY turnover_ratio DESC;
+```
+
+### ABC Analysis Query
+
+```sql
+-- ABC Classification based on sales value
+WITH sales_analysis AS (
+    SELECT 
+        i.item_number,
+        i.item_name,
+        i.category,
+        SUM(s.quantity * s.selling_price) as total_sales_value,
+        SUM(s.quantity) as total_units_sold,
+        AVG(inv.quantity_on_hand * inv.unit_cost) as avg_inventory_value
+    FROM items i
+    LEFT JOIN sales_transactions s ON i.item_number = s.item_number
+    LEFT JOIN inventory_snapshots inv ON i.item_number = inv.item_number
+    WHERE s.sale_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    GROUP BY i.item_number, i.item_name, i.category
+),
+ranked_items AS (
+    SELECT 
+        *,
+        SUM(total_sales_value) OVER (ORDER BY total_sales_value DESC) as cumulative_sales,
+        SUM(total_sales_value) OVER () as total_sales,
+        ROW_NUMBER() OVER (ORDER BY total_sales_value DESC) as rank_number
+    FROM sales_analysis
+)
+SELECT 
+    *,
+    ROUND((cumulative_sales / total_sales) * 100, 2) as cumulative_percentage,
+    CASE 
+        WHEN (cumulative_sales / total_sales) <= 0.80 THEN 'A'
+        WHEN (cumulative_sales / total_sales) <= 0.95 THEN 'B'
+        ELSE 'C'
+    END as abc_classification
+FROM ranked_items;
+```
+
+### Slow-Moving & Dead Stock Identification
+
+```sql
+-- Identify slow-moving and dead stock
+SELECT 
+    i.item_number,
+    i.item_name,
+    i.category,
+    i.vendor_name,
+    COALESCE(inv.quantity_on_hand, 0) as current_stock,
+    COALESCE(inv.unit_cost * inv.quantity_on_hand, 0) as inventory_value,
+    COALESCE(s.last_sale_date, 'Never') as last_sale_date,
+    COALESCE(s.days_since_last_sale, 999) as days_since_last_sale,
+    COALESCE(r.last_received_date, 'Never') as last_received_date,
+    CASE 
+        WHEN s.days_since_last_sale IS NULL OR s.days_since_last_sale > 180 THEN 'Dead Stock'
+        WHEN s.days_since_last_sale > 90 THEN 'Slow Moving'
+        WHEN s.days_since_last_sale > 30 THEN 'Normal'
+        ELSE 'Fast Moving'
+    END as stock_classification,
+    ROUND(COALESCE(s.avg_daily_sales, 0), 2) as avg_daily_sales,
+    CASE 
+        WHEN s.avg_daily_sales > 0 
+        THEN ROUND(inv.quantity_on_hand / s.avg_daily_sales, 0)
+        ELSE 999
+    END as days_of_supply
+FROM items i
+LEFT JOIN (
+    SELECT 
+        item_number,
+        MAX(sale_date) as last_sale_date,
+        DATEDIFF(CURDATE(), MAX(sale_date)) as days_since_last_sale,
+        SUM(quantity) / NULLIF(DATEDIFF(MAX(sale_date), MIN(sale_date)), 0) as avg_daily_sales
+    FROM sales_transactions
+    WHERE sale_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+    GROUP BY item_number
+) s ON i.item_number = s.item_number
+LEFT JOIN (
+    SELECT 
+        item_number,
+        quantity_on_hand,
+        unit_cost
+    FROM inventory_snapshots
+    WHERE snapshot_date = CURDATE()
+) inv ON i.item_number = inv.item_number
+LEFT JOIN (
+    SELECT 
+        item_number,
+        MAX(receiving_date) as last_received_date
+    FROM receiving_history
+    GROUP BY item_number
+) r ON i.item_number = r.item_number
+WHERE inv.quantity_on_hand > 0
+ORDER BY days_since_last_sale DESC;
+```
+
+## 3. **Dashboard Components (React/Vue.js)**
+
+### Main Dashboard Component
+
+```javascript
+// InventoryTurnoverDashboard.jsx
+import React, { useState, useEffect } from 'react';
+import { LineChart, BarChart, PieChart, HeatMap } from 'recharts';
+
+const InventoryTurnoverDashboard = () => {
+    const [metrics, setMetrics] = useState({
+        overallTurnover: 0,
+        avgDSI: 0,
+        deadStockValue: 0,
+        topPerformers: [],
+        bottomPerformers: [],
+        categoryBreakdown: [],
+        turnoverTrend: []
+    });
+    
+    const [filters, setFilters] = useState({
+        dateRange: 'last_30_days',
+        category: 'all',
+        vendor: 'all',
+        store: 'all'
+    });
+
+    useEffect(() => {
+        fetchDashboardMetrics(filters);
+    }, [filters]);
+
+    const fetchDashboardMetrics = async (filters) => {
+        const response = await fetch('/api/inventory/turnover-metrics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(filters)
+        });
+        const data = await response.json();
+        setMetrics(data);
+    };
+
+    return (
+        <div className="dashboard-container">
+            {/* KPI Cards */}
+            <div className="kpi-row">
+                <KPICard 
+                    title="Overall Turnover Ratio"
+                    value={metrics.overallTurnover}
+                    change={metrics.turnoverChange}
+                    format="ratio"
+                    target={5.0}
+                />
+                <KPICard 
+                    title="Avg Days Sales Inventory"
+                    value={metrics.avgDSI}
+                    change={metrics.dsiChange}
+                    format="days"
+                    target={60}
+                />
+                <KPICard 
+                    title="Dead Stock Value"
+                    value={metrics.deadStockValue}
+                    change={metrics.deadStockChange}
+                    format="currency"
+                    alert={metrics.deadStockValue > 10000}
+                />
+                <KPICard 
+                    title="Stock Efficiency"
+                    value={metrics.stockEfficiency}
+                    format="percentage"
+                    target={85}
+                />
+            </div>
+
+            {/* Turnover Trend Chart */}
+            <div className="chart-container">
+                <h3>Turnover Ratio Trend</h3>
+                <LineChart width={800} height={300} data={metrics.turnoverTrend}>
+                    <XAxis dataKey="month" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="turnover" stroke="#8884d8" />
+                    <Line type="monotone" dataKey="target" stroke="#82ca9d" strokeDasharray="5 5" />
+                </LineChart>
+            </div>
+
+            {/* Category Performance Heatmap */}
+            <div className="heatmap-container">
+                <h3>Category Performance Matrix</h3>
+                <CategoryHeatmap data={metrics.categoryBreakdown} />
+            </div>
+
+            {/* Top/Bottom Performers Tables */}
+            <div className="tables-row">
+                <div className="table-container">
+                    <h3>Top 10 Fast-Moving Items</h3>
+                    <ItemsTable 
+                        items={metrics.topPerformers}
+                        columns={['Item', 'Turnover', 'DSI', 'Stock Level']}
+                        highlightType="positive"
+                    />
+                </div>
+                <div className="table-container">
+                    <h3>Top 10 Slow-Moving Items</h3>
+                    <ItemsTable 
+                        items={metrics.bottomPerformers}
+                        columns={['Item', 'Days Since Sale', 'Stock Value', 'Action']}
+                        highlightType="negative"
+                    />
+                </div>
+            </div>
+
+            {/* ABC Analysis Pie Chart */}
+            <div className="abc-analysis">
+                <h3>ABC Classification</h3>
+                <PieChart width={400} height={400}>
+                    <Pie
+                        data={metrics.abcClassification}
+                        cx={200}
+                        cy={200}
+                        labelLine={false}
+                        label={renderCustomizedLabel}
+                        outerRadius={80}
+                        fill="#8884d8"
+                        dataKey="value"
+                    >
+                        {metrics.abcClassification.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                    </Pie>
+                    <Tooltip />
+                </PieChart>
+            </div>
+        </div>
+    );
+};
+```
+
+### API Endpoint Implementation
+
+```python
+# api/inventory_turnover.py
+from flask import Flask, jsonify, request
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+
+class InventoryTurnoverAPI:
+    
+    @app.route('/api/inventory/turnover-metrics', methods=['POST'])
+    def get_turnover_metrics():
+        filters = request.json
+        
+        # Parse filters
+        date_range = parse_date_range(filters.get('dateRange', 'last_30_days'))
+        category = filters.get('category', 'all')
+        vendor = filters.get('vendor', 'all')
+        
+        # Build base query
+        base_query = """
+        SELECT 
+            tm.*,
+            i.style_number,
+            i.selling_price
+        FROM turnover_metrics tm
+        JOIN items i ON tm.item_number = i.item_number
+        WHERE tm.period_end BETWEEN %s AND %s
+        """
+        
+        params = [date_range['start'], date_range['end']]
+        
+        # Add filters
+        if category != 'all':
+            base_query += " AND tm.category = %s"
+            params.append(category)
+            
+        if vendor != 'all':
+            base_query += " AND tm.vendor_name = %s"
+            params.append(vendor)
+        
+        # Execute query and process results
+        df = pd.read_sql(base_query, connection, params=params)
+        
+        # Calculate aggregate metrics
+        metrics = {
+            'overallTurnover': calculate_overall_turnover(df),
+            'avgDSI': calculate_average_dsi(df),
+            'deadStockValue': calculate_dead_stock_value(df),
+            'topPerformers': get_top_performers(df, n=10),
+            'bottomPerformers': get_bottom_performers(df, n=10),
+            'categoryBreakdown': get_category_breakdown(df),
+            'turnoverTrend': get_turnover_trend(df),
+            'abcClassification': get_abc_classification(df),
+            'stockEfficiency': calculate_stock_efficiency(df),
+            'reorderAlerts': generate_reorder_alerts(df)
+        }
+        
+        return jsonify(metrics)
+    
+    def calculate_overall_turnover(df):
+        """Calculate weighted average turnover ratio"""
+        if df.empty:
+            return 0
+        
+        total_cogs = df['cogs'].sum()
+        avg_inventory = df['average_inventory_value'].sum()
+        
+        if avg_inventory == 0:
+            return 0
+            
+        return round(total_cogs / avg_inventory, 2)
+    
+    def calculate_average_dsi(df):
+        """Calculate average days sales of inventory"""
+        if df.empty:
+            return 0
+            
+        valid_dsi = df[df['days_sales_inventory'] < 999]['days_sales_inventory']
+        return round(valid_dsi.mean(), 0) if not valid_dsi.empty else 0
+    
+    def get_top_performers(df, n=10):
+        """Get top performing items by turnover ratio"""
+        top_items = df.nlargest(n, 'turnover_ratio')
+        
+        return [{
+            'itemNumber': row['item_number'],
+            'itemName': row['item_name'],
+            'category': row['category'],
+            'turnoverRatio': round(row['turnover_ratio'], 2),
+            'dsi': int(row['days_sales_inventory']),
+            'stockLevel': row['ending_inventory_value'],
+            'sellThrough': round(row['sell_through_rate'], 1),
+            'trend': calculate_trend(row['item_number'])
+        } for _, row in top_items.iterrows()]
+    
+    def generate_reorder_alerts(df):
+        """Generate intelligent reorder alerts based on turnover patterns"""
+        alerts = []
+        
+        for _, row in df.iterrows():
+            # Calculate reorder point based on turnover
+            avg_daily_sales = row['units_sold'] / 365
+            lead_time_days = get_vendor_lead_time(row['vendor_name'])
+            safety_stock_days = 7  # Can be adjusted based on item criticality
+            
+            reorder_point = (avg_daily_sales * lead_time_days) + (avg_daily_sales * safety_stock_days)
+            current_stock = get_current_stock(row['item_number'])
+            
+            if current_stock <= reorder_point:
+                alerts.append({
+                    'itemNumber': row['item_number'],
+                    'itemName': row['item_name'],
+                    'currentStock': current_stock,
+                    'reorderPoint': round(reorder_point, 0),
+                    'suggestedOrderQty': calculate_optimal_order_qty(row),
+                    'urgency': 'high' if current_stock < (reorder_point * 0.5) else 'medium'
+                })
+        
+        return sorted(alerts, key=lambda x: x['urgency'] == 'high', reverse=True)
+```
+
+## 4. **Automated Reporting System**
+
+### Daily Calculation Job
+
+```python
+# scheduled_jobs/turnover_calculations.py
+import schedule
+import time
+from datetime import datetime, timedelta
+
+class TurnoverCalculationJob:
+    
+    def run_daily_calculations(self):
+        """Run daily turnover calculations and store in database"""
+        
+        print(f"Starting turnover calculations at {datetime.now()}")
+        
+        # Step 1: Take inventory snapshot
+        self.create_inventory_snapshot()
+        
+        # Step 2: Calculate daily metrics
+        self.calculate_daily_metrics()
+        
+        # Step 3: Update weekly and monthly aggregates
+        if datetime.now().weekday() == 6:  # Sunday
+            self.calculate_weekly_metrics()
+        
+        if datetime.now().day == 1:  # First of month
+            self.calculate_monthly_metrics()
+        
+        # Step 4: Generate alerts
+        self.generate_and_send_alerts()
+        
+        # Step 5: Clean up old data
+        self.archive_old_data()
+        
+        print(f"Completed turnover calculations at {datetime.now()}")
+    
+    def create_inventory_snapshot(self):
+        """Create daily snapshot of inventory levels"""
+        
+        query = """
+        INSERT INTO inventory_snapshots 
+        (snapshot_date, item_number, item_name, quantity_on_hand, 
+         unit_cost, total_value, vendor_name, category, store_id)
+        SELECT 
+            CURDATE(),
+            i.item_number,
+            i.item_name,
+            COALESCE(inv.quantity_on_hand, 0),
+            i.unit_cost,
+            COALESCE(inv.quantity_on_hand * i.unit_cost, 0),
+            i.vendor_name,
+            i.category,
+            i.store_id
+        FROM items i
+        LEFT JOIN current_inventory inv ON i.item_number = inv.item_number
+        """
+        
+        execute_query(query)
+    
+    def calculate_daily_metrics(self):
+        """Calculate and store daily turnover metrics"""
+        
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=30)  # 30-day rolling window
+        
+        query = """
+        INSERT INTO turnover_metrics 
+        (calculation_date, period_type, period_start, period_end, 
+         item_number, item_name, category, vendor_name,
+         beginning_inventory_value, ending_inventory_value, 
+         average_inventory_value, cogs, sales_revenue, units_sold, 
+         units_received, turnover_ratio, days_sales_inventory, 
+         sell_through_rate, weeks_of_supply, is_dead_stock)
+        SELECT 
+            CURDATE(),
+            'DAILY',
+            %s,
+            %s,
+            i.item_number,
+            i.item_name,
+            i.category,
+            i.vendor_name,
+            -- Calculate metrics here
+            ...
+        FROM items i
+        """
+        
+        execute_query(query, (start_date, end_date))
+    
+    def generate_and_send_alerts(self):
+        """Generate and send email alerts for critical inventory situations"""
+        
+        # Check for dead stock
+        dead_stock = self.identify_dead_stock()
+        if dead_stock:
+            self.send_dead_stock_alert(dead_stock)
+        
+        # Check for items needing reorder
+        reorder_items = self.identify_reorder_needs()
+        if reorder_items:
+            self.send_reorder_alert(reorder_items)
+        
+        # Check for overstock situations
+        overstock_items = self.identify_overstock()
+        if overstock_items:
+            self.send_overstock_alert(overstock_items)
+
+# Schedule the job
+schedule.every().day.at("02:00").do(TurnoverCalculationJob().run_daily_calculations)
+
+while True:
+    schedule.run_pending()
+    time.sleep(60)
+```
+
+## 5. **Excel Export Template**
+
+```python
+# exports/excel_exporter.py
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+class TurnoverReportExporter:
+    
+    def generate_comprehensive_report(self, start_date, end_date, email_to=None):
+        """Generate comprehensive Excel report with multiple sheets"""
+        
+        wb = Workbook()
+        
+        # Sheet 1: Executive Summary
+        self.create_executive_summary(wb, start_date, end_date)
+        
+        # Sheet 2: Detailed Item Analysis
+        self.create_item_analysis(wb, start_date, end_date)
+        
+        # Sheet 3: Category Performance
+        self.create_category_analysis(wb, start_date, end_date)
+        
+        # Sheet 4: Vendor Performance
+        self.create_vendor_analysis(wb, start_date, end_date)
+        
+        # Sheet 5: ABC Analysis
+        self.create_abc_analysis(wb, start_date, end_date)
+        
+        # Sheet 6: Dead Stock Report
+        self.create_dead_stock_report(wb)
+        
+        # Sheet 7: Reorder Recommendations
+        self.create_reorder_report(wb)
+        
+        # Save and send
+        filename = f"Inventory_Turnover_Report_{start_date}_{end_date}.xlsx"
+        wb.save(filename)
+        
+        if email_to:
+            self.send_email_with_attachment(filename, email_to)
+        
+        return filename
+    
+    def create_executive_summary(self, wb, start_date, end_date):
+        """Create executive summary sheet with KPIs and charts"""
+        
+        ws = wb.active
+        ws.title = "Executive Summary"
+        
+        # Add header
+        ws['A1'] = "Inventory Turnover Report"
+        ws['A1'].font = Font(size=16, bold=True)
+        ws['A2'] = f"Period: {start_date} to {end_date}"
+        
+        # KPI Section
+        kpis = self.get_kpi_metrics(start_date, end_date)
+        
+        row = 4
+        ws[f'A{row}'] = "Key Performance Indicators"
+        ws[f'A{row}'].font = Font(size=14, bold=True)
+        
+        row += 2
+        kpi_data = [
+            ['Metric', 'Current Period', 'Previous Period', 'Change %', 'Target', 'Status'],
+            ['Overall Turnover Ratio', kpis['current_turnover'], kpis['prev_turnover'], 
+             kpis['turnover_change'], 5.0, self.get_status(kpis['current_turnover'], 5.0)],
+            ['Average DSI', kpis['current_dsi'], kpis['prev_dsi'], 
+             kpis['dsi_change'], 60, self.get_status(kpis['current_dsi'], 60, inverse=True)],
+            ['Dead Stock Value', kpis['dead_stock_value'], kpis['prev_dead_stock'], 
+             kpis['dead_stock_change'], 5000, self.get_status(kpis['dead_stock_value'], 5000, inverse=True)],
+            ['Stock Efficiency %', kpis['efficiency'], kpis['prev_efficiency'], 
+             kpis['efficiency_change'], 85, self.get_status(kpis['efficiency'], 85)]
+        ]
+        
+        for row_data in kpi_data:
+            ws.append(row_data)
+            row += 1
+        
+        # Apply formatting
+        self.apply_kpi_formatting(ws, row - len(kpi_data), row)
+        
+        # Add charts
+        self.add_turnover_trend_chart(ws, row + 2)
+        self.add_category_performance_chart(ws, row + 20)
+    
+    def create_item_analysis(self, wb, start_date, end_date):
+        """Create detailed item-level analysis"""
+        
+        ws = wb.create_sheet("Item Analysis")
+        
+        # Get data
+        query = """
+        SELECT 
+            item_number,
+            item_name,
+            category,
+            vendor_name,
+            turnover_ratio,
+            days_sales_inventory,
+            current_stock,
+            stock_value,
+            units_sold_30d,
+            units_sold_90d,
+            sell_through_rate,
+            weeks_of_supply,
+            last_sale_date,
+            last_received_date,
+            CASE 
+                WHEN turnover_ratio >= 8 THEN 'Excellent'
+                WHEN turnover_ratio >= 5 THEN 'Good'
+                WHEN turnover_ratio >= 3 THEN 'Average'
+                WHEN turnover_ratio >= 1 THEN 'Below Average'
+                ELSE 'Poor'
+            END as performance_rating
+        FROM turnover_metrics
+        WHERE calculation_date = CURDATE()
+        ORDER BY turnover_ratio DESC
+        """
+        
+        df = pd.read_sql(query, connection)
+        
+        # Write to sheet
+        for r in dataframe_to_rows(df, index=False, header=True):
+            ws.append(r)
+        
+        # Apply conditional formatting
+        self.apply_conditional_formatting(ws, 'E', 'turnover')
+        self.apply_conditional_formatting(ws, 'F', 'dsi')
+        
+        # Add filters
+        ws.auto_filter.ref = ws.dimensions
+    
+    def apply_conditional_formatting(self, ws, column, metric_type):
+        """Apply color scales to metric columns"""
+        
+        from openpyxl.formatting.rule import ColorScaleRule
+        
+        if metric_type == 'turnover':
+            # Green (high) to Red (low) for turnover
+            rule = ColorScaleRule(
+                start_type='num', start_value=0, start_color='FF0000',
+                mid_type='num', mid_value=5, mid_color='FFFF00',
+                end_type='num', end_value=10, end_color='00FF00'
+            )
+        elif metric_type == 'dsi':
+            # Green (low) to Red (high) for DSI
+            rule = ColorScaleRule(
+                start_type='num', start_value=0, start_color='00FF00',
+                mid_type='num', mid_value=60, mid_color='FFFF00',
+                end_type='num', end_value=180, end_color='FF0000'
+            )
+        
+        ws.conditional_formatting.add(f'{column}2:{column}1000', rule)
+```
+
+## 6. **Mobile Dashboard (React Native)**
+
+```javascript
+// MobileTurnoverDashboard.js
+import React from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  StyleSheet,
+  RefreshControl,
+  TouchableOpacity
+} from 'react-native';
+import { LineChart, BarChart } from 'react-native-chart-kit';
+
+const MobileTurnoverDashboard = () => {
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [metrics, setMetrics] = React.useState({});
+  const [selectedPeriod, setSelectedPeriod] = React.useState('30d');
+
+  const onRefresh = React.useCallback(() => {
+    setRefreshing(true);
+    fetchMetrics().then(() => setRefreshing(false));
+  }, []);
+
+  const renderKPICard = (title, value, change, format) => (
+    <View style={styles.kpiCard}>
+      <Text style={styles.kpiTitle}>{title}</Text>
+      <Text style={styles.kpiValue}>
+        {format === 'currency' && '$'}
+        {value}
+        {format === 'percentage' && '%'}
+      </Text>
+      <View style={styles.changeContainer}>
+        <Text style={[
+          styles.changeText,
+          { color: change >= 0 ? '#4CAF50' : '#F44336' }
+        ]}>
+          {change >= 0 ? '↑' : '↓'} {Math.abs(change)}%
+        </Text>
+      </View>
+    </View>
+  );
+
+  return (
+    <ScrollView
+      style={styles.container}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+      }
+    >
+      {/* Period Selector */}
+      <View style={styles.periodSelector}>
+        {['7d', '30d', '90d', '1y'].map(period => (
+          <TouchableOpacity
+            key={period}
+            style={[
+              styles.periodButton,
+              selectedPeriod === period && styles.periodButtonActive
+            ]}
+            onPress={() => setSelectedPeriod(period)}
+          >
+            <Text style={styles.periodText}>{period}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* KPI Cards */}
+      <View style={styles.kpiContainer}>
+        {renderKPICard('Turnover', metrics.turnover, metrics.turnoverChange, 'ratio')}
+        {renderKPICard('Avg DSI', metrics.avgDSI, metrics.dsiChange, 'days')}
+        {renderKPICard('Dead Stock', metrics.deadStock, metrics.deadStockChange, 'currency')}
+        {renderKPICard('Efficiency', metrics.efficiency, metrics.efficiencyChange, 'percentage')}
+      </View>
+
+      {/* Turnover Trend Chart */}
+      <View style={styles.chartContainer}>
+        <Text style={styles.chartTitle}>Turnover Trend</Text>
+        <LineChart
+          data={{
+            labels: metrics.trendLabels || [],
+            datasets: [{
+              data: metrics.trendData || []
+            }]
+          }}
+          width={Dimensions.get('window').width - 40}
+          height={220}
+          chartConfig={chartConfig}
+          bezier
+        />
+      </View>
+
+      {/* Top Items List */}
+      <View style={styles.listContainer}>
+        <Text style={styles.listTitle}>Top Performing Items</Text>
+        {metrics.topItems?.map((item, index) => (
+          <View key={item.id} style={styles.listItem}>
+            <Text style={styles.itemRank}>#{index + 1}</Text>
+            <View style={styles.itemInfo}>
+              <Text style={styles.itemName}>{item.name}</Text>
+              <Text style={styles.itemMetric}>
+                Turnover: {item.turnover} | DSI: {item.dsi}
+              </Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
+      {/* Alerts Section */}
+      <View style={styles.alertContainer}>
+        <Text style={styles.alertTitle}>Action Required</Text>
+        {metrics.alerts?.map(alert => (
+          <TouchableOpacity key={alert.id} style={styles.alertCard}>
+            <View style={[styles.alertIndicator, { backgroundColor: alert.color }]} />
+            <View style={styles.alertContent}>
+              <Text style={styles.alertText}>{alert.message}</Text>
+              <Text style={styles.alertSubtext}>{alert.items} items affected</Text>
+            </View>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </ScrollView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5'
+  },
+  kpiContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    padding: 20
+  },
+  kpiCard: {
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 15,
+    width: '48%',
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3
+  },
+  // ... additional styles
+});
+```
+
+## 7. **Performance Optimization Strategies**
+
+### Database Indexes
+
+```sql
+-- Create optimized indexes for turnover calculations
+CREATE INDEX idx_inventory_snapshots_composite 
+ON inventory_snapshots(item_number, snapshot_date, quantity_on_hand, unit_cost);
+
+CREATE INDEX idx_sales_item_date 
+ON sales_transactions(item_number, sale_date, quantity, unit_cost);
+
+CREATE INDEX idx_receiving_item_date 
+ON receiving_history(item_number, receiving_date, qty, cost);
+
+-- Materialized view for real-time turnover
+CREATE MATERIALIZED VIEW mv_current_turnover AS
+SELECT 
+    i.item_number,
+    i.item_name,
+    i.category,
+    i.vendor_name,
+    COALESCE(inv.quantity_on_hand, 0) as current_stock,
+    COALESCE(inv.quantity_on_hand * inv.unit_cost, 0) as current_value,
+    COALESCE(s30.units_sold, 0) as units_sold_30d,
+    COALESCE(s30.cogs, 0) as cogs_30d,
+    CASE 
+        WHEN avg_inv.avg_value > 0 
+        THEN (s30.cogs * 12) / avg_inv.avg_value  -- Annualized
+        ELSE 0 
+    END as turnover_ratio,
+    COALESCE(s30.last_sale_date, '1900-01-01') as last_sale_date
+FROM items i
+LEFT JOIN current_inventory inv ON i.item_number = inv.item_number
+LEFT JOIN (
+    SELECT 
+        item_number,
+        SUM(quantity) as units_sold,
+        SUM(quantity * unit_cost) as cogs,
+        MAX(sale_date) as last_sale_date
+    FROM sales_transactions
+    WHERE sale_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY item_number
+) s30 ON i.item_number = s30.item_number
+LEFT JOIN (
+    SELECT 
+        item_number,
+        AVG(quantity_on_hand * unit_cost) as avg_value
+    FROM inventory_snapshots
+    WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY item_number
+) avg_inv ON i.item_number = avg_inv.item_number;
+
+-- Refresh materialized view every hour
+CREATE EVENT refresh_turnover_view
+ON SCHEDULE EVERY 1 HOUR
+DO REFRESH MATERIALIZED VIEW mv_current_turnover;
+```
+
+### Caching Strategy
+
+```python
+# cache/redis_cache.py
+import redis
+import json
+from datetime import timedelta
+
+class TurnoverCache:
+    def __init__(self):
+        self.redis_client = redis.Redis(
+            host='localhost',
+            port=6379,
+            decode_responses=True
+        )
+    
+    def get_or_set_metrics(self, key, calculation_func, ttl=3600):
+        """Get metrics from cache or calculate and cache them"""
+        
+        # Try to get from cache
+        cached = self.redis_client.get(key)
+        if cached:
+            return json.loads(cached)
+        
+        # Calculate if not in cache
+        result = calculation_func()
+        
+        # Store in cache
+        self.redis_client.setex(
+            key,
+            timedelta(seconds=ttl),
+            json.dumps(result)
+        )
+        
+        return result
+    
+    def invalidate_pattern(self, pattern):
+        """Invalidate all cache keys matching pattern"""
+        for key in self.redis_client.scan_iter(match=pattern):
+            self.redis_client.delete(key)
+```
+
+## 8. **Alert Configuration System**
+
+```python
+# alerts/alert_manager.py
+class AlertManager:
+    def __init__(self):
+        self.alert_rules = self.load_alert_rules()
+    
+    def load_alert_rules(self):
+        """Load configurable alert rules"""
+        return {
+            'dead_stock': {
+                'enabled': True,
+                'threshold_days': 90,
+                'min_value': 100,
+                'recipients': ['inventory@company.com'],
+                'frequency': 'daily'
+            },
+            'slow_moving': {
+                'enabled': True,
+                'threshold_days': 60,
+                'min_value': 500,
+                'recipients': ['manager@company.com'],
+                'frequency': 'weekly'
+            },
+            'low_turnover': {
+                'enabled': True,
+                'threshold_ratio': 2.0,
+                'categories': ['all'],
+                'recipients': ['cfo@company.com'],
+                'frequency': 'monthly'
+            },
+            'overstock': {
+                'enabled': True,
+                'months_of_supply': 6,
+                'min_value': 1000,
+                'recipients': ['purchasing@company.com'],
+                'frequency': 'weekly'
+            },
+            'reorder_point': {
+                'enabled': True,
+                'lead_time_multiplier': 1.5,
+                'safety_stock_days': 7,
+                'recipients': ['purchasing@company.com'],
+                'frequency': 'daily'
+            }
+        }
+    
+    def check_and_send_alerts(self):
+        """Check all alert conditions and send notifications"""
+        
+        alerts = []
+        
+        if self.alert_rules['dead_stock']['enabled']:
+            alerts.extend(self.check_dead_stock())
+        
+        if self.alert_rules['slow_moving']['enabled']:
+            alerts.extend(self.check_slow_moving())
+        
+        if self.alert_rules['low_turnover']['enabled']:
+            alerts.extend(self.check_low_turnover())
+        
+        if self.alert_rules['overstock']['enabled']:
+            alerts.extend(self.check_overstock())
+        
+        if self.alert_rules['reorder_point']['enabled']:
+            alerts.extend(self.check_reorder_points())
+        
+        # Group alerts by recipient and send
+        self.send_grouped_alerts(alerts)
+    
+    def check_dead_stock(self):
+        """Identify dead stock items"""
+        
+        rule = self.alert_rules['dead_stock']
+        
+        query = """
+        SELECT 
+            item_number,
+            item_name,
+            category,
+            current_stock,
+            stock_value,
+            last_sale_date,
+            DATEDIFF(CURDATE(), last_sale_date) as days_since_sale
+        FROM mv_current_turnover
+        WHERE DATEDIFF(CURDATE(), last_sale_date) > %s
+        AND stock_value > %s
+        ORDER BY stock_value DESC
+        """
+        
+        items = execute_query(query, (rule['threshold_days'], rule['min_value']))
+        
+        if items:
+            return [{
+                'type': 'dead_stock',
+                'severity': 'high',
+                'items': items,
+                'message': f"Found {len(items)} dead stock items worth ${sum(i['stock_value'] for i in items):,.2f}",
+                'recipients': rule['recipients']
+            }]
+        
+        return []
+```
+
+This comprehensive implementation provides you with:
+
+1. **Complete database schema** with optimized indexes
+2. **Complex SQL queries** for all turnover calculations
+3. **React dashboard components** with real-time updates
+4. **Python API endpoints** for data processing
+5. **Automated daily jobs** for metric calculations
+6. **Excel export functionality** with formatting
+7. **Mobile app dashboard** for on-the-go monitoring
+8. **Performance optimizations** including caching and materialized views
+9. **Configurable alert system** for proactive management
+
+The system is designed to scale and can handle large inventories efficiently. You can start implementing these components incrementally, beginning with the database schema and core calculations, then adding the dashboard and reporting features.
+
+Would you like me to elaborate on any specific component, such as the forecasting algorithms, integration with your existing systems, or additional visualization options?
