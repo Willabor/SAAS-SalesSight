@@ -33,12 +33,11 @@ import {
   Search, 
   Trash2, 
   DatabaseZap, 
-  Package, 
-  ArrowLeft,
+  Package,
   ChevronLeft,
   ChevronRight
 } from "lucide-react";
-import { Link } from "wouter";
+import { AppHeader } from "@/components/app-header";
 import type { ItemList } from "@shared/schema";
 
 interface ItemListResponse {
@@ -159,25 +158,7 @@ export default function ItemListPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="bg-card border-b border-border">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Link href="/">
-                <Button variant="ghost" size="sm" className="flex items-center gap-2">
-                  <ArrowLeft className="w-4 h-4" />
-                  Dashboard
-                </Button>
-              </Link>
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <Package className="w-5 h-5 text-primary-foreground" />
-              </div>
-              <h1 className="text-xl font-semibold text-foreground">Item List Management</h1>
-            </div>
-          </div>
-        </div>
-      </header>
+      <AppHeader />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Card>

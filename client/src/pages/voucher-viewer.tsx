@@ -39,7 +39,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  ArrowLeft,
   Search,
   ChevronLeft,
   ChevronRight,
@@ -50,7 +49,7 @@ import {
   TrendingUp,
   DatabaseZap,
 } from "lucide-react";
-import { Link } from "wouter";
+import { AppHeader } from "@/components/app-header";
 
 interface ReceivingLine {
   id: number;
@@ -180,29 +179,7 @@ export default function VoucherViewerPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="bg-card border-b border-border">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Link href="/receiving" data-testid="link-back">
-                <Button variant="ghost" size="sm" className="flex items-center gap-2">
-                  <ArrowLeft className="w-4 h-4" />
-                  Back
-                </Button>
-              </Link>
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <Package className="w-5 h-5 text-primary-foreground" />
-              </div>
-              <div>
-                <h1 className="text-lg font-semibold text-foreground">Voucher Viewer</h1>
-                <p className="text-xs text-muted-foreground">
-                  Search and view receiving vouchers
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
+      <AppHeader />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         <Card>

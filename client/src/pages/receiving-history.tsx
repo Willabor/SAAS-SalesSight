@@ -16,7 +16,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft,
   Upload,
   FileSpreadsheet,
   Check,
@@ -26,6 +25,7 @@ import {
   Eye,
   Download,
 } from "lucide-react";
+import { AppHeader } from "@/components/app-header";
 import { Link } from "wouter";
 import {
   formatReceivingFile,
@@ -213,35 +213,17 @@ export default function ReceivingHistoryPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="bg-card border-b border-border">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Link href="/" data-testid="link-dashboard">
-                <Button variant="ghost" size="sm" className="flex items-center gap-2">
-                  <ArrowLeft className="w-4 h-4" />
-                  Dashboard
-                </Button>
-              </Link>
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <FileSpreadsheet className="w-5 h-5 text-primary-foreground" />
-              </div>
-              <div>
-                <h1 className="text-lg font-semibold text-foreground">Receiving History</h1>
-                <p className="text-xs text-muted-foreground">Process QuickBooks receiving vouchers</p>
-              </div>
-            </div>
-            <Link href="/receiving/viewer" data-testid="link-voucher-viewer">
-              <Button variant="outline" className="flex items-center gap-2">
-                <Eye className="w-4 h-4" />
-                View Vouchers
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </header>
+      <AppHeader />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        <div className="flex justify-end">
+          <Link href="/receiving/viewer" data-testid="link-voucher-viewer">
+            <Button variant="outline" className="flex items-center gap-2">
+              <Eye className="w-4 h-4" />
+              View Vouchers
+            </Button>
+          </Link>
+        </div>
         {/* Statistics Cards */}
         {stats && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

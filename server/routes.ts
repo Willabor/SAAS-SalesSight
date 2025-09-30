@@ -63,7 +63,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get dashboard statistics
-  app.get("/api/stats/item-list", async (req, res) => {
+  app.get("/api/stats/item-list", isAuthenticated, async (req, res) => {
     try {
       const stats = await storage.getItemListStats();
       res.json(stats);
@@ -73,7 +73,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/stats/sales", async (req, res) => {
+  app.get("/api/stats/sales", isAuthenticated, async (req, res) => {
     try {
       const stats = await storage.getSalesStats();
       res.json(stats);
@@ -84,7 +84,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all item list data with pagination and search
-  app.get("/api/item-list", async (req, res) => {
+  app.get("/api/item-list", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(String(req.query.limit)) || 50;
       const offset = parseInt(String(req.query.offset)) || 0;
@@ -99,7 +99,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete individual item from item list
-  app.delete("/api/item-list/:id", async (req, res) => {
+  app.delete("/api/item-list/:id", isAuthenticated, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -119,7 +119,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Clear all item list data
-  app.delete("/api/item-list", async (req, res) => {
+  app.delete("/api/item-list", isAuthenticated, async (req, res) => {
     try {
       const deletedCount = await storage.deleteAllItemList();
       res.json({ 
@@ -134,7 +134,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload item list data
-  app.post("/api/upload/item-list", async (req, res) => {
+  app.post("/api/upload/item-list", isAuthenticated, async (req, res) => {
     try {
       const { data, mode, fileName } = req.body;
       
@@ -215,7 +215,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload sales transactions
-  app.post("/api/upload/sales-transactions", async (req, res) => {
+  app.post("/api/upload/sales-transactions", isAuthenticated, async (req, res) => {
     try {
       const { data, fileName } = req.body;
       
@@ -352,7 +352,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get recent upload history
-  app.get("/api/upload-history", async (req, res) => {
+  app.get("/api/upload-history", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 10;
       const history = await storage.getRecentUploads(limit);
@@ -364,7 +364,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all sales transactions with pagination, search, and filters
-  app.get("/api/sales-transactions", async (req, res) => {
+  app.get("/api/sales-transactions", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(String(req.query.limit)) || 50;
       const offset = parseInt(String(req.query.offset)) || 0;
@@ -397,7 +397,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update sales transaction
-  app.put("/api/sales-transactions/:id", async (req, res) => {
+  app.put("/api/sales-transactions/:id", isAuthenticated, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -420,7 +420,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete individual sales transaction
-  app.delete("/api/sales-transactions/:id", async (req, res) => {
+  app.delete("/api/sales-transactions/:id", isAuthenticated, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -440,7 +440,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Clear all sales transactions
-  app.delete("/api/sales-transactions", async (req, res) => {
+  app.delete("/api/sales-transactions", isAuthenticated, async (req, res) => {
     try {
       const deletedCount = await storage.deleteAllSalesTransactions();
       res.json({ 
@@ -455,7 +455,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get sales insights
-  app.get("/api/sales-insights", async (req, res) => {
+  app.get("/api/sales-insights", isAuthenticated, async (req, res) => {
     try {
       const insights = await storage.getSalesInsights();
       res.json(insights);
@@ -468,7 +468,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ===== Receiving History Routes =====
   
   // Get receiving history statistics
-  app.get("/api/receiving/stats", async (req, res) => {
+  app.get("/api/receiving/stats", isAuthenticated, async (req, res) => {
     try {
       const stats = await storage.getReceivingStats();
       res.json(stats);
@@ -479,7 +479,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all receiving vouchers with pagination and search
-  app.get("/api/receiving/vouchers", async (req, res) => {
+  app.get("/api/receiving/vouchers", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(String(req.query.limit)) || 50;
       const offset = parseInt(String(req.query.offset)) || 0;
@@ -504,7 +504,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get voucher by ID with line items
-  app.get("/api/receiving/vouchers/:id", async (req, res) => {
+  app.get("/api/receiving/vouchers/:id", isAuthenticated, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -524,7 +524,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload receiving history data
-  app.post("/api/receiving/upload", async (req, res) => {
+  app.post("/api/receiving/upload", isAuthenticated, async (req, res) => {
     try {
       const { vouchers, fileName } = req.body;
       
@@ -667,7 +667,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete individual receiving voucher
-  app.delete("/api/receiving/vouchers/:id", async (req, res) => {
+  app.delete("/api/receiving/vouchers/:id", isAuthenticated, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -687,7 +687,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Clear all receiving vouchers
-  app.delete("/api/receiving/vouchers", async (req, res) => {
+  app.delete("/api/receiving/vouchers", isAuthenticated, async (req, res) => {
     try {
       const deletedCount = await storage.deleteAllReceivingVouchers();
       res.json({ 
@@ -702,7 +702,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Inventory Turnover API endpoints
-  app.get("/api/inventory/turnover-metrics", async (req, res) => {
+  app.get("/api/inventory/turnover-metrics", isAuthenticated, async (req, res) => {
     try {
       const metrics = await storage.getInventoryTurnoverMetrics();
       res.json(metrics);
@@ -712,7 +712,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/inventory/slow-moving", async (req, res) => {
+  app.get("/api/inventory/slow-moving", isAuthenticated, async (req, res) => {
     try {
       const daysThreshold = parseInt(req.query.days as string) || 90;
       const limit = parseInt(req.query.limit as string) || 100;
@@ -724,7 +724,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/inventory/overstock-understock", async (req, res) => {
+  app.get("/api/inventory/overstock-understock", isAuthenticated, async (req, res) => {
     try {
       const daysRange = parseInt(req.query.days as string) || 30;
       const analysis = await storage.getOverstockUnderstockAnalysis(daysRange);
@@ -735,7 +735,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/inventory/category-analysis", async (req, res) => {
+  app.get("/api/inventory/category-analysis", isAuthenticated, async (req, res) => {
     try {
       const categoryAnalysis = await storage.getCategoryInventoryAnalysis();
       res.json(categoryAnalysis);
