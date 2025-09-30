@@ -131,9 +131,14 @@ export default function ItemListPage() {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
+  // Reset to page 1 when filters or sort changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterCategory, filterGender, filterVendor, sortConfig.key, sortConfig.direction]);
+
   // Fetch item list data
   const { data: itemData, isLoading, error } = useQuery<ItemListResponse>({
-    queryKey: ["/api/item-list", currentPage, debouncedSearch],
+    queryKey: ["/api/item-list", currentPage, debouncedSearch, filterCategory, filterGender, filterVendor, sortConfig.key, sortConfig.direction],
     queryFn: async () => {
       const offset = (currentPage - 1) * itemsPerPage;
       const searchParams = new URLSearchParams({
@@ -143,6 +148,23 @@ export default function ItemListPage() {
       
       if (debouncedSearch) {
         searchParams.append("search", debouncedSearch);
+      }
+      
+      if (filterCategory && filterCategory !== 'all') {
+        searchParams.append("category", filterCategory);
+      }
+      
+      if (filterGender && filterGender !== 'all') {
+        searchParams.append("gender", filterGender);
+      }
+      
+      if (filterVendor && filterVendor !== 'all') {
+        searchParams.append("vendor", filterVendor);
+      }
+      
+      if (sortConfig.key) {
+        searchParams.append("sortBy", sortConfig.key);
+        searchParams.append("sortDirection", sortConfig.direction);
       }
       
       const response = await fetch(`/api/item-list?${searchParams}`);
@@ -171,35 +193,8 @@ export default function ItemListPage() {
     },
   });
 
-  // Apply filters and sorting
-  const filteredAndSortedItems = useMemo(() => {
-    if (!itemData?.items) return [];
-    
-    let filtered = itemData.items.filter(item => {
-      const matchesCategory = filterCategory === 'all' || item.category === filterCategory;
-      const matchesGender = filterGender === 'all' || item.gender === filterGender;
-      const matchesVendor = filterVendor === 'all' || item.vendorName === filterVendor;
-      
-      return matchesCategory && matchesGender && matchesVendor;
-    });
-
-    // Apply sorting
-    if (sortConfig.key) {
-      filtered = [...filtered].sort((a, b) => {
-        const aVal = a[sortConfig.key!];
-        const bVal = b[sortConfig.key!];
-        
-        if (aVal == null) return 1;
-        if (bVal == null) return -1;
-        
-        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-        return 0;
-      });
-    }
-
-    return filtered;
-  }, [itemData, filterCategory, filterGender, filterVendor, sortConfig]);
+  // Items are already filtered and sorted by the server
+  const displayItems = itemData?.items || [];
 
   // Delete individual item mutation
   const deleteItemMutation = useMutation({
@@ -465,11 +460,11 @@ export default function ItemListPage() {
                     <DropdownMenuCheckboxItem
                       checked={false}
                       onCheckedChange={() => handleExport('filtered')}
-                      disabled={filteredAndSortedItems.length === (itemData?.total || 0) && filterCategory === 'all' && filterGender === 'all' && filterVendor === 'all'}
+                      disabled={filterCategory === 'all' && filterGender === 'all' && filterVendor === 'all' && !debouncedSearch}
                       data-testid="button-export-filtered"
                     >
                       <Download className="w-4 h-4 mr-2" />
-                      Export Filtered ({filteredAndSortedItems.length})
+                      Export Filtered ({itemData?.total || 0})
                     </DropdownMenuCheckboxItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -541,7 +536,7 @@ export default function ItemListPage() {
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <div className="flex items-center gap-4">
                 <Badge variant="secondary">
-                  Showing {filteredAndSortedItems.length} of {itemData?.total || 0} items
+                  Showing {displayItems.length} of {itemData?.total || 0} items
                 </Badge>
                 {(searchTerm || filterCategory !== 'all' || filterGender !== 'all' || filterVendor !== 'all') && (
                   <Button 
@@ -610,7 +605,7 @@ export default function ItemListPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredAndSortedItems.map((item) => (
+                      {displayItems.map((item) => (
                         <TableRow key={item.id} data-testid={`row-item-${item.id}`}>
                           {visibleColumns.map(col => {
                             const value = item[col.key];
@@ -647,7 +642,7 @@ export default function ItemListPage() {
                           </TableCell>
                         </TableRow>
                       ))}
-                      {filteredAndSortedItems.length === 0 && (
+                      {displayItems.length === 0 && (
                         <TableRow>
                           <TableCell colSpan={visibleColumns.length + 1} className="text-center py-8 text-muted-foreground">
                             {debouncedSearch || filterCategory !== 'all' || filterGender !== 'all' || filterVendor !== 'all'
