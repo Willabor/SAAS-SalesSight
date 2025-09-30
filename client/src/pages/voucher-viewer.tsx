@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import {
   Table,
   TableBody,
@@ -25,6 +27,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft,
@@ -36,6 +48,7 @@ import {
   Calendar,
   Building2,
   TrendingUp,
+  DatabaseZap,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -77,6 +90,8 @@ export default function VoucherViewerPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedVoucher, setSelectedVoucher] = useState<VoucherWithLines | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
+  const { toast } = useToast();
 
   const itemsPerPage = 50;
 
@@ -118,6 +133,31 @@ export default function VoucherViewerPage() {
   });
 
   const totalPages = Math.ceil((voucherData?.total || 0) / itemsPerPage);
+
+  // Delete all vouchers mutation
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("DELETE", "/api/receiving/vouchers");
+      return response.json();
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving/vouchers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving/stats"] });
+      toast({
+        title: "Database cleared",
+        description: `Successfully removed ${result.deletedCount} vouchers from the database.`,
+      });
+      setDeleteAllDialogOpen(false);
+      setCurrentPage(1);
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to clear database. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
 
   const handleViewDetails = (voucher: ReceivingVoucher) => {
     setSelectedVoucher(voucher as VoucherWithLines);
@@ -167,10 +207,24 @@ export default function VoucherViewerPage() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>Receiving Vouchers</CardTitle>
-            <CardDescription>
-              Search by voucher number, vendor, store, or item number
-            </CardDescription>
+            <div className="flex justify-between items-start">
+              <div>
+                <CardTitle>Receiving Vouchers</CardTitle>
+                <CardDescription>
+                  Search by voucher number, vendor, store, or item number
+                </CardDescription>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setDeleteAllDialogOpen(true)}
+                disabled={deleteAllMutation.isPending || !voucherData?.total}
+                className="flex items-center gap-2"
+                data-testid="button-clear-database"
+              >
+                <DatabaseZap className="w-4 h-4" />
+                Clear Database
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center gap-2">
@@ -447,6 +501,30 @@ export default function VoucherViewerPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Clear Database Dialog */}
+      <AlertDialog open={deleteAllDialogOpen} onOpenChange={setDeleteAllDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear Entire Database</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all {voucherData?.total || 0} receiving vouchers and their associated line items from the database. 
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-clear-database">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteAllMutation.mutate()}
+              disabled={deleteAllMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-clear-database"
+            >
+              {deleteAllMutation.isPending ? "Clearing..." : "Clear Database"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
