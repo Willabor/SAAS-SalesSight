@@ -7,6 +7,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -21,7 +22,9 @@ import {
   TrendingDown,
   BarChart3,
   DollarSign,
+  Download,
 } from "lucide-react";
+import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
 
 interface TurnoverMetrics {
   totalInventoryValue: number;
@@ -129,6 +132,164 @@ export default function InventoryTurnoverDashboard() {
     return <Badge variant={variants[status] || 'default'}>{status}</Badge>;
   };
 
+  // Export handlers
+  const handleExportSlowMoving = () => {
+    if (!slowMoving || slowMoving.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const exportData = formatDataForExport(slowMoving, {
+      itemNumber: 'Item Number',
+      itemName: 'Item Name',
+      category: 'Category',
+      vendorName: 'Vendor',
+      availQty: 'Available Qty',
+      orderCost: 'Order Cost',
+      inventoryValue: 'Inventory Value',
+      lastSold: 'Last Sold Date',
+      daysSinceLastSale: 'Days Since Last Sale',
+      stockStatus: 'Stock Status',
+    });
+
+    exportToExcel(exportData, 'slow-moving-stock', 'Slow Moving Stock');
+  };
+
+  const handleExportStockAnalysis = () => {
+    if (!stockAnalysis || stockAnalysis.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const filteredData = stockAnalysis.filter(item => item.stockStatus !== 'Normal');
+
+    const exportData = formatDataForExport(filteredData, {
+      itemNumber: 'Item Number',
+      itemName: 'Item Name',
+      category: 'Category',
+      vendorName: 'Vendor',
+      availQty: 'On Hand',
+      orderCost: 'Order Cost',
+      unitsSold: 'Units Sold (30d)',
+      avgDailySales: 'Avg Daily Sales',
+      daysOfSupply: 'Days of Supply',
+      inventoryValue: 'Inventory Value',
+      stockStatus: 'Stock Status',
+    });
+
+    exportToExcel(exportData, 'overstock-understock-analysis', 'Stock Analysis');
+  };
+
+  const handleExportCategoryAnalysis = () => {
+    if (!categoryAnalysis || categoryAnalysis.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const exportData = formatDataForExport(categoryAnalysis, {
+      category: 'Category',
+      totalInventoryValue: 'Total Inventory Value',
+      totalUnits: 'Total Units',
+      totalItemsCount: 'Item Count',
+      totalSales: 'Sales (30d)',
+      avgTurnoverRate: 'Turnover Rate %',
+    });
+
+    exportToExcel(exportData, 'category-inventory-analysis', 'Category Analysis');
+  };
+
+  const handleExportAll = () => {
+    if (!slowMoving && !stockAnalysis && !categoryAnalysis) {
+      alert('No data to export');
+      return;
+    }
+
+    const sheets: Array<{ data: Record<string, any>[]; sheetName: string }> = [];
+
+    // Add metrics summary
+    if (metrics) {
+      sheets.push({
+        data: [{
+          'Metric': 'Total Inventory Value',
+          'Value': formatCurrency(metrics.totalInventoryValue),
+        }, {
+          'Metric': 'Total Inventory Units',
+          'Value': formatNumber(metrics.totalInventoryUnits),
+        }, {
+          'Metric': 'Dead Stock Value',
+          'Value': formatCurrency(metrics.deadStockValue),
+        }, {
+          'Metric': 'Dead Stock Units',
+          'Value': formatNumber(metrics.deadStockUnits),
+        }, {
+          'Metric': 'Avg Days Since Last Sale',
+          'Value': Math.round(metrics.avgDaysSinceLastSale),
+        }, {
+          'Metric': 'Dead Stock Percentage',
+          'Value': ((metrics.deadStockValue / metrics.totalInventoryValue) * 100).toFixed(1) + '%',
+        }],
+        sheetName: 'Summary Metrics',
+      });
+    }
+
+    // Add slow moving stock
+    if (slowMoving && slowMoving.length > 0) {
+      sheets.push({
+        data: formatDataForExport(slowMoving, {
+          itemNumber: 'Item Number',
+          itemName: 'Item Name',
+          category: 'Category',
+          vendorName: 'Vendor',
+          availQty: 'Available Qty',
+          orderCost: 'Order Cost',
+          inventoryValue: 'Inventory Value',
+          lastSold: 'Last Sold Date',
+          daysSinceLastSale: 'Days Since Last Sale',
+          stockStatus: 'Stock Status',
+        }),
+        sheetName: 'Slow Moving Stock',
+      });
+    }
+
+    // Add stock analysis
+    if (stockAnalysis && stockAnalysis.length > 0) {
+      const filteredData = stockAnalysis.filter(item => item.stockStatus !== 'Normal');
+      sheets.push({
+        data: formatDataForExport(filteredData, {
+          itemNumber: 'Item Number',
+          itemName: 'Item Name',
+          category: 'Category',
+          vendorName: 'Vendor',
+          availQty: 'On Hand',
+          orderCost: 'Order Cost',
+          unitsSold: 'Units Sold (30d)',
+          avgDailySales: 'Avg Daily Sales',
+          daysOfSupply: 'Days of Supply',
+          inventoryValue: 'Inventory Value',
+          stockStatus: 'Stock Status',
+        }),
+        sheetName: 'Stock Analysis',
+      });
+    }
+
+    // Add category analysis
+    if (categoryAnalysis && categoryAnalysis.length > 0) {
+      sheets.push({
+        data: formatDataForExport(categoryAnalysis, {
+          category: 'Category',
+          totalInventoryValue: 'Total Inventory Value',
+          totalUnits: 'Total Units',
+          totalItemsCount: 'Item Count',
+          totalSales: 'Sales (30d)',
+          avgTurnoverRate: 'Turnover Rate %',
+        }),
+        sheetName: 'Category Analysis',
+      });
+    }
+
+    exportMultipleSheetsToExcel(sheets, 'inventory-turnover-report');
+  };
+
   if (metricsLoading || slowMovingLoading || stockAnalysisLoading || categoryLoading) {
     return (
       <div className="text-center py-16">
@@ -140,6 +301,19 @@ export default function InventoryTurnoverDashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Export All Button */}
+      <div className="flex justify-end">
+        <Button
+          onClick={handleExportAll}
+          variant="default"
+          className="gap-2"
+          data-testid="button-export-all"
+        >
+          <Download className="w-4 h-4" />
+          Export All to Excel
+        </Button>
+      </div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card data-testid="card-total-inventory-value">
@@ -229,7 +403,19 @@ export default function InventoryTurnoverDashboard() {
               <CardTitle>Slow Moving & Dead Stock</CardTitle>
               <CardDescription>Items with no sales in the last 90+ days</CardDescription>
             </div>
-            <Badge variant="secondary">{slowMoving?.length || 0} items</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">{slowMoving?.length || 0} items</Badge>
+              <Button
+                onClick={handleExportSlowMoving}
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                data-testid="button-export-slow-moving"
+              >
+                <Download className="w-3 h-3" />
+                Export
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -273,8 +459,22 @@ export default function InventoryTurnoverDashboard() {
       {/* Overstock & Understock Analysis */}
       <Card data-testid="card-stock-analysis">
         <CardHeader>
-          <CardTitle>Overstock & Understock Analysis</CardTitle>
-          <CardDescription>Based on last 30 days of sales activity</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Overstock & Understock Analysis</CardTitle>
+              <CardDescription>Based on last 30 days of sales activity</CardDescription>
+            </div>
+            <Button
+              onClick={handleExportStockAnalysis}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              data-testid="button-export-stock-analysis"
+            >
+              <Download className="w-3 h-3" />
+              Export
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {stockAnalysis && stockAnalysis.length > 0 ? (
@@ -320,8 +520,22 @@ export default function InventoryTurnoverDashboard() {
       {/* Category Analysis */}
       <Card data-testid="card-category-analysis">
         <CardHeader>
-          <CardTitle>Category Inventory Analysis</CardTitle>
-          <CardDescription>Inventory value and sales by category</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Category Inventory Analysis</CardTitle>
+              <CardDescription>Inventory value and sales by category</CardDescription>
+            </div>
+            <Button
+              onClick={handleExportCategoryAnalysis}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              data-testid="button-export-category-analysis"
+            >
+              <Download className="w-3 h-3" />
+              Export
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {categoryAnalysis && categoryAnalysis.length > 0 ? (
