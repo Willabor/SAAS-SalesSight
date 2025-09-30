@@ -14,6 +14,16 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft,
@@ -25,6 +35,7 @@ import {
   Database,
   Eye,
   Download,
+  DatabaseZap,
 } from "lucide-react";
 import { Link } from "wouter";
 import {
@@ -61,6 +72,7 @@ export default function ReceivingHistoryPage() {
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResponse, setUploadResponse] = useState<UploadResponse | null>(null);
+  const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
   const { toast } = useToast();
 
   const { data: stats } = useQuery<{
@@ -156,6 +168,30 @@ export default function ReceivingHistoryPage() {
       toast({
         title: "Upload Failed",
         description: error instanceof Error ? error.message : "Failed to upload data",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Delete all vouchers mutation
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("DELETE", "/api/receiving/vouchers");
+      return response.json();
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving/vouchers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving/stats"] });
+      toast({
+        title: "Database cleared",
+        description: `Successfully removed ${result.deletedCount} vouchers from the database.`,
+      });
+      setDeleteAllDialogOpen(false);
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to clear database. Please try again.",
         variant: "destructive",
       });
     },
@@ -277,10 +313,24 @@ export default function ReceivingHistoryPage() {
         {/* Processing Steps */}
         <Card>
           <CardHeader>
-            <CardTitle>Upload & Process Receiving History</CardTitle>
-            <CardDescription>
-              Follow the steps to format, consolidate, and upload QuickBooks receiving voucher data
-            </CardDescription>
+            <div className="flex justify-between items-start">
+              <div>
+                <CardTitle>Upload & Process Receiving History</CardTitle>
+                <CardDescription>
+                  Follow the steps to format, consolidate, and upload QuickBooks receiving voucher data
+                </CardDescription>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setDeleteAllDialogOpen(true)}
+                disabled={deleteAllMutation.isPending || !stats?.totalVouchers}
+                className="flex items-center gap-2"
+                data-testid="button-clear-database"
+              >
+                <DatabaseZap className="w-4 h-4" />
+                Clear Database
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-6">
             {/* Step Indicators */}
@@ -572,6 +622,30 @@ export default function ReceivingHistoryPage() {
           </CardContent>
         </Card>
       </main>
+
+      {/* Clear Database Dialog */}
+      <AlertDialog open={deleteAllDialogOpen} onOpenChange={setDeleteAllDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear Entire Database</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all {stats?.totalVouchers || 0} receiving vouchers and {stats?.totalLines || 0} line items from the database. 
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-clear-database">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteAllMutation.mutate()}
+              disabled={deleteAllMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-clear-database"
+            >
+              {deleteAllMutation.isPending ? "Clearing..." : "Clear Database"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
