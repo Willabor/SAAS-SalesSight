@@ -108,11 +108,9 @@ export interface IStorage {
   getReceivingStats(): Promise<{
     totalVouchers: number;
     totalLines: number;
-    totalCorrectedValue: string;
-    totalQty: number;
+    totalCost: number;
     uniqueStores: number;
     uniqueVendors: number;
-    qbMismatchCount: number;
   }>;
   deleteReceivingVoucher(id: number): Promise<boolean>;
   deleteAllReceivingVouchers(): Promise<number>;
@@ -790,20 +788,16 @@ export class DatabaseStorage implements IStorage {
   async getReceivingStats(): Promise<{
     totalVouchers: number;
     totalLines: number;
-    totalCorrectedValue: string;
-    totalQty: number;
+    totalCost: number;
     uniqueStores: number;
     uniqueVendors: number;
-    qbMismatchCount: number;
   }> {
     const [voucherStats] = await db
       .select({
         totalVouchers: count(receivingVouchers.id),
-        totalCorrectedValue: sum(receivingVouchers.correctedTotal),
-        totalQty: sum(receivingVouchers.totalQty),
+        totalCost: sum(receivingVouchers.correctedTotal),
         uniqueStores: sql<number>`COUNT(DISTINCT ${receivingVouchers.store})`,
         uniqueVendors: sql<number>`COUNT(DISTINCT ${receivingVouchers.vendor})`,
-        qbMismatchCount: sql<number>`COUNT(CASE WHEN ${receivingVouchers.qbTotal} != ${receivingVouchers.correctedTotal} THEN 1 END)`,
       })
       .from(receivingVouchers);
     
@@ -816,11 +810,9 @@ export class DatabaseStorage implements IStorage {
     return {
       totalVouchers: voucherStats.totalVouchers,
       totalLines: lineStats.totalLines,
-      totalCorrectedValue: voucherStats.totalCorrectedValue?.toString() || '0',
-      totalQty: Number(voucherStats.totalQty) || 0,
+      totalCost: parseFloat(voucherStats.totalCost?.toString() || '0'),
       uniqueStores: voucherStats.uniqueStores,
       uniqueVendors: voucherStats.uniqueVendors,
-      qbMismatchCount: voucherStats.qbMismatchCount,
     };
   }
 
