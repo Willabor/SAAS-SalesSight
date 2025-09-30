@@ -58,6 +58,8 @@ export default function ReceivingHistoryPage() {
   const [flattenStats, setFlattenStats] = useState<any>(null);
   const [processingStatus, setProcessingStatus] = useState<string>("");
   const [processingProgress, setProcessingProgress] = useState<number>(0);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResponse, setUploadResponse] = useState<UploadResponse | null>(null);
   const { toast } = useToast();
 
@@ -159,12 +161,32 @@ export default function ReceivingHistoryPage() {
     },
   });
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!flattenedData || !selectedFile) return;
-    uploadMutation.mutate({
-      vouchers: flattenedData,
-      fileName: selectedFile.name,
-    });
+    // Prevent double-click and concurrent uploads
+    if (isUploading || uploadMutation.isPending) return;
+    
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    // Simulate progress while uploading
+    const progressInterval = setInterval(() => {
+      setUploadProgress((prev) => {
+        if (prev >= 90) return prev;
+        return prev + 10;
+      });
+    }, 200);
+    
+    try {
+      await uploadMutation.mutateAsync({
+        vouchers: flattenedData,
+        fileName: selectedFile.name,
+      });
+      setUploadProgress(100);
+    } finally {
+      clearInterval(progressInterval);
+      setIsUploading(false);
+    }
   };
 
   const downloadPreview = () => {
@@ -444,14 +466,27 @@ export default function ReceivingHistoryPage() {
                     </Button>
                     <Button
                       onClick={handleUpload}
-                      disabled={uploadMutation.isPending}
+                      disabled={isUploading || uploadMutation.isPending}
                       data-testid="button-upload-database"
                     >
                       <Database className="w-4 h-4 mr-2" />
-                      {uploadMutation.isPending ? "Uploading..." : "Upload to Database"}
+                      {isUploading ? "Uploading..." : "Upload to Database"}
                     </Button>
                   </div>
                 </div>
+
+                {/* Upload Progress Bar */}
+                {isUploading && (
+                  <div className="mt-4 space-y-2" data-testid="upload-progress-container">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-foreground">Uploading to database...</span>
+                      <span className="text-sm text-muted-foreground" data-testid="text-upload-percentage">
+                        {uploadProgress}%
+                      </span>
+                    </div>
+                    <Progress value={uploadProgress} className="h-2" data-testid="progress-upload" />
+                  </div>
+                )}
               </div>
             )}
 
