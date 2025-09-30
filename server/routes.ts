@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, type InsertSalesTransaction } from "@shared/schema";
+import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, insertReceivingVoucherSchema, insertReceivingLineSchema, type InsertSalesTransaction } from "@shared/schema";
 import { z } from "zod";
 
 // Timezone-agnostic date normalization to YYYY-MM-DD
@@ -446,6 +446,242 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching sales insights:", error);
       res.status(500).json({ error: "Failed to fetch sales insights" });
+    }
+  });
+
+  // ===== Receiving History Routes =====
+  
+  // Get receiving history statistics
+  app.get("/api/receiving/stats", async (req, res) => {
+    try {
+      const stats = await storage.getReceivingStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching receiving stats:", error);
+      res.status(500).json({ error: "Failed to fetch receiving statistics" });
+    }
+  });
+
+  // Get all receiving vouchers with pagination and search
+  app.get("/api/receiving/vouchers", async (req, res) => {
+    try {
+      const limit = parseInt(String(req.query.limit)) || 50;
+      const offset = parseInt(String(req.query.offset)) || 0;
+      const search = req.query.search ? String(req.query.search) : undefined;
+      const store = req.query.store ? String(req.query.store) : undefined;
+      const voucherNumber = req.query.voucherNumber ? String(req.query.voucherNumber) : undefined;
+      const exactMatch = req.query.exactMatch === 'true';
+      
+      const result = await storage.getReceivingVouchers({
+        limit,
+        offset,
+        search,
+        store,
+        voucherNumber,
+        exactMatch,
+      });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching receiving vouchers:", error);
+      res.status(500).json({ error: "Failed to fetch receiving vouchers" });
+    }
+  });
+
+  // Get voucher by ID with line items
+  app.get("/api/receiving/vouchers/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid voucher ID" });
+      }
+      
+      const result = await storage.getVoucherByIdWithLines(id);
+      if (result) {
+        res.json(result);
+      } else {
+        res.status(404).json({ error: "Voucher not found" });
+      }
+    } catch (error) {
+      console.error("Error fetching voucher:", error);
+      res.status(500).json({ error: "Failed to fetch voucher details" });
+    }
+  });
+
+  // Upload receiving history data
+  app.post("/api/receiving/upload", async (req, res) => {
+    try {
+      const { vouchers, fileName } = req.body;
+      
+      if (!vouchers || !Array.isArray(vouchers)) {
+        return res.status(400).json({ error: "Invalid data format. Expected array of vouchers." });
+      }
+
+      if (!fileName || typeof fileName !== 'string') {
+        return res.status(400).json({ error: "File name is required" });
+      }
+
+      const errors: string[] = [];
+      let successfulVouchers = 0;
+      let successfulLines = 0;
+      let skippedVouchers = 0;
+      const duplicateVouchers: any[] = [];
+
+      // Step 1: Validate and prepare vouchers
+      const validatedVouchers: Array<{
+        voucher: z.infer<typeof insertReceivingVoucherSchema>;
+        lines: Array<z.infer<typeof insertReceivingLineSchema>>;
+        compositeKey: string;
+      }> = [];
+
+      vouchers.forEach((voucherData: any, index: number) => {
+        try {
+          // Validate voucher
+          const validatedVoucher = insertReceivingVoucherSchema.parse({
+            voucherNumber: voucherData.voucherNumber ? String(voucherData.voucherNumber) : null,
+            date: voucherData.date || null,
+            store: voucherData.store ? String(voucherData.store) : null,
+            vendor: voucherData.vendor ? String(voucherData.vendor) : null,
+            type: voucherData.type || 'Receiving',
+            qbTotal: voucherData.qbTotal ? String(voucherData.qbTotal) : null,
+            correctedTotal: voucherData.correctedTotal ? String(voucherData.correctedTotal) : null,
+            totalQty: voucherData.totalQty || 0,
+            time: voucherData.time ? String(voucherData.time) : null,
+            fileName: fileName,
+          });
+
+          // Validate lines
+          const lines = voucherData.lines || [];
+          const validatedLines: Array<z.infer<typeof insertReceivingLineSchema>> = [];
+
+          lines.forEach((lineData: any) => {
+            const validatedLine = insertReceivingLineSchema.omit({ voucherId: true }).parse({
+              itemNumber: lineData.itemNumber ? String(lineData.itemNumber) : null,
+              itemName: lineData.itemName ? String(lineData.itemName) : null,
+              qty: lineData.qty || 0,
+              cost: lineData.cost ? String(lineData.cost) : "0",
+            });
+            validatedLines.push(validatedLine as any);
+          });
+
+          // Create composite key for duplicate detection
+          const compositeKey = `${validatedVoucher.voucherNumber}|${validatedVoucher.store}|${validatedVoucher.date}`;
+          
+          validatedVouchers.push({
+            voucher: validatedVoucher,
+            lines: validatedLines,
+            compositeKey,
+          });
+
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          errors.push(`Voucher ${index + 1}: ${errorMessage}`);
+        }
+      });
+
+      // Step 2: Check for existing vouchers
+      const vouchersToCheck = validatedVouchers.map(v => ({
+        voucherNumber: v.voucher.voucherNumber!,
+        store: v.voucher.store!,
+        date: v.voucher.date!,
+      }));
+      
+      const existingVouchers = await storage.getExistingVouchers(vouchersToCheck);
+
+      // Step 3: Insert new vouchers and their lines
+      for (const { voucher, lines, compositeKey } of validatedVouchers) {
+        if (existingVouchers.has(compositeKey)) {
+          skippedVouchers++;
+          duplicateVouchers.push({
+            voucherNumber: voucher.voucherNumber,
+            store: voucher.store,
+            date: voucher.date,
+            reason: 'Duplicate voucher'
+          });
+          continue;
+        }
+
+        try {
+          // Insert voucher
+          const insertedVoucher = await storage.upsertReceivingVoucher(voucher);
+          successfulVouchers++;
+
+          // Insert lines with voucher ID
+          if (lines.length > 0) {
+            const linesWithVoucherId = lines.map(line => ({
+              ...line,
+              voucherId: insertedVoucher.id,
+            }));
+            
+            const insertedCount = await storage.bulkInsertReceivingLines(linesWithVoucherId as any);
+            successfulLines += insertedCount;
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          errors.push(`Failed to insert voucher ${voucher.voucherNumber}: ${errorMessage}`);
+        }
+      }
+
+      // Step 4: Record upload history
+      await storage.createUploadHistory({
+        fileName,
+        uploadType: 'receiving_history',
+        totalRecords: vouchers.length,
+        successfulRecords: successfulVouchers,
+        failedRecords: errors.length,
+        skippedRecords: skippedVouchers,
+        errors: errors.length > 0 ? JSON.stringify(errors) : null,
+      });
+
+      res.json({
+        success: true,
+        message: `Upload complete. ${successfulVouchers} vouchers and ${successfulLines} line items uploaded successfully.`,
+        uploaded: successfulVouchers,
+        lines: successfulLines,
+        skipped: skippedVouchers,
+        failed: errors.length,
+        errors: errors.slice(0, 10),
+        duplicateVouchers: duplicateVouchers.slice(0, 10),
+      });
+
+    } catch (error) {
+      console.error("Error uploading receiving history:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: "Failed to upload receiving history", details: errorMessage });
+    }
+  });
+
+  // Delete individual receiving voucher
+  app.delete("/api/receiving/vouchers/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid voucher ID" });
+      }
+      
+      const deleted = await storage.deleteReceivingVoucher(id);
+      if (deleted) {
+        res.json({ success: true, message: "Voucher deleted successfully" });
+      } else {
+        res.status(404).json({ error: "Voucher not found" });
+      }
+    } catch (error) {
+      console.error("Error deleting voucher:", error);
+      res.status(500).json({ error: "Failed to delete voucher" });
+    }
+  });
+
+  // Clear all receiving vouchers
+  app.delete("/api/receiving/vouchers", async (req, res) => {
+    try {
+      const deletedCount = await storage.deleteAllReceivingVouchers();
+      res.json({ 
+        success: true, 
+        message: `Cleared ${deletedCount} vouchers from database`,
+        deletedCount 
+      });
+    } catch (error) {
+      console.error("Error clearing receiving vouchers:", error);
+      res.status(500).json({ error: "Failed to clear receiving vouchers" });
     }
   });
 
