@@ -2,7 +2,7 @@ import { StatsOverview } from "@/components/stats-overview";
 import { ExcelFormatter } from "@/components/excel-formatter";
 import { UploadProgress } from "@/components/upload-progress";
 import { RecentActivity } from "@/components/recent-activity";
-import { HelpCircle, Settings, FileSpreadsheet, Package } from "lucide-react";
+import { HelpCircle, Settings, FileSpreadsheet, Package, Receipt, BarChart3 } from "lucide-react";
 import { Link } from "wouter";
 
 export default function Dashboard() {
@@ -23,6 +23,18 @@ export default function Dashboard() {
                 <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-item-list">
                   <Package className="w-5 h-5" />
                   <span className="hidden sm:inline">Item List</span>
+                </button>
+              </Link>
+              <Link href="/sales-transactions">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-sales-transactions">
+                  <Receipt className="w-5 h-5" />
+                  <span className="hidden sm:inline">Transactions</span>
+                </button>
+              </Link>
+              <Link href="/sales-insights">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-sales-insights">
+                  <BarChart3 className="w-5 h-5" />
+                  <span className="hidden sm:inline">Insights</span>
                 </button>
               </Link>
               <button className="text-muted-foreground hover:text-foreground transition-colors" data-testid="button-help">
