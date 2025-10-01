@@ -1515,7 +1515,7 @@ export class DatabaseStorage implements IStorage {
     receiveCount: number;
     stockStatus: string;
   }>> {
-    // OPTIMIZED: Single CTE-based query instead of N+1 queries
+    // OPTIMIZED: Single CTE-based query with sales data for smart dead stock calculation
     const result = await db.execute(sql`
       WITH base_styles AS (
         SELECT
@@ -1528,7 +1528,7 @@ export class DatabaseStorage implements IStorage {
           SUM(COALESCE(il.mm_qty, 0) + COALESCE(il.pm_qty, 0)) AS "totalClosedStoresQty",
           AVG(CAST(COALESCE(il.order_cost, '0') AS NUMERIC)) AS "avgOrderCost",
           AVG(CAST(COALESCE(il.selling_price, '0') AS NUMERIC)) AS "avgSellingPrice",
-          MAX(il.last_rcvd) AS "lastReceived"
+          MIN(il.creation_date::date) AS "creationDate"
         FROM item_list il
         WHERE il.style_number IS NOT NULL 
           AND il.style_number <> ''
@@ -1556,12 +1556,29 @@ export class DatabaseStorage implements IStorage {
           COUNT(DISTINCT rv.id) AS "receiveCount",
           SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (6, 7, 8) THEN 1 ELSE 0 END) AS "summerReceives",
           SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (12, 1, 2) THEN 1 ELSE 0 END) AS "winterReceives",
-          COUNT(*) AS "totalReceives"
+          COUNT(*) AS "totalReceives",
+          SUM(rl.qty) AS "totalReceived",
+          MIN(rv.date::date) AS "firstReceivedDate",
+          MAX(rv.date::date) AS "lastReceivedDate"
         FROM receiving_lines rl
         JOIN receiving_vouchers rv ON rl.voucher_id = rv.id
         JOIN item_list il ON rl.item_number = il.item_number
         WHERE il.style_number IS NOT NULL AND il.style_number <> ''
         GROUP BY il.style_number, il.item_name
+      ),
+      sales_metrics AS (
+        SELECT
+          il.style_number AS "styleNumber",
+          MAX(st.date::date) AS "lastSaleDate",
+          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '30 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units30d",
+          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '60 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units60d",
+          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '90 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units90d",
+          SUM(COALESCE(st.qty, 1)) AS "totalUnits"
+        FROM sales_transactions st
+        JOIN item_list il ON st.sku = il.item_number
+        WHERE il.style_number IS NOT NULL AND il.style_number <> ''
+          AND st.store IN ('GM', 'HM', 'NM', 'LM')
+        GROUP BY il.style_number
       )
       SELECT 
         bs."styleNumber",
@@ -1578,17 +1595,32 @@ export class DatabaseStorage implements IStorage {
           ELSE 0
         END AS "avgMarginPercent",
         (bs."totalActiveQty" * bs."avgOrderCost") AS "inventoryValue",
-        bs."lastReceived",
+        COALESCE(bs."creationDate", rc."lastReceivedDate") AS "lastReceived",
+        COALESCE(bs."creationDate", rc."firstReceivedDate") AS "firstReceived",
         CASE 
-          WHEN bs."lastReceived" IS NOT NULL THEN (CURRENT_DATE - bs."lastReceived"::date)
+          WHEN COALESCE(bs."creationDate", rc."lastReceivedDate") IS NOT NULL 
+          THEN (CURRENT_DATE - COALESCE(bs."creationDate", rc."lastReceivedDate"))
           ELSE NULL
         END AS "daysSinceLastReceive",
+        CASE 
+          WHEN COALESCE(bs."creationDate", rc."firstReceivedDate") IS NOT NULL 
+          THEN (CURRENT_DATE - COALESCE(bs."creationDate", rc."firstReceivedDate"))
+          ELSE NULL
+        END AS "daysSinceFirstReceive",
         COALESCE(rc."receiveCount", 0) AS "receiveCount",
         COALESCE(rc."summerReceives", 0) AS "summerReceives",
         COALESCE(rc."winterReceives", 0) AS "winterReceives",
-        COALESCE(rc."totalReceives", 0) AS "totalReceives"
+        COALESCE(rc."totalReceives", 0) AS "totalReceives",
+        COALESCE(rc."totalReceived", 0) AS "totalReceived",
+        sm."lastSaleDate",
+        COALESCE(sm."units30d", 0) AS "units30d",
+        COALESCE(sm."units60d", 0) AS "units60d",
+        COALESCE(sm."units90d", 0) AS "units90d",
+        COALESCE(sm."totalUnits", 0) AS "totalUnits",
+        CASE WHEN bs."creationDate" IS NULL THEN true ELSE false END AS "usedReceivingFallback"
       FROM base_styles bs
       LEFT JOIN receiving_counts rc ON bs."styleNumber" = rc."styleNumber" AND bs."itemName" = rc."itemName"
+      LEFT JOIN sales_metrics sm ON bs."styleNumber" = sm."styleNumber"
     `);
 
     // Post-process results to add classification and seasonal pattern
@@ -1605,11 +1637,20 @@ export class DatabaseStorage implements IStorage {
       avgMarginPercent: number;
       inventoryValue: number;
       lastReceived: string | null;
+      firstReceived: string | null;
       daysSinceLastReceive: number | null;
+      daysSinceFirstReceive: number | null;
       receiveCount: number;
       summerReceives: number;
       winterReceives: number;
       totalReceives: number;
+      totalReceived: number;
+      lastSaleDate: string | null;
+      units30d: number;
+      units60d: number;
+      units90d: number;
+      totalUnits: number;
+      usedReceivingFallback: boolean;
     }>;
 
     return rows.map(row => {
@@ -1641,28 +1682,62 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // Smart stock status
+      // Smart stock status based on classification and sales activity
       let stockStatus = 'Active';
       const daysSinceLastReceive = row.daysSinceLastReceive;
+      const daysSinceFirstReceive = row.daysSinceFirstReceive;
+      const units60d = Number(row.units60d) || 0;
+      const units90d = Number(row.units90d) || 0;
+      const units30d = Number(row.units30d) || 0;
+      const totalReceived = Number(row.totalReceived) || 1; // Avoid division by zero
+      const currentStock = Number(row.totalActiveQty);
+      
+      // Calculate average monthly sales velocity (using 90-day window)
+      const monthlyVelocity = (units90d / 90) * 30;
+      
+      // Check if seasonal (before other status checks)
+      const currentMonth = new Date().getMonth() + 1; // 1-12
+      const isSummer = currentMonth >= 6 && currentMonth <= 8;
+      const isWinter = currentMonth === 12 || currentMonth <= 2;
+      const isOffSeason = 
+        (seasonalPattern === 'Summer' && !isSummer) ||
+        (seasonalPattern === 'Winter' && !isWinter);
+      
       if (daysSinceLastReceive === null) {
         stockStatus = 'Never Received';
-      } else if (classification === 'One-Time' && daysSinceLastReceive > 180) {
-        stockStatus = 'Expected One-Time';
-      } else if (classification.startsWith('Core') && daysSinceLastReceive > 90) {
-        // Check if seasonal hold
-        const currentMonth = new Date().getMonth() + 1; // 1-12
-        const isSummer = currentMonth >= 6 && currentMonth <= 8;
-        const isWinter = currentMonth === 12 || currentMonth <= 2;
-
-        if (seasonalPattern === 'Summer' && !isSummer) {
-          stockStatus = 'Seasonal Hold';
-        } else if (seasonalPattern === 'Winter' && !isWinter) {
-          stockStatus = 'Seasonal Hold';
-        } else {
-          stockStatus = 'Dead Stock';
-        }
       } else if (daysSinceLastReceive < 30) {
         stockStatus = 'New Arrival';
+      } else if (isOffSeason) {
+        stockStatus = 'Seasonal Hold';
+      } else if (classification.startsWith('Core')) {
+        // Core items: Dead stock if not selling despite recent receives OR excess stock vs velocity OR low sell-through
+        const recentlyReceived = daysSinceLastReceive <= 90;
+        const notSelling = units60d === 0;
+        const excessStock = monthlyVelocity > 0 && currentStock > monthlyVelocity * 3; // More than 3 months of supply
+        const lowSellThrough = currentStock > totalReceived * 0.65; // More than 65% still in stock
+        
+        if (notSelling && recentlyReceived) {
+          stockStatus = 'Dead Stock'; // Core item not selling despite being bought recently 🚨
+        } else if (excessStock && daysSinceLastReceive > 60) {
+          stockStatus = 'Dead Stock'; // Core item with > 3 months supply at current velocity
+        } else if (notSelling && lowSellThrough && daysSinceLastReceive > 60) {
+          stockStatus = 'Dead Stock'; // Core item with poor sell-through
+        } else if (units60d < 2 && daysSinceLastReceive > 60) {
+          stockStatus = 'Slow Moving'; // Very slow movement for a core item
+        }
+      } else if (classification === 'Non-Core Repeat' || classification === 'One-Time') {
+        // Non-core items: Dead stock if old and not selling through
+        const hadTimeToSell = daysSinceFirstReceive && daysSinceFirstReceive > 180;
+        const notSelling = units90d === 0;
+        const poorSellThrough = currentStock > totalReceived * 0.5; // More than 50% still in stock
+        
+        if (hadTimeToSell && notSelling && poorSellThrough) {
+          stockStatus = 'Dead Stock'; // Old non-core item not selling through
+        } else if (classification === 'One-Time' && daysSinceLastReceive > 180 && units90d === 0) {
+          stockStatus = 'Expected One-Time'; // One-time purchase that didn't sell
+        } else if (units90d < 2 && daysSinceFirstReceive && daysSinceFirstReceive > 90) {
+          stockStatus = 'Slow Moving'; // Slow movement for non-core
+        }
       }
 
       return {
