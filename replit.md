@@ -10,6 +10,23 @@ The application provides:
 - **Google Marketing Export**: Generates an 8-sheet Excel report optimized for Google Ads/Shopping campaigns, featuring product segmentation, Google-optimized titles, and custom labels.
 - **User Authentication**: Secure login using Replit Auth, protecting all application features.
 
+# Recent Changes (October 2025)
+
+## Phase 2: Operational Reports - Completed
+- **Sale Recommendations**: Markdown candidates for slow-moving/overstock items with projected recovery calculations
+- **Transfer Recommendations**: Inter-store inventory redistribution based on per-location sales velocity (GM/HM/NM/LM active stores only)
+- **Restocking Recommendations**: Reorder alerts for core items with days of supply tracking
+- **Product Segmentation**: Classification-based segmentation (Best Sellers, Core Items, New Arrivals, Seasonal, Clearance Candidates)
+
+## Smart Dead Stock Calculation (October 1, 2025)
+- **Critical Fix**: Corrected SQL error `st.qty does not exist` - sales_transactions table has no qty column; each row = 1 item sold; changed to COUNT(*)
+- **Date Source Priority**: Creation date (primary) for firstReceived; receiving history MIN/MAX (fallback); lastReceived uses receiving dates first
+- **Classification-Based Logic**:
+  - Core Items: 60-day threshold with velocity-based detection (stock > 3× monthly velocity), sell-through analysis (>65% in stock)
+  - Non-Core Items: 180-day threshold with 90-day sales check and >50% in stock
+  - Priority protections: New Arrivals (<30 days), Seasonal Hold (off-season items), then classification rules
+- **Business Impact**: More accurate dead stock identification, no longer showing inflated $301K value; early warning for core items with poor sell-through
+
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
