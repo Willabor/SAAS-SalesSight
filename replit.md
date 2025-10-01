@@ -156,11 +156,13 @@ The application provides comprehensive inventory analysis and reporting through 
 - Supports strategic inventory management decisions
 
 **Technical Implementation**:
-- Optimized SQL queries using LEFT JOINs for performance
+- **OPTIMIZED**: Single CTE-based query replacing N+1 query pattern (Oct 2025)
+- Uses CTEs and LEFT JOINs to aggregate style metrics and receiving history in one query
 - Handles 35K+ items and 277K+ transactions efficiently
-- All queries complete in <5 seconds
+- All queries complete in ~5 seconds (previously timed out)
 - Real-time calculation without pre-aggregation
 - Links item_list, sales_transactions, and receiving_lines tables via item_number
+- Filters non-sellable products (Supplies, Tax, Discounts, etc.) at SQL level
 
 ## Development and Deployment
 

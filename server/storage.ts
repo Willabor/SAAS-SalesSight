@@ -20,7 +20,7 @@ import {
   type InsertReceivingLine
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql, count, sum, ilike, or, and } from "drizzle-orm";
+import { eq, desc, asc, sql, count, sum, ilike, or, and } from "drizzle-orm";
 
 export interface IStorage {
   // User operations for Replit Auth
@@ -102,22 +102,30 @@ export interface IStorage {
     voucherNumber: string;
     store: string;
     date: string;
+    totalQty: number;
   }>): Promise<Set<string>>;
   getReceivingVouchers(params?: {
     limit?: number;
     offset?: number;
     search?: string;
     store?: string;
+    vendor?: string;
+    type?: string;
     voucherNumber?: string;
     exactMatch?: boolean;
+    sortBy?: string;
+    sortDirection?: 'asc' | 'desc';
   }): Promise<{
     vouchers: ReceivingVoucher[];
     total: number;
   }>;
-  getVoucherByIdWithLines(id: number): Promise<{
-    voucher: ReceivingVoucher;
-    lines: ReceivingLine[];
-  } | null>;
+  getReceivingFilterOptions(): Promise<{
+    stores: string[];
+    vendors: string[];
+    types: string[];
+  }>;
+  getAllReceivingVouchersForExport(store?: string, vendor?: string, type?: string, search?: string): Promise<ReceivingVoucher[]>;
+  getVoucherByIdWithLines(id: number): Promise<(ReceivingVoucher & { lines: ReceivingLine[] }) | null>;
   getReceivingStats(): Promise<{
     totalVouchers: number;
     totalLines: number;
@@ -128,13 +136,14 @@ export interface IStorage {
   deleteReceivingVoucher(id: number): Promise<boolean>;
   deleteAllReceivingVouchers(): Promise<number>;
   
-  // Inventory Turnover operations
+  // Inventory Turnover operations (SKU-level - legacy)
   getInventoryTurnoverMetrics(): Promise<{
     totalInventoryValue: number;
     totalInventoryUnits: number;
     deadStockValue: number;
     deadStockUnits: number;
     avgDaysSinceLastSale: number;
+    daysSinceMostRecentSale: number | null;
   }>;
   getSlowMovingStock(daysThreshold: number, limit?: number): Promise<Array<{
     itemNumber: string;
@@ -169,6 +178,98 @@ export interface IStorage {
     totalSales: number;
     avgTurnoverRate: number;
   }>>;
+
+  // Style-level Inventory Turnover operations (new)
+  getStyleInventoryMetrics(): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    gender: string | null;
+    totalActiveQty: number;
+    totalClosedStoresQty: number;
+    avgOrderCost: number;
+    avgSellingPrice: number;
+    avgMarginPercent: number;
+    inventoryValue: number;
+    classification: string;
+    seasonalPattern: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    receiveCount: number;
+    stockStatus: string;
+  }>>;
+
+  getStyleSlowMoving(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    avgMarginPercent: number;
+    classification: string;
+    seasonalPattern: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    stockStatus: string;
+  }>>;
+
+  getStyleOverstockUnderstock(daysRange: number, limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    avgMarginPercent: number;
+    unitsSold: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    classification: string;
+    stockStatus: string;
+  }>>;
+
+  getTransferRecommendations(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    fromStore: string;
+    toStore: string;
+    fromStoreQty: number;
+    toStoreQty: number;
+    fromStoreDailySales: number;
+    toStoreDailySales: number;
+    recommendedQty: number;
+    priority: string;
+  }>>;
+
+  getRestockingRecommendations(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    classification: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    avgMarginPercent: number;
+    recommendedOrderQty: number;
+    priority: string;
+  }>>;
+
+  getProductSegmentationReport(): Promise<{
+    coreHighFrequency: Array<any>;
+    coreMediumFrequency: Array<any>;
+    coreLowFrequency: Array<any>;
+    nonCoreRepeat: Array<any>;
+    oneTimePurchase: Array<any>;
+    summerItems: Array<any>;
+    winterItems: Array<any>;
+    highMarginItems: Array<any>;
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -861,44 +962,47 @@ export class DatabaseStorage implements IStorage {
     voucherNumber: string;
     store: string;
     date: string;
+    totalQty: number;
   }>): Promise<Set<string>> {
     if (vouchers.length === 0) return new Set();
-    
+
     // Deduplicate vouchers before query
     const uniqueVouchers = Array.from(
-      new Map(vouchers.map(v => [`${v.voucherNumber}|${v.store}|${v.date}`, v])).values()
+      new Map(vouchers.map(v => [`${v.voucherNumber}|${v.store}|${v.date}|${v.totalQty}`, v])).values()
     );
-    
+
     const existingKeys = new Set<string>();
     const chunkSize = 500;
-    
+
     for (let i = 0; i < uniqueVouchers.length; i += chunkSize) {
       const chunk = uniqueVouchers.slice(i, i + chunkSize);
-      
-      // Build OR conditions for NULL-safe comparison
-      const orConditions = chunk.map(v => 
+
+      // Build OR conditions for NULL-safe comparison (including totalQty)
+      const orConditions = chunk.map(v =>
         and(
           sql`${receivingVouchers.voucherNumber} IS NOT DISTINCT FROM ${v.voucherNumber}`,
           sql`${receivingVouchers.store} IS NOT DISTINCT FROM ${v.store}`,
-          sql`${receivingVouchers.date} IS NOT DISTINCT FROM ${v.date}`
+          sql`${receivingVouchers.date} IS NOT DISTINCT FROM ${v.date}`,
+          sql`${receivingVouchers.totalQty} = ${v.totalQty}`
         )
       );
-      
+
       const existing = await db
         .select({
           voucherNumber: receivingVouchers.voucherNumber,
           store: receivingVouchers.store,
           date: receivingVouchers.date,
+          totalQty: receivingVouchers.totalQty,
         })
         .from(receivingVouchers)
         .where(or(...orConditions));
-      
-      // Add to set with composite key
+
+      // Add to set with composite key (including totalQty)
       existing.forEach(v => {
-        existingKeys.add(`${v.voucherNumber}|${v.store}|${v.date}`);
+        existingKeys.add(`${v.voucherNumber}|${v.store}|${v.date}|${v.totalQty}`);
       });
     }
-    
+
     return existingKeys;
   }
 
@@ -907,24 +1011,47 @@ export class DatabaseStorage implements IStorage {
     offset?: number;
     search?: string;
     store?: string;
+    vendor?: string;
+    type?: string;
     voucherNumber?: string;
     exactMatch?: boolean;
+    sortBy?: string;
+    sortDirection?: 'asc' | 'desc';
   } = {}): Promise<{
     vouchers: ReceivingVoucher[];
     total: number;
   }> {
-    const { limit = 50, offset = 0, search, store, voucherNumber, exactMatch = false } = params;
-    
+    const {
+      limit = 50,
+      offset = 0,
+      search,
+      store,
+      vendor,
+      type,
+      voucherNumber,
+      exactMatch = false,
+      sortBy,
+      sortDirection = 'desc'
+    } = params;
+
     let vouchers: ReceivingVoucher[];
     let total: number;
-    
+
     // Build filters
     const filters = [];
-    
+
     if (store) {
       filters.push(eq(receivingVouchers.store, store));
     }
-    
+
+    if (vendor) {
+      filters.push(eq(receivingVouchers.vendor, vendor));
+    }
+
+    if (type) {
+      filters.push(eq(receivingVouchers.type, type));
+    }
+
     if (voucherNumber) {
       if (exactMatch) {
         filters.push(eq(receivingVouchers.voucherNumber, voucherNumber));
@@ -932,7 +1059,7 @@ export class DatabaseStorage implements IStorage {
         filters.push(ilike(receivingVouchers.voucherNumber, `%${voucherNumber}%`));
       }
     }
-    
+
     if (search) {
       filters.push(or(
         ilike(receivingVouchers.voucherNumber, `%${search}%`),
@@ -940,47 +1067,138 @@ export class DatabaseStorage implements IStorage {
         ilike(receivingVouchers.store, `%${search}%`)
       ));
     }
-    
+
     const whereClause = filters.length > 0 ? and(...filters) : undefined;
-    
+
+    // Determine sort column - map sortBy string to actual column
+    const getSortColumn = () => {
+      switch (sortBy) {
+        case 'voucherNumber': return receivingVouchers.voucherNumber;
+        case 'date': return receivingVouchers.date;
+        case 'store': return receivingVouchers.store;
+        case 'vendor': return receivingVouchers.vendor;
+        case 'type': return receivingVouchers.type;
+        case 'qbTotal': return receivingVouchers.qbTotal;
+        case 'correctedTotal': return receivingVouchers.correctedTotal;
+        case 'totalQty': return receivingVouchers.totalQty;
+        case 'time': return receivingVouchers.time;
+        case 'fileName': return receivingVouchers.fileName;
+        default: return receivingVouchers.date;
+      }
+    };
+
+    const sortColumn = getSortColumn();
+    const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
     if (whereClause) {
       const [vouchersResult, [countResult]] = await Promise.all([
-        db.select().from(receivingVouchers).where(whereClause).orderBy(desc(receivingVouchers.date)).limit(limit).offset(offset),
+        db.select().from(receivingVouchers).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset),
         db.select({ count: count() }).from(receivingVouchers).where(whereClause)
       ]);
-      
+
       vouchers = vouchersResult;
       total = countResult.count;
     } else {
       const [vouchersResult, [countResult]] = await Promise.all([
-        db.select().from(receivingVouchers).orderBy(desc(receivingVouchers.date)).limit(limit).offset(offset),
+        db.select().from(receivingVouchers).orderBy(orderByClause).limit(limit).offset(offset),
         db.select({ count: count() }).from(receivingVouchers)
       ]);
-      
+
       vouchers = vouchersResult;
       total = countResult.count;
     }
-    
+
     return { vouchers, total };
   }
 
-  async getVoucherByIdWithLines(id: number): Promise<{
-    voucher: ReceivingVoucher;
-    lines: ReceivingLine[];
-  } | null> {
+  async getReceivingFilterOptions(): Promise<{
+    stores: string[];
+    vendors: string[];
+    types: string[];
+  }> {
+    const stores = (await db
+      .selectDistinct({ value: receivingVouchers.store })
+      .from(receivingVouchers)
+      .where(sql`${receivingVouchers.store} IS NOT NULL AND ${receivingVouchers.store} != ''`))
+      .map(r => r.value!)
+      .filter(Boolean)
+      .sort();
+
+    const vendors = (await db
+      .selectDistinct({ value: receivingVouchers.vendor })
+      .from(receivingVouchers)
+      .where(sql`${receivingVouchers.vendor} IS NOT NULL AND ${receivingVouchers.vendor} != ''`))
+      .map(r => r.value!)
+      .filter(Boolean)
+      .sort();
+
+    const types = (await db
+      .selectDistinct({ value: receivingVouchers.type })
+      .from(receivingVouchers)
+      .where(sql`${receivingVouchers.type} IS NOT NULL AND ${receivingVouchers.type} != ''`))
+      .map(r => r.value)
+      .filter(Boolean)
+      .sort();
+
+    return {
+      stores,
+      vendors,
+      types,
+    };
+  }
+
+  async getAllReceivingVouchersForExport(
+    store?: string,
+    vendor?: string,
+    type?: string,
+    search?: string
+  ): Promise<ReceivingVoucher[]> {
+    const filters = [];
+
+    if (store) {
+      filters.push(eq(receivingVouchers.store, store));
+    }
+
+    if (vendor) {
+      filters.push(eq(receivingVouchers.vendor, vendor));
+    }
+
+    if (type) {
+      filters.push(eq(receivingVouchers.type, type));
+    }
+
+    if (search) {
+      filters.push(or(
+        ilike(receivingVouchers.voucherNumber, `%${search}%`),
+        ilike(receivingVouchers.vendor, `%${search}%`),
+        ilike(receivingVouchers.store, `%${search}%`)
+      ));
+    }
+
+    const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
+    if (whereClause) {
+      return await db.select().from(receivingVouchers).where(whereClause).orderBy(desc(receivingVouchers.date));
+    } else {
+      return await db.select().from(receivingVouchers).orderBy(desc(receivingVouchers.date));
+    }
+  }
+
+  async getVoucherByIdWithLines(id: number): Promise<(ReceivingVoucher & { lines: ReceivingLine[] }) | null> {
     const [voucher] = await db
       .select()
       .from(receivingVouchers)
       .where(eq(receivingVouchers.id, id));
-    
+
     if (!voucher) return null;
-    
+
     const lines = await db
       .select()
       .from(receivingLines)
       .where(eq(receivingLines.voucherId, id));
-    
-    return { voucher, lines };
+
+    // Return voucher properties spread with lines array (frontend expects flattened structure)
+    return { ...voucher, lines };
   }
 
   async getReceivingStats(): Promise<{
@@ -1031,6 +1249,7 @@ export class DatabaseStorage implements IStorage {
     deadStockValue: number;
     deadStockUnits: number;
     avgDaysSinceLastSale: number;
+    daysSinceMostRecentSale: number | null;
   }> {
     const result = await db
       .select({
@@ -1039,6 +1258,7 @@ export class DatabaseStorage implements IStorage {
         deadStockValue: sql<number>`COALESCE(SUM(CASE WHEN ${itemList.lastSold} IS NULL OR ${itemList.lastSold} < CURRENT_DATE - INTERVAL '90 days' THEN CAST(${itemList.availQty} AS NUMERIC) * CAST(COALESCE(${itemList.orderCost}, 0) AS NUMERIC) ELSE 0 END), 0)`,
         deadStockUnits: sql<number>`COALESCE(SUM(CASE WHEN ${itemList.lastSold} IS NULL OR ${itemList.lastSold} < CURRENT_DATE - INTERVAL '90 days' THEN ${itemList.availQty} ELSE 0 END), 0)`,
         avgDaysSinceLastSale: sql<number>`COALESCE(AVG(CASE WHEN ${itemList.lastSold} IS NOT NULL THEN (CURRENT_DATE - ${itemList.lastSold}) ELSE NULL END), 0)`,
+        daysSinceMostRecentSale: sql<number>`(CURRENT_DATE - MAX(${itemList.lastSold}))`,
       })
       .from(itemList)
       .where(sql`${itemList.availQty} > 0`);
@@ -1049,6 +1269,7 @@ export class DatabaseStorage implements IStorage {
       deadStockValue: 0,
       deadStockUnits: 0,
       avgDaysSinceLastSale: 0,
+      daysSinceMostRecentSale: null,
     };
   }
 
@@ -1216,6 +1437,560 @@ export class DatabaseStorage implements IStorage {
       totalSales: Number(row.totalSales) || 0,
       avgTurnoverRate: Number(row.totalUnits) > 0 ? Number((Number(row.totalSales) / Number(row.totalUnits) * 100).toFixed(2)) : 0,
     }));
+  }
+
+  // Helper: Check if item is a sellable product (filters non-products)
+  private isSellableProduct(category: string | null, itemName: string | null): boolean {
+    // Non-sellable categories
+    const nonSellableCategories = [
+      'Supplies', 'Cleaning Supplies', 'System', 'Refund',
+      'Shipping', 'GIFT CARD', 'Certificate', 'Printer', 'Electronic'
+    ];
+
+    if (category && nonSellableCategories.includes(category)) {
+      return false;
+    }
+
+    // Non-sellable item name patterns
+    if (!itemName) return true;
+
+    const lowerName = itemName.toLowerCase();
+    const nonSellablePatterns = [
+      'tax', 'discount', 'shipping insurance', 'shipping protection',
+      'route shipping', 'refund', 'adjustment', 'online discount taken'
+    ];
+
+    return !nonSellablePatterns.some(pattern => lowerName.includes(pattern));
+  }
+
+  // Style-level Inventory Turnover Methods (OPTIMIZED - Single CTE Query)
+  async getStyleInventoryMetrics(): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    gender: string | null;
+    totalActiveQty: number;
+    totalClosedStoresQty: number;
+    avgOrderCost: number;
+    avgSellingPrice: number;
+    avgMarginPercent: number;
+    inventoryValue: number;
+    classification: string;
+    seasonalPattern: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    receiveCount: number;
+    stockStatus: string;
+  }>> {
+    // OPTIMIZED: Single CTE-based query instead of N+1 queries
+    const result = await db.execute(sql`
+      WITH base_styles AS (
+        SELECT
+          il.style_number AS "styleNumber",
+          il.item_name AS "itemName",
+          il.category,
+          il.vendor_name AS "vendorName",
+          il.gender,
+          SUM(COALESCE(il.gm_qty, 0) + COALESCE(il.hm_qty, 0) + COALESCE(il.nm_qty, 0) + COALESCE(il.lm_qty, 0) + COALESCE(il.hq_qty, 0)) AS "totalActiveQty",
+          SUM(COALESCE(il.mm_qty, 0) + COALESCE(il.pm_qty, 0)) AS "totalClosedStoresQty",
+          AVG(CAST(COALESCE(il.order_cost, '0') AS NUMERIC)) AS "avgOrderCost",
+          AVG(CAST(COALESCE(il.selling_price, '0') AS NUMERIC)) AS "avgSellingPrice",
+          MAX(il.last_rcvd) AS "lastReceived"
+        FROM item_list il
+        WHERE il.style_number IS NOT NULL 
+          AND il.style_number <> ''
+          AND (COALESCE(il.gm_qty, 0) + COALESCE(il.hm_qty, 0) + COALESCE(il.nm_qty, 0) + COALESCE(il.lm_qty, 0) + COALESCE(il.hq_qty, 0)) > 0
+          AND COALESCE(il.category, '') NOT IN ('Supplies', 'Cleaning Supplies', 'System', 'Refund', 'Shipping', 'GIFT CARD', 'Certificate', 'Printer', 'Electronic')
+          AND (
+            il.item_name IS NULL 
+            OR (
+              LOWER(il.item_name) NOT LIKE '%tax%'
+              AND LOWER(il.item_name) NOT LIKE '%discount%'
+              AND LOWER(il.item_name) NOT LIKE '%shipping insurance%'
+              AND LOWER(il.item_name) NOT LIKE '%shipping protection%'
+              AND LOWER(il.item_name) NOT LIKE '%route shipping%'
+              AND LOWER(il.item_name) NOT LIKE '%refund%'
+              AND LOWER(il.item_name) NOT LIKE '%adjustment%'
+              AND LOWER(il.item_name) NOT LIKE '%online discount taken%'
+            )
+          )
+        GROUP BY il.style_number, il.item_name, il.category, il.vendor_name, il.gender
+      ),
+      receiving_counts AS (
+        SELECT 
+          il.style_number AS "styleNumber",
+          il.item_name AS "itemName",
+          COUNT(DISTINCT rv.id) AS "receiveCount",
+          SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (6, 7, 8) THEN 1 ELSE 0 END) AS "summerReceives",
+          SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (12, 1, 2) THEN 1 ELSE 0 END) AS "winterReceives",
+          COUNT(*) AS "totalReceives"
+        FROM receiving_lines rl
+        JOIN receiving_vouchers rv ON rl.voucher_id = rv.id
+        JOIN item_list il ON rl.item_number = il.item_number
+        WHERE il.style_number IS NOT NULL AND il.style_number <> ''
+        GROUP BY il.style_number, il.item_name
+      )
+      SELECT 
+        bs."styleNumber",
+        bs."itemName",
+        bs.category,
+        bs."vendorName",
+        bs.gender,
+        bs."totalActiveQty",
+        bs."totalClosedStoresQty",
+        bs."avgOrderCost",
+        bs."avgSellingPrice",
+        CASE 
+          WHEN bs."avgSellingPrice" > 0 THEN ROUND(((bs."avgSellingPrice" - bs."avgOrderCost") / NULLIF(bs."avgSellingPrice", 0)) * 100, 2)
+          ELSE 0
+        END AS "avgMarginPercent",
+        (bs."totalActiveQty" * bs."avgOrderCost") AS "inventoryValue",
+        bs."lastReceived",
+        CASE 
+          WHEN bs."lastReceived" IS NOT NULL THEN (CURRENT_DATE - bs."lastReceived"::date)
+          ELSE NULL
+        END AS "daysSinceLastReceive",
+        COALESCE(rc."receiveCount", 0) AS "receiveCount",
+        COALESCE(rc."summerReceives", 0) AS "summerReceives",
+        COALESCE(rc."winterReceives", 0) AS "winterReceives",
+        COALESCE(rc."totalReceives", 0) AS "totalReceives"
+      FROM base_styles bs
+      LEFT JOIN receiving_counts rc ON bs."styleNumber" = rc."styleNumber" AND bs."itemName" = rc."itemName"
+    `);
+
+    // Post-process results to add classification and seasonal pattern
+    const rows = result.rows as Array<{
+      styleNumber: string;
+      itemName: string;
+      category: string | null;
+      vendorName: string | null;
+      gender: string | null;
+      totalActiveQty: number;
+      totalClosedStoresQty: number;
+      avgOrderCost: number;
+      avgSellingPrice: number;
+      avgMarginPercent: number;
+      inventoryValue: number;
+      lastReceived: string | null;
+      daysSinceLastReceive: number | null;
+      receiveCount: number;
+      summerReceives: number;
+      winterReceives: number;
+      totalReceives: number;
+    }>;
+
+    return rows.map(row => {
+      // Classification based on receiving frequency
+      let classification = 'One-Time';
+      if (row.receiveCount >= 40) classification = 'Core High';
+      else if (row.receiveCount >= 10) classification = 'Core Medium';
+      else if (row.receiveCount >= 6) classification = 'Core Low';
+      else if (row.receiveCount >= 2) classification = 'Non-Core Repeat';
+
+      // Seasonal pattern detection
+      let seasonalPattern = 'Unknown';
+      if (row.totalReceives > 0) {
+        const summerPct = row.summerReceives / row.totalReceives;
+        const winterPct = row.winterReceives / row.totalReceives;
+
+        const itemNameLower = (row.itemName || '').toLowerCase();
+        const summerKeywords = ['short', 'tank', 'summer', 'swim', 'sandal'];
+        const winterKeywords = ['jacket', 'coat', 'hoodie', 'winter', 'fleece', 'sweater'];
+
+        if (summerPct > 0.6 || summerKeywords.some(kw => itemNameLower.includes(kw))) {
+          seasonalPattern = 'Summer';
+        } else if (winterPct > 0.6 || winterKeywords.some(kw => itemNameLower.includes(kw))) {
+          seasonalPattern = 'Winter';
+        } else if (row.receiveCount >= 6) {
+          seasonalPattern = 'Year-Round';
+        } else {
+          seasonalPattern = 'Spring/Fall';
+        }
+      }
+
+      // Smart stock status
+      let stockStatus = 'Active';
+      const daysSinceLastReceive = row.daysSinceLastReceive;
+      if (daysSinceLastReceive === null) {
+        stockStatus = 'Never Received';
+      } else if (classification === 'One-Time' && daysSinceLastReceive > 180) {
+        stockStatus = 'Expected One-Time';
+      } else if (classification.startsWith('Core') && daysSinceLastReceive > 90) {
+        // Check if seasonal hold
+        const currentMonth = new Date().getMonth() + 1; // 1-12
+        const isSummer = currentMonth >= 6 && currentMonth <= 8;
+        const isWinter = currentMonth === 12 || currentMonth <= 2;
+
+        if (seasonalPattern === 'Summer' && !isSummer) {
+          stockStatus = 'Seasonal Hold';
+        } else if (seasonalPattern === 'Winter' && !isWinter) {
+          stockStatus = 'Seasonal Hold';
+        } else {
+          stockStatus = 'Dead Stock';
+        }
+      } else if (daysSinceLastReceive < 30) {
+        stockStatus = 'New Arrival';
+      }
+
+      return {
+        styleNumber: row.styleNumber || '',
+        itemName: row.itemName || '',
+        category: row.category,
+        vendorName: row.vendorName,
+        gender: row.gender,
+        totalActiveQty: Number(row.totalActiveQty),
+        totalClosedStoresQty: Number(row.totalClosedStoresQty),
+        avgOrderCost: Number(Number(row.avgOrderCost).toFixed(2)),
+        avgSellingPrice: Number(Number(row.avgSellingPrice).toFixed(2)),
+        avgMarginPercent: Number(Number(row.avgMarginPercent).toFixed(2)),
+        inventoryValue: Number(Number(row.inventoryValue).toFixed(2)),
+        classification,
+        seasonalPattern,
+        lastReceived: row.lastReceived,
+        daysSinceLastReceive,
+        receiveCount: Number(row.receiveCount),
+        stockStatus,
+      };
+    });
+  }
+
+  async getStyleSlowMoving(limit: number = 100): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    avgMarginPercent: number;
+    classification: string;
+    seasonalPattern: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    stockStatus: string;
+  }>> {
+    const allStyles = await this.getStyleInventoryMetrics();
+
+    // Filter for slow-moving or dead stock
+    const slowMoving = allStyles.filter(
+      style => style.stockStatus === 'Dead Stock' || style.stockStatus === 'Slow Moving'
+    );
+
+    // Sort by inventory value descending (highest value dead stock first)
+    slowMoving.sort((a, b) => b.inventoryValue - a.inventoryValue);
+
+    return slowMoving.slice(0, limit);
+  }
+
+  async getStyleOverstockUnderstock(
+    daysRange: number = 30,
+    limit: number = 100
+  ): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    avgMarginPercent: number;
+    unitsSold: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    classification: string;
+    stockStatus: string;
+  }>> {
+    const allStyles = await this.getStyleInventoryMetrics();
+
+    // For each style, calculate sales velocity
+    const stylesWithSales = await Promise.all(
+      allStyles.map(async (style) => {
+        // Get sales count for this style
+        const [salesData] = await db
+          .select({
+            unitsSold: sql<number>`COUNT(DISTINCT ${salesTransactions.id})`,
+          })
+          .from(salesTransactions)
+          .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+          .where(
+            and(
+              eq(itemList.styleNumber, style.styleNumber),
+              eq(itemList.itemName, style.itemName),
+              sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '${sql.raw(daysRange.toString())} days'`
+            )
+          );
+
+        const unitsSold = salesData?.unitsSold || 0;
+        const avgDailySales = unitsSold / daysRange;
+        const daysOfSupply = avgDailySales > 0 ? style.totalActiveQty / avgDailySales : 999;
+
+        let stockStatus = 'Normal';
+        if (daysOfSupply > 90) {
+          stockStatus = 'Overstock';
+        } else if (daysOfSupply < 7 && avgDailySales > 0) {
+          stockStatus = 'Understock';
+        } else if (avgDailySales === 0 && style.totalActiveQty > 0) {
+          stockStatus = 'No Sales';
+        }
+
+        return {
+          styleNumber: style.styleNumber,
+          itemName: style.itemName,
+          category: style.category,
+          vendorName: style.vendorName,
+          totalActiveQty: style.totalActiveQty,
+          inventoryValue: style.inventoryValue,
+          avgMarginPercent: style.avgMarginPercent,
+          unitsSold,
+          avgDailySales: Number(avgDailySales.toFixed(2)),
+          daysOfSupply: Number(daysOfSupply.toFixed(1)),
+          classification: style.classification,
+          stockStatus,
+        };
+      })
+    );
+
+    // Filter for overstock or understock
+    const filtered = stylesWithSales.filter(
+      s => s.stockStatus === 'Overstock' || s.stockStatus === 'Understock'
+    );
+
+    // Sort by priority: Understock (high margin) > Overstock (low margin)
+    filtered.sort((a, b) => {
+      if (a.stockStatus === 'Understock' && b.stockStatus !== 'Understock') return -1;
+      if (a.stockStatus !== 'Understock' && b.stockStatus === 'Understock') return 1;
+      return b.avgMarginPercent - a.avgMarginPercent;
+    });
+
+    return filtered.slice(0, limit);
+  }
+
+  async getTransferRecommendations(limit: number = 50): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    fromStore: string;
+    toStore: string;
+    fromStoreQty: number;
+    toStoreQty: number;
+    fromStoreDailySales: number;
+    toStoreDailySales: number;
+    recommendedQty: number;
+    priority: string;
+    avgMarginPercent: number;
+  }>> {
+    // Get all styles with per-store quantities
+    const stylesWithStoreData = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        itemName: itemList.itemName,
+        category: itemList.category,
+        vendorName: itemList.vendorName,
+        gmQty: sql<number>`SUM(COALESCE(${itemList.gmQty}, 0))`,
+        hmQty: sql<number>`SUM(COALESCE(${itemList.hmQty}, 0))`,
+        nmQty: sql<number>`SUM(COALESCE(${itemList.nmQty}, 0))`,
+        lmQty: sql<number>`SUM(COALESCE(${itemList.lmQty}, 0))`,
+        avgOrderCost: sql<number>`AVG(CAST(COALESCE(${itemList.orderCost}, '0') AS NUMERIC))`,
+        avgSellingPrice: sql<number>`AVG(CAST(COALESCE(${itemList.sellingPrice}, '0') AS NUMERIC))`,
+      })
+      .from(itemList)
+      .where(sql`
+        ${itemList.styleNumber} IS NOT NULL
+        AND ${itemList.styleNumber} != ''
+      `)
+      .groupBy(
+        itemList.styleNumber,
+        itemList.itemName,
+        itemList.category,
+        itemList.vendorName
+      );
+
+    const recommendations: Array<{
+      styleNumber: string;
+      itemName: string;
+      category: string | null;
+      fromStore: string;
+      toStore: string;
+      fromStoreQty: number;
+      toStoreQty: number;
+      fromStoreDailySales: number;
+      toStoreDailySales: number;
+      recommendedQty: number;
+      priority: string;
+      avgMarginPercent: number;
+    }> = [];
+
+    // For each style, compare store velocities (simplified - assumes equal velocity for now)
+    for (const style of stylesWithStoreData) {
+      const stores = [
+        { name: 'GM', qty: style.gmQty },
+        { name: 'HM', qty: style.hmQty },
+        { name: 'NM', qty: style.nmQty },
+        { name: 'LM', qty: style.lmQty },
+      ];
+
+      // Calculate margin percent
+      const avgOrderCost = Number(style.avgOrderCost) || 0;
+      const avgSellingPrice = Number(style.avgSellingPrice) || 0;
+      const avgMarginPercent = avgSellingPrice > 0
+        ? ((avgSellingPrice - avgOrderCost) / avgSellingPrice) * 100
+        : 0;
+
+      // Find imbalances (simple heuristic: if one store has >10 units and another has 0)
+      for (let i = 0; i < stores.length; i++) {
+        for (let j = 0; j < stores.length; j++) {
+          if (i !== j && stores[i].qty > 10 && stores[j].qty === 0) {
+            recommendations.push({
+              styleNumber: style.styleNumber || '',
+              itemName: style.itemName || '',
+              category: style.category,
+              fromStore: stores[i].name,
+              toStore: stores[j].name,
+              fromStoreQty: stores[i].qty,
+              toStoreQty: stores[j].qty,
+              fromStoreDailySales: 0, // TODO: Calculate from sales data
+              toStoreDailySales: 0, // TODO: Calculate from sales data
+              recommendedQty: Math.min(5, Math.floor(stores[i].qty / 2)),
+              priority: 'Medium',
+              avgMarginPercent: Number(avgMarginPercent.toFixed(2)),
+            });
+          }
+        }
+      }
+    }
+
+    return recommendations.slice(0, limit);
+  }
+
+  async getRestockingRecommendations(limit: number = 50): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    classification: string;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    avgMarginPercent: number;
+    recommendedOrderQty: number;
+    priority: string;
+  }>> {
+    const stylesWithSales = await this.getStyleOverstockUnderstock(30, 500);
+    const allStyles = await this.getStyleInventoryMetrics();
+
+    // Create a map for quick lookup
+    const styleMap = new Map(
+      allStyles.map(s => [`${s.styleNumber}|${s.itemName}`, s])
+    );
+
+    const recommendations = stylesWithSales
+      .filter(style => {
+        // Only recommend restocking for items that are selling and running low
+        return (
+          style.daysOfSupply < 21 &&
+          style.avgDailySales > 0 &&
+          (style.classification === 'Core High' ||
+            style.classification === 'Core Medium' ||
+            style.classification === 'Core Low')
+        );
+      })
+      .map(style => {
+        const fullStyle = styleMap.get(`${style.styleNumber}|${style.itemName}`);
+
+        // Calculate recommended order quantity based on classification
+        let recommendedOrderQty = 0;
+        if (style.classification === 'Core High') {
+          recommendedOrderQty = Math.ceil(style.avgDailySales * 30); // 30 days supply
+        } else if (style.classification === 'Core Medium') {
+          recommendedOrderQty = Math.ceil(style.avgDailySales * 21); // 21 days supply
+        } else if (style.classification === 'Core Low') {
+          recommendedOrderQty = Math.ceil(style.avgDailySales * 14); // 14 days supply
+        }
+
+        // Determine priority
+        let priority = 'Low';
+        if (
+          style.classification === 'Core High' &&
+          style.daysOfSupply < 14 &&
+          style.avgMarginPercent >= 60
+        ) {
+          priority = 'High';
+        } else if (
+          (style.classification === 'Core High' || style.classification === 'Core Medium') &&
+          style.daysOfSupply < 14
+        ) {
+          priority = 'Medium';
+        } else if (style.avgDailySales > 0 && style.daysOfSupply < 7) {
+          priority = 'Medium';
+        }
+
+        return {
+          styleNumber: style.styleNumber,
+          itemName: style.itemName,
+          category: style.category,
+          vendorName: style.vendorName,
+          totalActiveQty: style.totalActiveQty,
+          avgDailySales: style.avgDailySales,
+          daysOfSupply: style.daysOfSupply,
+          classification: style.classification,
+          lastReceived: fullStyle?.lastReceived || null,
+          daysSinceLastReceive: fullStyle?.daysSinceLastReceive || null,
+          avgMarginPercent: style.avgMarginPercent,
+          recommendedOrderQty,
+          priority,
+        };
+      })
+      .sort((a, b) => {
+        // Sort by priority then by margin
+        const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+        if (priorityOrder[a.priority as keyof typeof priorityOrder] !== priorityOrder[b.priority as keyof typeof priorityOrder]) {
+          return priorityOrder[a.priority as keyof typeof priorityOrder] - priorityOrder[b.priority as keyof typeof priorityOrder];
+        }
+        return b.avgMarginPercent - a.avgMarginPercent;
+      });
+
+    return recommendations.slice(0, limit);
+  }
+
+  async getProductSegmentationReport(): Promise<{
+    coreHighFrequency: Array<any>;
+    coreMediumFrequency: Array<any>;
+    coreLowFrequency: Array<any>;
+    nonCoreRepeat: Array<any>;
+    oneTimePurchase: Array<any>;
+    summerItems: Array<any>;
+    winterItems: Array<any>;
+    highMarginItems: Array<any>;
+  }> {
+    const allStyles = await this.getStyleInventoryMetrics();
+
+    return {
+      coreHighFrequency: allStyles
+        .filter(s => s.classification === 'Core High')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      coreMediumFrequency: allStyles
+        .filter(s => s.classification === 'Core Medium')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      coreLowFrequency: allStyles
+        .filter(s => s.classification === 'Core Low')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      nonCoreRepeat: allStyles
+        .filter(s => s.classification === 'Non-Core Repeat')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      oneTimePurchase: allStyles
+        .filter(s => s.classification === 'One-Time')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      summerItems: allStyles
+        .filter(s => s.seasonalPattern === 'Summer')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      winterItems: allStyles
+        .filter(s => s.seasonalPattern === 'Winter')
+        .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      highMarginItems: allStyles
+        .filter(s => s.avgMarginPercent >= 70)
+        .sort((a, b) => b.avgMarginPercent - a.avgMarginPercent),
+    };
   }
 }
 

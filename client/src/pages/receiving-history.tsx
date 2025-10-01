@@ -1,6 +1,20 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { uploadReceivingWithProgress } from "@/lib/api";
+import {
+  subscribeToUploadState,
+  loadUploadState,
+  executeTrackedUpload,
+  clearUploadState,
+  isUploadActive,
+  pauseUpload,
+  resumeUpload,
+  stopUpload,
+  isUploadPaused,
+  isUploadStopped,
+  resetUploadControlFlags
+} from "@/lib/uploadStateManager";
 import {
   Card,
   CardContent,
@@ -24,6 +38,10 @@ import {
   Database,
   Eye,
   Download,
+  Pause,
+  Play,
+  StopCircle,
+  RotateCcw,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Link } from "wouter";
@@ -61,6 +79,15 @@ export default function ReceivingHistoryPage() {
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadResponse, setUploadResponse] = useState<UploadResponse | null>(null);
+  const [uploadStats, setUploadStats] = useState<{
+    processed: number;
+    total: number;
+    uploaded: number;
+    skipped: number;
+    failed: number;
+  } | null>(null);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [isStopped, setIsStopped] = useState<boolean>(false);
   const { toast } = useToast();
 
   const { data: stats } = useQuery<{
@@ -72,6 +99,64 @@ export default function ReceivingHistoryPage() {
   }>({
     queryKey: ["/api/receiving/stats"],
   });
+
+  // Restore upload state on mount and subscribe to changes
+  useEffect(() => {
+    const savedState = loadUploadState();
+
+    if (savedState && savedState.uploadType === 'receiving') {
+      // If state shows upload completed or not actively uploading, clear it
+      if (!savedState.isUploading || savedState.currentStep === 'complete') {
+        clearUploadState();
+        return;
+      }
+
+      // Restore upload state even if activeUploadPromise is null
+      // (it might be null due to page reload, but upload could still be running server-side)
+      setIsUploading(savedState.isUploading);
+      setIsPaused(savedState.isPaused);
+      if (savedState.stats) {
+        setUploadStats(savedState.stats);
+        const percentage = Math.round((savedState.stats.processed / savedState.stats.total) * 100);
+        setUploadProgress(percentage);
+      }
+
+      // If upload was in progress, restore to the flatten step to show progress
+      if (savedState.isUploading && savedState.currentStep === 'flatten') {
+        setCurrentStep('flatten');
+        // The upload is still running in the background
+        // The subscription below will update the UI as it progresses
+      }
+    }
+
+    // Subscribe to upload state changes
+    const unsubscribe = subscribeToUploadState((state) => {
+      if (state && state.uploadType === 'receiving') {
+        setIsUploading(state.isUploading);
+        setIsPaused(state.isPaused);
+        if (state.stats) {
+          setUploadStats(state.stats);
+          const percentage = Math.round((state.stats.processed / state.stats.total) * 100);
+          setUploadProgress(percentage);
+        }
+
+        // If upload completed while we were on another page
+        if (!state.isUploading && state.currentStep === 'complete') {
+          setCurrentStep('complete');
+          // Will be cleared automatically after 3 seconds
+        }
+      } else if (state === null) {
+        // State was cleared - reset UI if still showing old progress
+        setIsUploading(false);
+        setUploadStats(null);
+        setIsPaused(false);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -137,55 +222,103 @@ export default function ReceivingHistoryPage() {
     }
   };
 
-  const uploadMutation = useMutation({
-    mutationFn: async (data: { vouchers: ReceivingVoucher[]; fileName: string }) => {
-      const response = await apiRequest("POST", "/api/receiving/upload", data);
-      return response.json() as Promise<UploadResponse>;
-    },
-    onSuccess: (data) => {
-      setUploadResponse(data);
+
+  const handleUpload = async () => {
+    if (!flattenedData || !selectedFile) return;
+    // Prevent double-click and concurrent uploads
+    if (isUploading) return;
+
+    // Reset control flags
+    resetUploadControlFlags();
+    setIsPaused(false);
+    setIsStopped(false);
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setUploadStats({ processed: 0, total: flattenedData.length, uploaded: 0, skipped: 0, failed: 0 });
+
+    try {
+      // Use executeTrackedUpload to persist state across navigation
+      const result = await executeTrackedUpload(
+        'receiving',
+        selectedFile.name,
+        (onProgress) => uploadReceivingWithProgress(
+          flattenedData,
+          (progress) => {
+            setUploadStats(progress);
+            onProgress(progress);
+            // Update upload progress percentage based on processed items
+            const percentage = Math.round((progress.processed / progress.total) * 100);
+            setUploadProgress(percentage);
+
+            // Invalidate stats every 10 batches to update the cards in real-time
+            if (progress.processed % 500 === 0 || progress.processed === progress.total) {
+              queryClient.invalidateQueries({ queryKey: ["/api/receiving/stats"] });
+            }
+          },
+          selectedFile.name,
+          50, // batch size
+          () => ({ isPaused: isUploadPaused(), isStopped: isUploadStopped() })
+        ),
+        flattenedData.length,
+        'flatten'
+      );
+
+      // Check if upload was stopped
+      if (result.stopped) {
+        setIsStopped(true);
+        toast({
+          title: "Upload Stopped",
+          description: `Upload was stopped. ${result.uploaded} vouchers were uploaded before stopping.`,
+        });
+        // Don't transition to complete, stay on flatten step to show stopped state
+        return;
+      }
+
+      // Update response state
+      setUploadResponse({
+        success: result.success,
+        message: `Upload complete. ${result.uploaded} vouchers and ${result.lines} line items uploaded successfully.`,
+        uploaded: result.uploaded,
+        lines: result.lines,
+        skipped: result.skipped,
+        failed: result.failed,
+        errors: result.errors,
+        duplicateVouchers: result.duplicateVouchers
+      });
+
       setCurrentStep("complete");
+
+      // Invalidate queries to refresh stats
       queryClient.invalidateQueries({ queryKey: ["/api/receiving/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/receiving/vouchers"] });
-      toast({
-        title: "Upload Successful",
-        description: data.message,
-      });
-    },
-    onError: (error) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving/filter-options"] });
+
+      if (result.failed > 0) {
+        toast({
+          title: "Upload completed with errors",
+          description: `${result.uploaded} vouchers uploaded, ${result.failed} failed`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Upload Successful",
+          description: `${result.uploaded} vouchers uploaded successfully`,
+        });
+      }
+
+    } catch (error) {
       toast({
         title: "Upload Failed",
         description: error instanceof Error ? error.message : "Failed to upload data",
         variant: "destructive",
       });
-    },
-  });
-
-  const handleUpload = async () => {
-    if (!flattenedData || !selectedFile) return;
-    // Prevent double-click and concurrent uploads
-    if (isUploading || uploadMutation.isPending) return;
-    
-    setIsUploading(true);
-    setUploadProgress(0);
-    
-    // Simulate progress while uploading
-    const progressInterval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 90) return prev;
-        return prev + 10;
-      });
-    }, 200);
-    
-    try {
-      await uploadMutation.mutateAsync({
-        vouchers: flattenedData,
-        fileName: selectedFile.name,
-      });
-      setUploadProgress(100);
     } finally {
-      clearInterval(progressInterval);
       setIsUploading(false);
+      setIsPaused(false);
+      setTimeout(() => {
+        setUploadStats(null);
+      }, 3000); // Clear progress after 3 seconds
     }
   };
 
@@ -201,7 +334,27 @@ export default function ReceivingHistoryPage() {
     URL.revokeObjectURL(url);
   };
 
+  const handlePauseUpload = () => {
+    pauseUpload();
+    setIsPaused(true);
+  };
+
+  const handleResumeUpload = () => {
+    resumeUpload();
+    setIsPaused(false);
+  };
+
+  const handleStopUpload = () => {
+    stopUpload();
+    setIsStopped(true);
+    setIsPaused(false);
+  };
+
   const resetWorkflow = () => {
+    // Clear persisted upload state
+    clearUploadState();
+    resetUploadControlFlags();
+
     setCurrentStep("upload");
     setSelectedFile(null);
     setProcessedWorkbook(null);
@@ -209,6 +362,11 @@ export default function ReceivingHistoryPage() {
     setFlattenedData(null);
     setFlattenStats(null);
     setUploadResponse(null);
+    setIsUploading(false);
+    setUploadStats(null);
+    setUploadProgress(0);
+    setIsPaused(false);
+    setIsStopped(false);
   };
 
   return (
@@ -442,13 +600,14 @@ export default function ReceivingHistoryPage() {
                         }
                       }}
                       data-testid="button-download-flattened"
+                      disabled={!flattenedData}
                     >
                       <Download className="w-4 h-4 mr-2" />
                       Download Excel
                     </Button>
                     <Button
                       onClick={handleUpload}
-                      disabled={isUploading || uploadMutation.isPending}
+                      disabled={isUploading || !flattenedData}
                       data-testid="button-upload-database"
                     >
                       <Database className="w-4 h-4 mr-2" />
@@ -456,19 +615,124 @@ export default function ReceivingHistoryPage() {
                     </Button>
                   </div>
                 </div>
+              </div>
+            )}
 
-                {/* Upload Progress Bar */}
-                {isUploading && (
-                  <div className="mt-4 space-y-2" data-testid="upload-progress-container">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-foreground">Uploading to database...</span>
-                      <span className="text-sm text-muted-foreground" data-testid="text-upload-percentage">
-                        {uploadProgress}%
-                      </span>
-                    </div>
-                    <Progress value={uploadProgress} className="h-2" data-testid="progress-upload" />
-                  </div>
+            {/* Standalone Upload Progress Display - Shows during active upload even without flattenStats */}
+            {currentStep === "flatten" && isUploading && uploadStats && (
+              <div className="space-y-4">
+                {/* Upload Progress Display - Detailed like Sales Formatter */}
+                {!flattenStats && (
+                  <Alert>
+                    <Database className="h-4 w-4" />
+                    <AlertTitle>Upload In Progress</AlertTitle>
+                    <AlertDescription>
+                      Uploading vouchers to database. Progress restored from previous session.
+                    </AlertDescription>
+                  </Alert>
                 )}
+
+                <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg" data-testid="upload-progress-container">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-blue-900">Uploading to Database</p>
+                      {uploadStats.processed > 0 && (
+                        <Badge variant="outline" className="text-xs">
+                          Live Progress
+                        </Badge>
+                      )}
+                    </div>
+                    <Badge variant="secondary">{Math.round((uploadStats.processed / uploadStats.total) * 100)}%</Badge>
+                  </div>
+                  <Progress value={(uploadStats.processed / uploadStats.total) * 100} className="w-full" data-testid="progress-upload" />
+                  <div className="grid grid-cols-4 gap-4 text-center">
+                    <div>
+                      <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
+                      <p className="text-xs text-blue-700">Processed</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
+                      <p className="text-xs text-green-700">Uploaded</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-yellow-600">{uploadStats.skipped}</p>
+                      <p className="text-xs text-yellow-700">Skipped</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
+                      <p className="text-xs text-red-700">Failed</p>
+                    </div>
+                  </div>
+                  <p className="text-sm text-blue-800">
+                    {uploadStats.processed} of {uploadStats.total} vouchers processed
+                    {isPaused && <span className="ml-2 text-yellow-600 font-semibold">(Paused)</span>}
+                  </p>
+
+                  {/* Control Buttons */}
+                  <div className="flex gap-2 justify-center">
+                    {!isPaused ? (
+                      <Button
+                        onClick={handlePauseUpload}
+                        variant="outline"
+                        size="sm"
+                        disabled={!isUploading}
+                      >
+                        <Pause className="w-4 h-4 mr-2" />
+                        Pause
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={handleResumeUpload}
+                        variant="outline"
+                        size="sm"
+                      >
+                        <Play className="w-4 h-4 mr-2" />
+                        Resume
+                      </Button>
+                    )}
+                    <Button
+                      onClick={handleStopUpload}
+                      variant="destructive"
+                      size="sm"
+                      disabled={!isUploading}
+                    >
+                      <StopCircle className="w-4 h-4 mr-2" />
+                      Stop
+                    </Button>
+                    <Button
+                      onClick={resetWorkflow}
+                      variant="outline"
+                      size="sm"
+                    >
+                      <RotateCcw className="w-4 h-4 mr-2" />
+                      Clear
+                    </Button>
+                  </div>
+
+                  <Alert className="bg-blue-100 border-blue-300">
+                    <AlertCircle className="h-4 w-4 text-blue-600" />
+                    <AlertDescription className="text-blue-800 text-xs">
+                      <strong>Note:</strong> If you refresh the page during upload, the upload will stop. The data uploaded so far ({uploadStats.uploaded} vouchers) is already saved in the database. Click "Clear" to reset and start over, or check the Receiving Vouchers page to verify your data.
+                    </AlertDescription>
+                  </Alert>
+                </div>
+              </div>
+            )}
+
+            {/* Stopped State - Show Reset Button */}
+            {isStopped && uploadStats && (
+              <div className="space-y-4">
+                <Alert variant="destructive">
+                  <StopCircle className="h-4 w-4" />
+                  <AlertTitle>Upload Stopped</AlertTitle>
+                  <AlertDescription>
+                    Upload was stopped. {uploadStats.uploaded} vouchers were uploaded before stopping.
+                  </AlertDescription>
+                </Alert>
+                <Button onClick={resetWorkflow} variant="outline">
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Reset & Start Over
+                </Button>
               </div>
             )}
 

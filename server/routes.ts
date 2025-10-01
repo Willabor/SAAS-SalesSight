@@ -2,8 +2,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
-import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, insertReceivingVoucherSchema, insertReceivingLineSchema, type InsertSalesTransaction } from "@shared/schema";
+import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistorySchema, insertReceivingVoucherSchema, insertReceivingLineSchema, type InsertSalesTransaction, receivingVouchers } from "@shared/schema";
 import { z } from "zod";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
 
 // Timezone-agnostic date normalization to YYYY-MM-DD
 function normalizeDate(dateInput: string | null | undefined): string | null {
@@ -528,21 +530,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const offset = parseInt(String(req.query.offset)) || 0;
       const search = req.query.search ? String(req.query.search) : undefined;
       const store = req.query.store ? String(req.query.store) : undefined;
+      const vendor = req.query.vendor ? String(req.query.vendor) : undefined;
+      const type = req.query.type ? String(req.query.type) : undefined;
       const voucherNumber = req.query.voucherNumber ? String(req.query.voucherNumber) : undefined;
       const exactMatch = req.query.exactMatch === 'true';
-      
+      const sortBy = req.query.sortBy ? String(req.query.sortBy) : undefined;
+      const sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
+
       const result = await storage.getReceivingVouchers({
         limit,
         offset,
         search,
         store,
+        vendor,
+        type,
         voucherNumber,
         exactMatch,
+        sortBy,
+        sortDirection,
       });
       res.json(result);
     } catch (error) {
       console.error("Error fetching receiving vouchers:", error);
       res.status(500).json({ error: "Failed to fetch receiving vouchers" });
+    }
+  });
+
+  // Get receiving filter options (stores, vendors, types)
+  app.get("/api/receiving/filter-options", isAuthenticated, async (req, res) => {
+    try {
+      const options = await storage.getReceivingFilterOptions();
+      res.json(options);
+    } catch (error) {
+      console.error("Error fetching filter options:", error);
+      res.status(500).json({ error: "Failed to fetch filter options" });
+    }
+  });
+
+  // DEBUG: Get raw store values to check for issues
+  app.get("/api/receiving/debug-stores", isAuthenticated, async (req, res) => {
+    try {
+      const result = await db.select({
+        store: receivingVouchers.store,
+        count: sql<number>`count(*)`
+      })
+      .from(receivingVouchers)
+      .groupBy(receivingVouchers.store)
+      .orderBy(receivingVouchers.store);
+
+      res.json(result.map(r => ({
+        store: r.store,
+        length: r.store?.length || 0,
+        count: r.count,
+        quoted: `"${r.store}"`,
+        charCodes: Array.from(r.store || '').map(c => c.charCodeAt(0))
+      })));
+    } catch (error) {
+      console.error("Error fetching debug stores:", error);
+      res.status(500).json({ error: "Failed to fetch debug data" });
+    }
+  });
+
+  // Export receiving vouchers with filters
+  app.get("/api/receiving/export", isAuthenticated, async (req, res) => {
+    try {
+      const store = req.query.store ? String(req.query.store) : undefined;
+      const vendor = req.query.vendor ? String(req.query.vendor) : undefined;
+      const type = req.query.type ? String(req.query.type) : undefined;
+      const search = req.query.search ? String(req.query.search) : undefined;
+
+      const vouchers = await storage.getAllReceivingVouchersForExport(store, vendor, type, search);
+      res.json(vouchers);
+    } catch (error) {
+      console.error("Error exporting vouchers:", error);
+      res.status(500).json({ error: "Failed to export vouchers" });
     }
   });
 
@@ -553,8 +614,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (isNaN(id)) {
         return res.status(400).json({ error: "Invalid voucher ID" });
       }
-      
+
       const result = await storage.getVoucherByIdWithLines(id);
+      console.log('Voucher detail result:', JSON.stringify(result, null, 2));
       if (result) {
         res.json(result);
       } else {
@@ -622,9 +684,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             validatedLines.push(validatedLine as any);
           });
 
-          // Create composite key for duplicate detection
-          const compositeKey = `${validatedVoucher.voucherNumber}|${validatedVoucher.store}|${validatedVoucher.date}`;
-          
+          // Create composite key for duplicate detection (including totalQty)
+          const compositeKey = `${validatedVoucher.voucherNumber}|${validatedVoucher.store}|${validatedVoucher.date}|${validatedVoucher.totalQty}`;
+
           validatedVouchers.push({
             voucher: validatedVoucher,
             lines: validatedLines,
@@ -637,11 +699,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       });
 
-      // Step 2: Check for existing vouchers
+      // Step 2: Check for existing vouchers (with totalQty in composite key)
       const vouchersToCheck = validatedVouchers.map(v => ({
         voucherNumber: v.voucher.voucherNumber!,
         store: v.voucher.store!,
         date: v.voucher.date!,
+        totalQty: v.voucher.totalQty || 0,
       }));
       
       const existingVouchers = await storage.getExistingVouchers(vouchersToCheck);
@@ -789,6 +852,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching category inventory analysis:", error);
       res.status(500).json({ error: "Failed to fetch category inventory analysis" });
+    }
+  });
+
+  // Style-level Inventory Turnover API endpoints (new)
+  app.get("/api/inventory/style-metrics", isAuthenticated, async (req, res) => {
+    try {
+      const metrics = await storage.getStyleInventoryMetrics();
+      res.json(metrics);
+    } catch (error) {
+      console.error("Error fetching style inventory metrics:", error);
+      res.status(500).json({ error: "Failed to fetch style inventory metrics" });
+    }
+  });
+
+  app.get("/api/inventory/style-slow-moving", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const slowMoving = await storage.getStyleSlowMoving(limit);
+      res.json(slowMoving);
+    } catch (error) {
+      console.error("Error fetching style slow-moving stock:", error);
+      res.status(500).json({ error: "Failed to fetch style slow-moving stock" });
+    }
+  });
+
+  app.get("/api/inventory/style-overstock-understock", isAuthenticated, async (req, res) => {
+    try {
+      const daysRange = parseInt(req.query.days as string) || 30;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const analysis = await storage.getStyleOverstockUnderstock(daysRange, limit);
+      res.json(analysis);
+    } catch (error) {
+      console.error("Error fetching style overstock/understock analysis:", error);
+      res.status(500).json({ error: "Failed to fetch style overstock/understock analysis" });
+    }
+  });
+
+  app.get("/api/inventory/transfer-recommendations", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const recommendations = await storage.getTransferRecommendations(limit);
+      res.json(recommendations);
+    } catch (error) {
+      console.error("Error fetching transfer recommendations:", error);
+      res.status(500).json({ error: "Failed to fetch transfer recommendations" });
+    }
+  });
+
+  app.get("/api/inventory/restocking-recommendations", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const recommendations = await storage.getRestockingRecommendations(limit);
+      res.json(recommendations);
+    } catch (error) {
+      console.error("Error fetching restocking recommendations:", error);
+      res.status(500).json({ error: "Failed to fetch restocking recommendations" });
+    }
+  });
+
+  app.get("/api/inventory/product-segmentation", isAuthenticated, async (req, res) => {
+    try {
+      const report = await storage.getProductSegmentationReport();
+      res.json(report);
+    } catch (error) {
+      console.error("Error fetching product segmentation report:", error);
+      res.status(500).json({ error: "Failed to fetch product segmentation report" });
     }
   });
 

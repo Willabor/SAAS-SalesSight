@@ -34,52 +34,75 @@ import {
   resetSettings as resetSettingsToDefaults,
 } from "@/lib/inventory-settings";
 
-interface TurnoverMetrics {
-  totalInventoryValue: number;
-  totalInventoryUnits: number;
-  deadStockValue: number;
-  deadStockUnits: number;
-  avgDaysSinceLastSale: number;
-}
-
-interface SlowMovingItem {
-  itemNumber: string;
+// Style-level inventory metrics (PHASE 2 - Updated interfaces)
+interface StyleInventoryMetrics {
+  styleNumber: string;
   itemName: string;
   category: string | null;
   vendorName: string | null;
-  availQty: number;
-  orderCost: string | null;
+  gender: string | null;
+  totalActiveQty: number;
+  totalClosedStoresQty: number;
+  avgOrderCost: number;
+  avgSellingPrice: number;
+  avgMarginPercent: number;
   inventoryValue: number;
-  lastSold: string | null;
-  daysSinceLastSale: number | null;
+  classification: string;
+  seasonalPattern: string;
+  lastReceived: string | null;
+  daysSinceLastReceive: number | null;
+  receiveCount: number;
   stockStatus: string;
 }
 
-interface OverstockItem {
-  itemNumber: string;
+interface StyleSlowMovingItem {
+  styleNumber: string;
   itemName: string;
   category: string | null;
   vendorName: string | null;
-  availQty: number;
-  orderCost: string | null;
+  totalActiveQty: number;
   inventoryValue: number;
+  avgMarginPercent: number;
+  classification: string;
+  seasonalPattern: string;
+  lastReceived: string | null;
+  daysSinceLastReceive: number | null;
+  stockStatus: string;
+}
+
+interface StyleOverstockItem {
+  styleNumber: string;
+  itemName: string;
+  category: string | null;
+  vendorName: string | null;
+  totalActiveQty: number;
+  inventoryValue: number;
+  avgMarginPercent: number;
   unitsSold: number;
   avgDailySales: number;
   daysOfSupply: number;
+  classification: string;
   stockStatus: string;
 }
 
-interface CategoryAnalysis {
-  category: string;
-  totalInventoryValue: number;
-  totalUnits: number;
-  totalItemsCount: number;
-  totalSales: number;
-  avgTurnoverRate: number;
+interface ProductSegmentation {
+  coreHighFrequency: StyleInventoryMetrics[];
+  coreMediumFrequency: StyleInventoryMetrics[];
+  coreLowFrequency: StyleInventoryMetrics[];
+  nonCoreRepeat: StyleInventoryMetrics[];
+  oneTimePurchase: StyleInventoryMetrics[];
+  summerItems: StyleInventoryMetrics[];
+  winterItems: StyleInventoryMetrics[];
+  highMarginItems: StyleInventoryMetrics[];
 }
 
 export default function InventoryTurnoverDashboard() {
   const [settings, setSettings] = useState<InventorySettings>(() => loadSettings());
+  const [showClassificationBreakdown, setShowClassificationBreakdown] = useState(false);
+  const [filterClassification, setFilterClassification] = useState<string>('all');
+  const [filterSeasonalPattern, setFilterSeasonalPattern] = useState<string>('all');
+  const [filterStockStatus, setFilterStockStatus] = useState<string>('all');
+  const [excludeSeasonalHold, setExcludeSeasonalHold] = useState(true);
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -95,40 +118,48 @@ export default function InventoryTurnoverDashboard() {
     setSettings(defaults);
   };
 
-  const { data: metrics, isLoading: metricsLoading } = useQuery<TurnoverMetrics>({
-    queryKey: ["inventory", "turnover-metrics", settings.slowMovingDays],
+  // NEW: Fetch style-level metrics from Phase 1 backend
+  const { data: styleMetrics, isLoading: metricsLoading } = useQuery<StyleInventoryMetrics[]>({
+    queryKey: ["inventory", "style-metrics"],
     queryFn: async () => {
-      const response = await fetch(`/api/inventory/turnover-metrics?deadStockDays=${settings.slowMovingDays}`);
-      if (!response.ok) throw new Error("Failed to fetch turnover metrics");
+      const response = await fetch(`/api/inventory/style-metrics`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch style metrics");
       return response.json();
     },
   });
 
-  const { data: slowMoving, isLoading: slowMovingLoading } = useQuery<SlowMovingItem[]>({
-    queryKey: ["inventory", "slow-moving", settings.slowMovingDays, settings.slowMovingLimit],
+  const { data: slowMoving, isLoading: slowMovingLoading } = useQuery<StyleSlowMovingItem[]>({
+    queryKey: ["inventory", "style-slow-moving", settings.slowMovingLimit],
     queryFn: async () => {
-      const response = await fetch(`/api/inventory/slow-moving?days=${settings.slowMovingDays}&limit=${settings.slowMovingLimit}`);
+      const response = await fetch(`/api/inventory/style-slow-moving?limit=${settings.slowMovingLimit}`, {
+        credentials: 'include',
+      });
       if (!response.ok) throw new Error("Failed to fetch slow-moving stock");
       return response.json();
     },
   });
 
-  const { data: stockAnalysis, isLoading: stockAnalysisLoading } = useQuery<OverstockItem[]>({
-    queryKey: ["inventory", "overstock-understock", settings.salesAnalysisDays, settings.stockAnalysisLimit, settings.overstockDays, settings.understockDays],
+  const { data: stockAnalysis, isLoading: stockAnalysisLoading } = useQuery<StyleOverstockItem[]>({
+    queryKey: ["inventory", "style-overstock-understock", settings.salesAnalysisDays, settings.stockAnalysisLimit],
     queryFn: async () => {
       const response = await fetch(
-        `/api/inventory/overstock-understock?days=${settings.salesAnalysisDays}&limit=${settings.stockAnalysisLimit}&overstockThreshold=${settings.overstockDays}&understockThreshold=${settings.understockDays}`
+        `/api/inventory/style-overstock-understock?days=${settings.salesAnalysisDays}&limit=${settings.stockAnalysisLimit}`,
+        { credentials: 'include' }
       );
       if (!response.ok) throw new Error("Failed to fetch stock analysis");
       return response.json();
     },
   });
 
-  const { data: categoryAnalysis, isLoading: categoryLoading } = useQuery<CategoryAnalysis[]>({
-    queryKey: ["inventory", "category-analysis", settings.categoryAnalysisDays],
+  const { data: segmentation, isLoading: segmentationLoading } = useQuery<ProductSegmentation>({
+    queryKey: ["inventory", "product-segmentation"],
     queryFn: async () => {
-      const response = await fetch(`/api/inventory/category-analysis?days=${settings.categoryAnalysisDays}`);
-      if (!response.ok) throw new Error("Failed to fetch category analysis");
+      const response = await fetch(`/api/inventory/product-segmentation`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch product segmentation");
       return response.json();
     },
   });
@@ -145,20 +176,75 @@ export default function InventoryTurnoverDashboard() {
     return new Intl.NumberFormat('en-US').format(value);
   };
 
-  const getStockStatusBadge = (status: string) => {
+  // Calculate aggregated metrics from style data
+  const aggregatedMetrics = styleMetrics ? {
+    totalStyles: styleMetrics.length,
+    totalActiveInventoryValue: styleMetrics.reduce((sum, s) => sum + s.inventoryValue, 0),
+    totalClosedStoresValue: styleMetrics.reduce((sum, s) => sum + (s.totalClosedStoresQty * s.avgOrderCost), 0),
+    coreItemsCount: styleMetrics.filter(s => s.classification.startsWith('Core')).length,
+    coreItemsValue: styleMetrics.filter(s => s.classification.startsWith('Core')).reduce((sum, s) => sum + s.inventoryValue, 0),
+    deadStockValue: styleMetrics.filter(s => s.stockStatus === 'Dead Stock').reduce((sum, s) => sum + s.inventoryValue, 0),
+    deadStockCount: styleMetrics.filter(s => s.stockStatus === 'Dead Stock').length,
+    seasonalHoldValue: styleMetrics.filter(s => s.stockStatus === 'Seasonal Hold').reduce((sum, s) => sum + s.inventoryValue, 0),
+    seasonalHoldCount: styleMetrics.filter(s => s.stockStatus === 'Seasonal Hold').length,
+    newArrivalValue: styleMetrics.filter(s => s.stockStatus === 'New Arrival').reduce((sum, s) => sum + s.inventoryValue, 0),
+    newArrivalCount: styleMetrics.filter(s => s.stockStatus === 'New Arrival').length,
+  } : null;
+
+  // Classification breakdown
+  const classificationBreakdown = segmentation ? [
+    { name: 'Core High (40+)', styles: segmentation.coreHighFrequency.length, value: segmentation.coreHighFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
+    { name: 'Core Medium (10-39)', styles: segmentation.coreMediumFrequency.length, value: segmentation.coreMediumFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
+    { name: 'Core Low (6-9)', styles: segmentation.coreLowFrequency.length, value: segmentation.coreLowFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
+    { name: 'Non-Core (2-5)', styles: segmentation.nonCoreRepeat.length, value: segmentation.nonCoreRepeat.reduce((sum, s) => sum + s.inventoryValue, 0) },
+    { name: 'One-Time (1)', styles: segmentation.oneTimePurchase.length, value: segmentation.oneTimePurchase.reduce((sum, s) => sum + s.inventoryValue, 0) },
+  ] : [];
+
+  const getClassificationBadge = (classification: string) => {
     const variants: Record<string, "default" | "destructive" | "secondary" | "outline"> = {
-      'Dead Stock': 'destructive',
-      'Slow Moving': 'secondary',
-      'Overstock': 'secondary',
-      'Understock': 'destructive',
-      'No Sales': 'outline',
-      'Never Sold': 'destructive',
-      'Normal': 'default',
+      'Core High': 'default',
+      'Core Medium': 'secondary',
+      'Core Low': 'secondary',
+      'Non-Core Repeat': 'outline',
+      'One-Time': 'outline',
     };
-    return <Badge variant={variants[status] || 'default'}>{status}</Badge>;
+    const colors: Record<string, string> = {
+      'Core High': 'bg-green-100 text-green-800 border-green-300',
+      'Core Medium': 'bg-blue-100 text-blue-800 border-blue-300',
+      'Core Low': 'bg-cyan-100 text-cyan-800 border-cyan-300',
+      'Non-Core Repeat': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      'One-Time': 'bg-gray-100 text-gray-800 border-gray-300',
+    };
+    return <Badge variant="outline" className={colors[classification]}>{classification}</Badge>;
   };
 
-  // Export handlers
+  const getSeasonalBadge = (pattern: string) => {
+    const colors: Record<string, string> = {
+      'Summer': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      'Winter': 'bg-cyan-100 text-cyan-800 border-cyan-300',
+      'Year-Round': 'bg-green-100 text-green-800 border-green-300',
+      'Spring/Fall': 'bg-orange-100 text-orange-800 border-orange-300',
+      'Unknown': 'bg-gray-100 text-gray-800 border-gray-300',
+    };
+    return <Badge variant="outline" className={colors[pattern] || colors['Unknown']}>{pattern}</Badge>;
+  };
+
+  const getStockStatusBadge = (status: string) => {
+    const colors: Record<string, string> = {
+      'Dead Stock': 'bg-red-100 text-red-800 border-red-300',
+      'Seasonal Hold': 'bg-orange-100 text-orange-800 border-orange-300',
+      'New Arrival': 'bg-green-100 text-green-800 border-green-300',
+      'Active': 'bg-blue-100 text-blue-800 border-blue-300',
+      'Expected One-Time': 'bg-gray-100 text-gray-800 border-gray-300',
+      'Overstock': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      'Understock': 'bg-red-100 text-red-800 border-red-300',
+      'No Sales': 'bg-gray-100 text-gray-800 border-gray-300',
+      'Normal': 'bg-green-100 text-green-800 border-green-300',
+    };
+    return <Badge variant="outline" className={colors[status] || 'bg-gray-100 text-gray-800 border-gray-300'}>{status}</Badge>;
+  };
+
+  // Export handlers for style-level data
   const handleExportSlowMoving = () => {
     if (!slowMoving || slowMoving.length === 0) {
       alert('No data to export');
@@ -166,19 +252,21 @@ export default function InventoryTurnoverDashboard() {
     }
 
     const exportData = formatDataForExport(slowMoving, {
-      itemNumber: 'Item Number',
+      styleNumber: 'Style Number',
       itemName: 'Item Name',
       category: 'Category',
       vendorName: 'Vendor',
-      availQty: 'Available Qty',
-      orderCost: 'Order Cost',
+      classification: 'Classification',
+      seasonalPattern: 'Seasonal Pattern',
+      totalActiveQty: 'Active Qty',
       inventoryValue: 'Inventory Value',
-      lastSold: 'Last Sold Date',
-      daysSinceLastSale: 'Days Since Last Sale',
+      avgMarginPercent: 'Margin %',
+      lastReceived: 'Last Received',
+      daysSinceLastReceive: 'Days Since Receive',
       stockStatus: 'Stock Status',
     });
 
-    exportToExcel(exportData, 'slow-moving-stock', 'Slow Moving Stock');
+    exportToExcel(exportData, 'slow-moving-styles', 'Slow Moving Styles');
   };
 
   const handleExportStockAnalysis = () => {
@@ -190,71 +278,75 @@ export default function InventoryTurnoverDashboard() {
     const filteredData = stockAnalysis.filter(item => item.stockStatus !== 'Normal');
 
     const exportData = formatDataForExport(filteredData, {
-      itemNumber: 'Item Number',
+      styleNumber: 'Style Number',
       itemName: 'Item Name',
       category: 'Category',
       vendorName: 'Vendor',
-      availQty: 'On Hand',
-      orderCost: 'Order Cost',
+      classification: 'Classification',
+      totalActiveQty: 'On Hand',
       unitsSold: 'Units Sold (30d)',
       avgDailySales: 'Avg Daily Sales',
       daysOfSupply: 'Days of Supply',
       inventoryValue: 'Inventory Value',
+      avgMarginPercent: 'Margin %',
       stockStatus: 'Stock Status',
     });
 
-    exportToExcel(exportData, 'overstock-understock-analysis', 'Stock Analysis');
-  };
-
-  const handleExportCategoryAnalysis = () => {
-    if (!categoryAnalysis || categoryAnalysis.length === 0) {
-      alert('No data to export');
-      return;
-    }
-
-    const exportData = formatDataForExport(categoryAnalysis, {
-      category: 'Category',
-      totalInventoryValue: 'Total Inventory Value',
-      totalUnits: 'Total Units',
-      totalItemsCount: 'Item Count',
-      totalSales: 'Sales (30d)',
-      avgTurnoverRate: 'Turnover Rate %',
-    });
-
-    exportToExcel(exportData, 'category-inventory-analysis', 'Category Analysis');
+    exportToExcel(exportData, 'style-stock-analysis', 'Style Stock Analysis');
   };
 
   const handleExportAll = () => {
-    if (!slowMoving && !stockAnalysis && !categoryAnalysis) {
+    if (!styleMetrics && !slowMoving && !stockAnalysis) {
       alert('No data to export');
       return;
     }
 
     const sheets: Array<{ data: Record<string, any>[]; sheetName: string }> = [];
 
-    // Add metrics summary
-    if (metrics) {
+    // Add summary metrics
+    if (aggregatedMetrics) {
       sheets.push({
         data: [{
-          'Metric': 'Total Inventory Value',
-          'Value': formatCurrency(metrics.totalInventoryValue),
+          'Metric': 'Total Styles',
+          'Value': formatNumber(aggregatedMetrics.totalStyles),
         }, {
-          'Metric': 'Total Inventory Units',
-          'Value': formatNumber(metrics.totalInventoryUnits),
+          'Metric': 'Total Active Inventory Value',
+          'Value': formatCurrency(aggregatedMetrics.totalActiveInventoryValue),
+        }, {
+          'Metric': 'Core Items Count',
+          'Value': formatNumber(aggregatedMetrics.coreItemsCount),
+        }, {
+          'Metric': 'Core Items Value',
+          'Value': formatCurrency(aggregatedMetrics.coreItemsValue),
+        }, {
+          'Metric': 'Core Items %',
+          'Value': ((aggregatedMetrics.coreItemsValue / aggregatedMetrics.totalActiveInventoryValue) * 100).toFixed(1) + '%',
         }, {
           'Metric': 'Dead Stock Value',
-          'Value': formatCurrency(metrics.deadStockValue),
+          'Value': formatCurrency(aggregatedMetrics.deadStockValue),
         }, {
-          'Metric': 'Dead Stock Units',
-          'Value': formatNumber(metrics.deadStockUnits),
+          'Metric': 'Dead Stock Count',
+          'Value': formatNumber(aggregatedMetrics.deadStockCount),
         }, {
-          'Metric': 'Avg Days Since Last Sale',
-          'Value': Math.round(metrics.avgDaysSinceLastSale),
+          'Metric': 'Seasonal Hold Value',
+          'Value': formatCurrency(aggregatedMetrics.seasonalHoldValue),
         }, {
-          'Metric': 'Dead Stock Percentage',
-          'Value': ((metrics.deadStockValue / metrics.totalInventoryValue) * 100).toFixed(1) + '%',
+          'Metric': 'Closed Stores Inventory (MM+PM)',
+          'Value': formatCurrency(aggregatedMetrics.totalClosedStoresValue),
         }],
         sheetName: 'Summary Metrics',
+      });
+    }
+
+    // Add classification breakdown
+    if (classificationBreakdown.length > 0) {
+      sheets.push({
+        data: classificationBreakdown.map(c => ({
+          'Classification': c.name,
+          'Style Count': c.styles,
+          'Inventory Value': formatCurrency(c.value),
+        })),
+        sheetName: 'Classification Breakdown',
       });
     }
 
@@ -262,15 +354,17 @@ export default function InventoryTurnoverDashboard() {
     if (slowMoving && slowMoving.length > 0) {
       sheets.push({
         data: formatDataForExport(slowMoving, {
-          itemNumber: 'Item Number',
+          styleNumber: 'Style Number',
           itemName: 'Item Name',
           category: 'Category',
           vendorName: 'Vendor',
-          availQty: 'Available Qty',
-          orderCost: 'Order Cost',
+          classification: 'Classification',
+          seasonalPattern: 'Seasonal Pattern',
+          totalActiveQty: 'Active Qty',
           inventoryValue: 'Inventory Value',
-          lastSold: 'Last Sold Date',
-          daysSinceLastSale: 'Days Since Last Sale',
+          avgMarginPercent: 'Margin %',
+          lastReceived: 'Last Received',
+          daysSinceLastReceive: 'Days Since Receive',
           stockStatus: 'Stock Status',
         }),
         sheetName: 'Slow Moving Stock',
@@ -282,45 +376,40 @@ export default function InventoryTurnoverDashboard() {
       const filteredData = stockAnalysis.filter(item => item.stockStatus !== 'Normal');
       sheets.push({
         data: formatDataForExport(filteredData, {
-          itemNumber: 'Item Number',
+          styleNumber: 'Style Number',
           itemName: 'Item Name',
           category: 'Category',
           vendorName: 'Vendor',
-          availQty: 'On Hand',
-          orderCost: 'Order Cost',
+          classification: 'Classification',
+          totalActiveQty: 'On Hand',
           unitsSold: 'Units Sold (30d)',
           avgDailySales: 'Avg Daily Sales',
           daysOfSupply: 'Days of Supply',
           inventoryValue: 'Inventory Value',
+          avgMarginPercent: 'Margin %',
           stockStatus: 'Stock Status',
         }),
         sheetName: 'Stock Analysis',
       });
     }
 
-    // Add category analysis
-    if (categoryAnalysis && categoryAnalysis.length > 0) {
-      sheets.push({
-        data: formatDataForExport(categoryAnalysis, {
-          category: 'Category',
-          totalInventoryValue: 'Total Inventory Value',
-          totalUnits: 'Total Units',
-          totalItemsCount: 'Item Count',
-          totalSales: 'Sales (30d)',
-          avgTurnoverRate: 'Turnover Rate %',
-        }),
-        sheetName: 'Category Analysis',
-      });
-    }
-
-    exportMultipleSheetsToExcel(sheets, 'inventory-turnover-report');
+    exportMultipleSheetsToExcel(sheets, 'style-inventory-turnover-report');
   };
 
-  if (metricsLoading || slowMovingLoading || stockAnalysisLoading || categoryLoading) {
+  if (metricsLoading || slowMovingLoading || stockAnalysisLoading || segmentationLoading) {
     return (
       <div className="text-center py-16">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
         <p className="mt-4 text-muted-foreground">Loading inventory analytics...</p>
+      </div>
+    );
+  }
+
+  // Check if we have the required data
+  if (!styleMetrics || !slowMoving || !stockAnalysis || !segmentation) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-muted-foreground">No inventory data available</p>
       </div>
     );
   }
@@ -345,23 +434,43 @@ export default function InventoryTurnoverDashboard() {
         </Button>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* KPI Cards - Row 1 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card data-testid="card-total-inventory-value">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Inventory Value
+              Total Active Inventory
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center">
               <DollarSign className="w-4 h-4 mr-2 text-green-600" />
               <p className="text-2xl font-bold" data-testid="text-total-inventory-value">
-                {formatCurrency(metrics?.totalInventoryValue || 0)}
+                {formatCurrency(aggregatedMetrics?.totalActiveInventoryValue || 0)}
               </p>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {formatNumber(metrics?.totalInventoryUnits || 0)} units
+              {formatNumber(aggregatedMetrics?.totalStyles || 0)} styles • Excludes MM/PM
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-core-items-value">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Core Items Value
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center">
+              <Package className="w-4 h-4 mr-2 text-blue-600" />
+              <p className="text-2xl font-bold text-blue-600" data-testid="text-core-items-value">
+                {formatCurrency(aggregatedMetrics?.coreItemsValue || 0)}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {formatNumber(aggregatedMetrics?.coreItemsCount || 0)} styles • {aggregatedMetrics?.totalActiveInventoryValue ?
+                ((aggregatedMetrics.coreItemsValue / aggregatedMetrics.totalActiveInventoryValue) * 100).toFixed(1) : '0'}% of catalog
             </p>
           </CardContent>
         </Card>
@@ -376,68 +485,119 @@ export default function InventoryTurnoverDashboard() {
             <div className="flex items-center">
               <AlertTriangle className="w-4 h-4 mr-2 text-red-600" />
               <p className="text-2xl font-bold text-red-600" data-testid="text-dead-stock-value">
-                {formatCurrency(metrics?.deadStockValue || 0)}
+                {formatCurrency(aggregatedMetrics?.deadStockValue || 0)}
               </p>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {formatNumber(metrics?.deadStockUnits || 0)} units (90+ days)
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-avg-days-since-sale">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Avg Days Since Last Sale
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center">
-              <TrendingDown className="w-4 h-4 mr-2 text-orange-600" />
-              <p className="text-2xl font-bold" data-testid="text-avg-days-since-sale">
-                {Math.round(metrics?.avgDaysSinceLastSale || 0)}
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              days average
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-dead-stock-percentage">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Dead Stock %
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center">
-              <Package className="w-4 h-4 mr-2 text-blue-600" />
-              <p className="text-2xl font-bold" data-testid="text-dead-stock-percentage">
-                {metrics?.totalInventoryValue && metrics.totalInventoryValue > 0
-                  ? ((metrics.deadStockValue / metrics.totalInventoryValue) * 100).toFixed(1)
-                  : '0.0'}%
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              of total inventory
+              {formatNumber(aggregatedMetrics?.deadStockCount || 0)} styles • Excludes seasonal hold
             </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Slow Moving & Dead Stock Table */}
+      {/* KPI Cards - Row 2 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card data-testid="card-seasonal-hold">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Seasonal Hold
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center">
+              <TrendingDown className="w-4 h-4 mr-2 text-orange-600" />
+              <p className="text-2xl font-bold text-orange-600" data-testid="text-seasonal-hold-value">
+                {formatCurrency(aggregatedMetrics?.seasonalHoldValue || 0)}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {formatNumber(aggregatedMetrics?.seasonalHoldCount || 0)} styles • Out of season
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-closed-stores">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Closed Stores (MM+PM)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center">
+              <AlertTriangle className="w-4 h-4 mr-2 text-yellow-600" />
+              <p className="text-2xl font-bold text-yellow-600" data-testid="text-closed-stores-value">
+                {formatCurrency(aggregatedMetrics?.totalClosedStoresValue || 0)}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Needs transfer/clearance
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-new-arrivals">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              New Arrivals
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center">
+              <BarChart3 className="w-4 h-4 mr-2 text-green-600" />
+              <p className="text-2xl font-bold text-green-600" data-testid="text-new-arrivals-value">
+                {formatCurrency(aggregatedMetrics?.newArrivalValue || 0)}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {formatNumber(aggregatedMetrics?.newArrivalCount || 0)} styles • Last 30 days
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Classification Breakdown - Expandable */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Classification Breakdown</CardTitle>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowClassificationBreakdown(!showClassificationBreakdown)}
+            >
+              {showClassificationBreakdown ? '▼ Hide' : '► Show'}
+            </Button>
+          </div>
+        </CardHeader>
+        {showClassificationBreakdown && (
+          <CardContent>
+            <div className="space-y-3">
+              {classificationBreakdown.map((item, index) => (
+                <div key={index} className="flex justify-between items-center p-3 bg-muted/50 rounded-lg">
+                  <div>
+                    <p className="font-medium">{item.name}</p>
+                    <p className="text-sm text-muted-foreground">{item.styles} styles</p>
+                  </div>
+                  <p className="font-bold">{formatCurrency(item.value)}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* Slow Moving & Dead Stock Table - STYLE LEVEL */}
       <Card data-testid="card-slow-moving-stock">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Slow Moving & Dead Stock</CardTitle>
+              <CardTitle>Slow Moving & Dead Stock (by Style)</CardTitle>
               <CardDescription>
-                Items with no sales in the last {settings.slowMovingDays}+ days (showing up to {settings.slowMovingLimit} items)
+                Styles with limited sales activity (showing up to {settings.slowMovingLimit} styles)
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="secondary">{slowMoving?.length || 0} items</Badge>
+              <Badge variant="secondary">{slowMoving?.length || 0} styles</Badge>
               <Button
                 onClick={handleExportSlowMoving}
                 variant="outline"
@@ -457,25 +617,29 @@ export default function InventoryTurnoverDashboard() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Item #</TableHead>
+                    <TableHead>Style #</TableHead>
                     <TableHead>Item Name</TableHead>
-                    <TableHead>Category</TableHead>
+                    <TableHead>Classification</TableHead>
+                    <TableHead>Seasonal</TableHead>
                     <TableHead className="text-right">Qty</TableHead>
                     <TableHead className="text-right">Value</TableHead>
-                    <TableHead className="text-right">Days Since Sale</TableHead>
+                    <TableHead className="text-right">Margin %</TableHead>
+                    <TableHead className="text-right">Days Since Receive</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {slowMoving.slice(0, 15).map((item, index) => (
-                    <TableRow key={`${item.itemNumber}-${index}`} data-testid={`row-slow-moving-${index}`}>
-                      <TableCell className="font-mono text-sm">{item.itemNumber}</TableCell>
+                    <TableRow key={`${item.styleNumber}-${index}`} data-testid={`row-slow-moving-${index}`}>
+                      <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
                       <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
-                      <TableCell>{item.category || 'N/A'}</TableCell>
-                      <TableCell className="text-right">{formatNumber(item.availQty)}</TableCell>
+                      <TableCell>{getClassificationBadge(item.classification)}</TableCell>
+                      <TableCell>{getSeasonalBadge(item.seasonalPattern)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(item.totalActiveQty)}</TableCell>
                       <TableCell className="text-right">{formatCurrency(item.inventoryValue)}</TableCell>
+                      <TableCell className="text-right">{item.avgMarginPercent?.toFixed(1)}%</TableCell>
                       <TableCell className="text-right">
-                        {item.daysSinceLastSale !== null ? Math.round(item.daysSinceLastSale) : 'Never'}
+                        {item.daysSinceLastReceive !== null ? Math.round(item.daysSinceLastReceive) : 'N/A'}
                       </TableCell>
                       <TableCell>{getStockStatusBadge(item.stockStatus)}</TableCell>
                     </TableRow>
@@ -489,14 +653,14 @@ export default function InventoryTurnoverDashboard() {
         </CardContent>
       </Card>
 
-      {/* Overstock & Understock Analysis */}
+      {/* Overstock & Understock Analysis - STYLE LEVEL */}
       <Card data-testid="card-stock-analysis">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Overstock & Understock Analysis</CardTitle>
+              <CardTitle>Overstock & Understock Analysis (by Style)</CardTitle>
               <CardDescription>
-                Based on last {settings.salesAnalysisDays} days of sales activity (showing up to {settings.stockAnalysisLimit} items)
+                Based on last {settings.salesAnalysisDays} days of sales activity (showing up to {settings.stockAnalysisLimit} styles)
               </CardDescription>
             </div>
             <Button
@@ -517,12 +681,14 @@ export default function InventoryTurnoverDashboard() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Item #</TableHead>
+                    <TableHead>Style #</TableHead>
                     <TableHead>Item Name</TableHead>
+                    <TableHead>Classification</TableHead>
                     <TableHead className="text-right">On Hand</TableHead>
                     <TableHead className="text-right">Sold (30d)</TableHead>
                     <TableHead className="text-right">Avg Daily Sales</TableHead>
                     <TableHead className="text-right">Days of Supply</TableHead>
+                    <TableHead className="text-right">Value</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -531,15 +697,17 @@ export default function InventoryTurnoverDashboard() {
                     .filter(item => item.stockStatus !== 'Normal')
                     .slice(0, 15)
                     .map((item, index) => (
-                      <TableRow key={`${item.itemNumber}-${index}`} data-testid={`row-stock-analysis-${index}`}>
-                        <TableCell className="font-mono text-sm">{item.itemNumber}</TableCell>
+                      <TableRow key={`${item.styleNumber}-${index}`} data-testid={`row-stock-analysis-${index}`}>
+                        <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
                         <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
-                        <TableCell className="text-right">{formatNumber(item.availQty)}</TableCell>
+                        <TableCell>{getClassificationBadge(item.classification)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.totalActiveQty)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.unitsSold)}</TableCell>
                         <TableCell className="text-right">{item.avgDailySales.toFixed(2)}</TableCell>
                         <TableCell className="text-right">
                           {item.daysOfSupply < 999 ? item.daysOfSupply.toFixed(0) : '999+'}
                         </TableCell>
+                        <TableCell className="text-right">{formatCurrency(item.inventoryValue)}</TableCell>
                         <TableCell>{getStockStatusBadge(item.stockStatus)}</TableCell>
                       </TableRow>
                     ))}
@@ -552,63 +720,6 @@ export default function InventoryTurnoverDashboard() {
         </CardContent>
       </Card>
 
-      {/* Category Analysis */}
-      <Card data-testid="card-category-analysis">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Category Inventory Analysis</CardTitle>
-              <CardDescription>Inventory value and sales by category</CardDescription>
-            </div>
-            <Button
-              onClick={handleExportCategoryAnalysis}
-              variant="outline"
-              size="sm"
-              className="gap-2"
-              data-testid="button-export-category-analysis"
-            >
-              <Download className="w-3 h-3" />
-              Export
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {categoryAnalysis && categoryAnalysis.length > 0 ? (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Category</TableHead>
-                    <TableHead className="text-right">Inventory Value</TableHead>
-                    <TableHead className="text-right">Units</TableHead>
-                    <TableHead className="text-right">Items Count</TableHead>
-                    <TableHead className="text-right">Sales (30d)</TableHead>
-                    <TableHead className="text-right">Turnover %</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {categoryAnalysis.map((cat, index) => (
-                    <TableRow key={`${cat.category}-${index}`} data-testid={`row-category-${index}`}>
-                      <TableCell className="font-medium">{cat.category}</TableCell>
-                      <TableCell className="text-right">{formatCurrency(cat.totalInventoryValue)}</TableCell>
-                      <TableCell className="text-right">{formatNumber(cat.totalUnits)}</TableCell>
-                      <TableCell className="text-right">{formatNumber(cat.totalItemsCount)}</TableCell>
-                      <TableCell className="text-right">{formatNumber(cat.totalSales)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className={cat.avgTurnoverRate < 10 ? 'text-red-600 font-semibold' : ''}>
-                          {cat.avgTurnoverRate.toFixed(1)}%
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <p className="text-center text-muted-foreground py-8">No category data available</p>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
