@@ -1570,10 +1570,10 @@ export class DatabaseStorage implements IStorage {
         SELECT
           il.style_number AS "styleNumber",
           MAX(st.date::date) AS "lastSaleDate",
-          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '30 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units30d",
-          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '60 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units60d",
-          SUM(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '90 days' THEN COALESCE(st.qty, 1) ELSE 0 END) AS "units90d",
-          SUM(COALESCE(st.qty, 1)) AS "totalUnits"
+          COUNT(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) AS "units30d",
+          COUNT(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '60 days' THEN 1 END) AS "units60d",
+          COUNT(CASE WHEN st.date >= CURRENT_DATE - INTERVAL '90 days' THEN 1 END) AS "units90d",
+          COUNT(*) AS "totalUnits"
         FROM sales_transactions st
         JOIN item_list il ON st.sku = il.item_number
         WHERE il.style_number IS NOT NULL AND il.style_number <> ''
@@ -1595,11 +1595,11 @@ export class DatabaseStorage implements IStorage {
           ELSE 0
         END AS "avgMarginPercent",
         (bs."totalActiveQty" * bs."avgOrderCost") AS "inventoryValue",
-        COALESCE(bs."creationDate", rc."lastReceivedDate") AS "lastReceived",
+        COALESCE(rc."lastReceivedDate", bs."creationDate") AS "lastReceived",
         COALESCE(bs."creationDate", rc."firstReceivedDate") AS "firstReceived",
         CASE 
-          WHEN COALESCE(bs."creationDate", rc."lastReceivedDate") IS NOT NULL 
-          THEN (CURRENT_DATE - COALESCE(bs."creationDate", rc."lastReceivedDate"))
+          WHEN COALESCE(rc."lastReceivedDate", bs."creationDate") IS NOT NULL 
+          THEN (CURRENT_DATE - COALESCE(rc."lastReceivedDate", bs."creationDate"))
           ELSE NULL
         END AS "daysSinceLastReceive",
         CASE 
