@@ -235,6 +235,18 @@ export function FileUploadTabs() {
     setIsPaused(false);
   };
 
+  const handleResetUpload = () => {
+    // Clear persisted upload state
+    clearUploadState();
+    // Clear local UI state
+    setIsUploading(false);
+    setIsPaused(false);
+    setIsStopped(false);
+    setUploadStats(null);
+    setUploadProgress(0);
+    setUploadResults(null);
+  };
+
   return (
     <div className="bg-card border border-border rounded-lg">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -342,7 +354,17 @@ export function FileUploadTabs() {
                       </span>
                     )}
                   </div>
-                  {isUploading && !isStopped && (
+                  {isStopped ? (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleResetUpload}
+                      className="flex items-center gap-2 w-full"
+                      data-testid="button-reset-item-list"
+                    >
+                      Reset Upload
+                    </Button>
+                  ) : isUploading ? (
                     <div className="flex gap-2">
                       {isPaused ? (
                         <Button
@@ -378,7 +400,7 @@ export function FileUploadTabs() {
                         Stop
                       </Button>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>
@@ -462,7 +484,17 @@ export function FileUploadTabs() {
                       </span>
                     )}
                   </div>
-                  {isUploading && !isStopped && (
+                  {isStopped ? (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleResetUpload}
+                      className="flex items-center gap-2 w-full"
+                      data-testid="button-reset-sales"
+                    >
+                      Reset Upload
+                    </Button>
+                  ) : isUploading ? (
                     <div className="flex gap-2">
                       {isPaused ? (
                         <Button
@@ -498,7 +530,7 @@ export function FileUploadTabs() {
                         Stop
                       </Button>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>

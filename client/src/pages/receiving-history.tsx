@@ -351,6 +351,11 @@ export default function ReceivingHistoryPage() {
     setIsPaused(false);
   };
 
+  const handleResetUpload = () => {
+    // Clear upload state and reset to beginning
+    resetWorkflow();
+  };
+
   const resetWorkflow = () => {
     // Clear persisted upload state
     clearUploadState();

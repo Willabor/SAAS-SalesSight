@@ -23,6 +23,7 @@ import {
   resetUploadControlFlags,
   loadUploadState,
   subscribeToUploadState,
+  clearUploadState,
 } from "@/lib/uploadStateManager";
 
 type ProcessingMode = 'item-list' | 'sales';
@@ -365,6 +366,18 @@ export function ExcelFormatter() {
     setIsPaused(false);
   };
 
+  const handleResetUpload = () => {
+    // Clear persisted upload state
+    clearUploadState();
+    // Clear local UI state
+    setIsUploading(false);
+    setIsPaused(false);
+    setIsStopped(false);
+    setUploadStats(null);
+    setUploadProgress(0);
+    setStatus('');
+  };
+
   const downloadItemList = () => {
     if (!itemListWorkbook) return;
     downloadExcelFile(itemListWorkbook, 'Formatted_Item_List.xlsx');
@@ -564,7 +577,17 @@ export function ExcelFormatter() {
                 <p className="text-sm text-blue-800 dark:text-blue-200">
                   {uploadStats.processed} of {uploadStats.total} items processed
                 </p>
-                {isUploading && !isStopped && (
+                {isStopped ? (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleResetUpload}
+                    className="flex items-center gap-2 w-full"
+                    data-testid="button-reset-upload"
+                  >
+                    Reset Upload
+                  </Button>
+                ) : isUploading ? (
                   <div className="flex gap-2">
                     {isPaused ? (
                       <Button
@@ -600,7 +623,7 @@ export function ExcelFormatter() {
                       Stop
                     </Button>
                   </div>
-                )}
+                ) : null}
               </div>
             )}
 
@@ -742,7 +765,17 @@ export function ExcelFormatter() {
                 <p className="text-sm text-blue-800 dark:text-blue-200">
                   {uploadStats.processed} of {uploadStats.total} items processed
                 </p>
-                {isUploading && !isStopped && (
+                {isStopped ? (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleResetUpload}
+                    className="flex items-center gap-2 w-full"
+                    data-testid="button-reset-upload"
+                  >
+                    Reset Upload
+                  </Button>
+                ) : isUploading ? (
                   <div className="flex gap-2">
                     {isPaused ? (
                       <Button
@@ -778,7 +811,7 @@ export function ExcelFormatter() {
                       Stop
                     </Button>
                   </div>
-                )}
+                ) : null}
               </div>
             )}
 
