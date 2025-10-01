@@ -293,6 +293,7 @@ export default function ReceivingHistoryPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/receiving/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/receiving/vouchers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/receiving/filter-options"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
 
       if (result.failed > 0) {
         toast({
