@@ -6,7 +6,7 @@ The application provides:
 - **Item List Management**: Advanced features for product inventory, including server-side filtering, sorting, real-time statistics, and export capabilities.
 - **Sales Data Processing**: Handles sales transactions with duplicate detection.
 - **Receiving History**: Processes QuickBooks receiving vouchers, including format consolidation, flattening, and an interactive voucher viewer.
-- **Sales & Inventory Analytics**: Offers in-depth insights into sales, inventory turnover, dead stock identification, and over/understock analysis.
+- **Sales & Inventory Analytics**: Offers in-depth insights into sales, inventory turnover, dead stock identification, over/understock analysis, inter-store transfer recommendations, and restocking alerts for core items.
 - **Google Marketing Export**: Generates an 8-sheet Excel report optimized for Google Ads/Shopping campaigns, featuring product segmentation, Google-optimized titles, and custom labels.
 - **User Authentication**: Secure login using Replit Auth, protecting all application features.
 
@@ -33,7 +33,7 @@ The frontend is built with React, TypeScript, and Tailwind CSS using shadcn/ui f
 - **Item List**: View, filter, sort, and export 24 database columns; real-time inventory statistics.
 - **Sales Data**: Duplicate detection in sales transactions.
 - **Receiving History**: Voucher viewer with search, detail view, and QuickBooks calculation mismatch highlighting.
-- **Inventory Analytics**: KPIs for inventory value, dead stock, average days since last sale; identification of slow-moving, dead stock, overstock, and understock items; category-level analysis.
+- **Inventory Analytics**: KPIs for inventory value, dead stock, average days since last sale; identification of slow-moving, dead stock, overstock, and understock items; category-level analysis; transfer recommendations (inter-store inventory redistribution); restocking recommendations (reorder alerts for core items).
 - **Google Marketing Export**: Provides Executive Summary, Best Sellers, Core Items, New Arrivals, Seasonal, Clearance Candidates, and a GMC-compliant Google Shopping Feed.
 
 ## System Design Choices

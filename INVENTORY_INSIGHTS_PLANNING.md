@@ -567,10 +567,27 @@ WHERE velocity < avg_velocity * 0.5 -- Store selling <50% of average
    - Recalculate current dead stock value
    - Compare to current $301K (should be much lower)
 
-6. ⏳ **Build operational reports**
-   - Sale Recommendations (markdown candidates)
-   - Redistribution Report (inter-store transfers)
-   - Reorder Recommendations (replenishment alerts)
+6. ✅ **Build operational reports** (PARTIALLY COMPLETED - Oct 1, 2025)
+   
+   **Completed:**
+   - ✅ **Transfer Recommendations UI** (inter-store transfers)
+     - Frontend: Added Transfer Recommendations card section to Inventory Turnover dashboard
+     - Displays: Style #, Item Name, From/To Store, Transfer Qty, Stock levels, Daily Sales, Priority
+     - Backend: Existing `/api/inventory/transfer-recommendations` endpoint (already implemented)
+     - Shows items that should be moved from slow stores to fast-selling stores
+     - Priority-based sorting (High/Medium/Low) with color-coded badges
+     - Tested: Playwright test passed, displays data and empty states correctly
+   
+   - ✅ **Restocking Recommendations UI** (replenishment alerts)
+     - Frontend: Added Restocking Recommendations card section to Inventory Turnover dashboard
+     - Displays: Style #, Item Name, Vendor, Classification, Current Stock, Avg Daily Sales, Days of Supply, Suggested Order Qty, Margin %, Priority
+     - Backend: Existing `/api/inventory/restocking-recommendations` endpoint (already implemented)
+     - Shows core items approaching stockout (<7 days supply highlighted in red)
+     - Priority-based sorting with suggested order quantities
+     - Tested: Playwright test passed, displays data and empty states correctly
+   
+   **Remaining:**
+   - ⏳ Sale Recommendations (markdown candidates) - Not yet implemented
 
 ---
 
