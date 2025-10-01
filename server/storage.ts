@@ -1840,6 +1840,40 @@ export class DatabaseStorage implements IStorage {
         itemList.vendorName
       );
 
+    // Calculate per-location sales velocities for the last 30 days (active stores only: GM, HM, NM, LM)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const salesVelocityData = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        store: salesTransactions.store,
+        salesCount: sql<number>`COUNT(${salesTransactions.id})`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+      })
+      .from(salesTransactions)
+      .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .where(
+        and(
+          sql`${itemList.styleNumber} IS NOT NULL`,
+          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0]),
+          sql`${salesTransactions.store} IN ('GM', 'HM', 'NM', 'LM')`
+        )
+      )
+      .groupBy(itemList.styleNumber, salesTransactions.store);
+
+    // Build a map: styleNumber -> { storeName -> avgDailySales }
+    const velocityMap = new Map<string, Map<string, number>>();
+    for (const row of salesVelocityData) {
+      if (!row.styleNumber) continue;
+      
+      if (!velocityMap.has(row.styleNumber)) {
+        velocityMap.set(row.styleNumber, new Map());
+      }
+      const storeMap = velocityMap.get(row.styleNumber)!;
+      storeMap.set(row.store || '', Number(row.avgDailySales) || 0);
+    }
+
     const recommendations: Array<{
       styleNumber: string;
       itemName: string;
@@ -1855,14 +1889,19 @@ export class DatabaseStorage implements IStorage {
       avgMarginPercent: number;
     }> = [];
 
-    // For each style, compare store velocities (simplified - assumes equal velocity for now)
+    // For each style, compare store velocities and identify transfer opportunities
     for (const style of stylesWithStoreData) {
+      if (!style.styleNumber) continue;
+      
       const stores = [
         { name: 'GM', qty: style.gmQty },
         { name: 'HM', qty: style.hmQty },
         { name: 'NM', qty: style.nmQty },
         { name: 'LM', qty: style.lmQty },
       ];
+
+      // Get sales velocities for this style
+      const storeVelocities = velocityMap.get(style.styleNumber) || new Map();
 
       // Calculate margin percent
       const avgOrderCost = Number(style.avgOrderCost) || 0;
@@ -1871,28 +1910,74 @@ export class DatabaseStorage implements IStorage {
         ? ((avgSellingPrice - avgOrderCost) / avgSellingPrice) * 100
         : 0;
 
-      // Find imbalances (simple heuristic: if one store has >10 units and another has 0)
+      // Find transfer opportunities: high velocity store with low/no stock should get from low velocity store with excess stock
       for (let i = 0; i < stores.length; i++) {
         for (let j = 0; j < stores.length; j++) {
-          if (i !== j && stores[i].qty > 10 && stores[j].qty === 0) {
-            recommendations.push({
-              styleNumber: style.styleNumber || '',
-              itemName: style.itemName || '',
-              category: style.category,
-              fromStore: stores[i].name,
-              toStore: stores[j].name,
-              fromStoreQty: stores[i].qty,
-              toStoreQty: stores[j].qty,
-              fromStoreDailySales: 0, // TODO: Calculate from sales data
-              toStoreDailySales: 0, // TODO: Calculate from sales data
-              recommendedQty: Math.min(5, Math.floor(stores[i].qty / 2)),
-              priority: 'Medium',
-              avgMarginPercent: Number(avgMarginPercent.toFixed(2)),
-            });
+          if (i === j) continue;
+          
+          const fromStore = stores[i];
+          const toStore = stores[j];
+          const fromVelocity = storeVelocities.get(fromStore.name) || 0;
+          const toVelocity = storeVelocities.get(toStore.name) || 0;
+
+          // Criteria for transfer recommendation:
+          // 1. "To" store is selling faster than "from" store (toVelocity > fromVelocity)
+          // 2. "From" store has excess stock (qty > 5 units)
+          // 3. "To" store has low stock relative to its velocity
+          // 4. Either: "to" store is selling but low on stock, OR "from" store has stock but not selling
+          
+          const fromStockSufficient = fromStore.qty > 5;
+          const toStoreNeedsMore = toVelocity > 0 && (toStore.qty < toVelocity * 7); // Less than 7 days supply
+          const velocityGap = toVelocity > fromVelocity && toVelocity > 0.1; // Meaningful velocity difference
+          
+          if (fromStockSufficient && (toStoreNeedsMore || velocityGap)) {
+            // Calculate recommended transfer quantity
+            // Transfer enough to cover ~14 days of supply at the "to" store, but not more than 50% of "from" store stock
+            const targetSupplyDays = 14;
+            const recommendedByVelocity = Math.ceil(toVelocity * targetSupplyDays);
+            const maxFromHalf = Math.floor(fromStore.qty / 2);
+            const recommendedQty = Math.min(recommendedByVelocity, maxFromHalf, 20); // Cap at 20 units
+
+            if (recommendedQty >= 1) {
+              // Determine priority based on velocity gap and margin
+              let priority = 'Low';
+              if (toVelocity > fromVelocity * 2 && avgMarginPercent > 50) {
+                priority = 'High'; // Much faster selling + high margin
+              } else if (toVelocity > fromVelocity * 1.5 || avgMarginPercent > 60) {
+                priority = 'Medium';
+              }
+
+              recommendations.push({
+                styleNumber: style.styleNumber,
+                itemName: style.itemName || '',
+                category: style.category,
+                fromStore: fromStore.name,
+                toStore: toStore.name,
+                fromStoreQty: fromStore.qty,
+                toStoreQty: toStore.qty,
+                fromStoreDailySales: Number(fromVelocity.toFixed(2)),
+                toStoreDailySales: Number(toVelocity.toFixed(2)),
+                recommendedQty,
+                priority,
+                avgMarginPercent: Number(avgMarginPercent.toFixed(2)),
+              });
+            }
           }
         }
       }
     }
+
+    // Sort by priority (High > Medium > Low) then by velocity gap (highest first)
+    const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+    recommendations.sort((a, b) => {
+      if (priorityOrder[a.priority as keyof typeof priorityOrder] !== priorityOrder[b.priority as keyof typeof priorityOrder]) {
+        return priorityOrder[a.priority as keyof typeof priorityOrder] - priorityOrder[b.priority as keyof typeof priorityOrder];
+      }
+      // Sort by velocity gap (larger gap = higher priority)
+      const aGap = a.toStoreDailySales - a.fromStoreDailySales;
+      const bGap = b.toStoreDailySales - b.fromStoreDailySales;
+      return bGap - aGap;
+    });
 
     return recommendations.slice(0, limit);
   }
