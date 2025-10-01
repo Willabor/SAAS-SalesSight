@@ -911,6 +911,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/inventory/sale-recommendations", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const recommendations = await storage.getSaleRecommendations(limit);
+      res.json(recommendations);
+    } catch (error) {
+      console.error("Error fetching sale recommendations:", error);
+      res.status(500).json({ error: "Failed to fetch sale recommendations" });
+    }
+  });
+
   app.get("/api/inventory/product-segmentation", isAuthenticated, async (req, res) => {
     try {
       const report = await storage.getProductSegmentationReport();

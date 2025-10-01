@@ -26,6 +26,7 @@ import {
   Download,
   ArrowRightLeft,
   ShoppingCart,
+  Tag,
 } from "lucide-react";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
 import { InventorySettingsDialog } from "@/components/inventory-settings-dialog";
@@ -153,6 +154,28 @@ interface RestockingRecommendation {
   priority: string;
 }
 
+interface SaleRecommendation {
+  styleNumber: string;
+  itemName: string;
+  category: string | null;
+  vendorName: string | null;
+  totalActiveQty: number;
+  inventoryValue: number;
+  daysSinceLastSale: number | null;
+  daysSinceLastReceive: number | null;
+  unitsSold90d: number;
+  avgCost: number;
+  avgPrice: number;
+  avgMarginPercent: number;
+  classification: string;
+  seasonalPattern: string;
+  suggestedDiscountPercent: number;
+  discountedPrice: number;
+  projectedRecovery: number;
+  reason: string;
+  priority: string;
+}
+
 export default function InventoryTurnoverDashboard() {
   const [settings, setSettings] = useState<InventorySettings>(() => loadSettings());
   const [showClassificationBreakdown, setShowClassificationBreakdown] = useState(false);
@@ -239,6 +262,17 @@ export default function InventoryTurnoverDashboard() {
         credentials: 'include',
       });
       if (!response.ok) throw new Error("Failed to fetch restocking recommendations");
+      return response.json();
+    },
+  });
+
+  const { data: saleRecommendations, isLoading: saleLoading } = useQuery<SaleRecommendation[]>({
+    queryKey: ["inventory", "sale-recommendations", 20],
+    queryFn: async () => {
+      const response = await fetch(`/api/inventory/sale-recommendations?limit=20`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch sale recommendations");
       return response.json();
     },
   });
@@ -1137,6 +1171,79 @@ export default function InventoryTurnoverDashboard() {
             </div>
           ) : (
             <p className="text-center text-muted-foreground py-8">No restocking needed at this time</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Sale Recommendations */}
+      <Card data-testid="card-sale-recommendations">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Tag className="w-5 h-5 text-orange-600" />
+            <div>
+              <CardTitle>Sale Recommendations</CardTitle>
+              <CardDescription>
+                Items recommended for markdown or clearance (showing top 20)
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {saleLoading ? (
+            <p className="text-center text-muted-foreground py-8">Loading sale recommendations...</p>
+          ) : saleRecommendations && saleRecommendations.length > 0 ? (
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Style #</TableHead>
+                    <TableHead>Item Name</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead className="text-right">Current Stock</TableHead>
+                    <TableHead className="text-right">Inventory Value</TableHead>
+                    <TableHead className="text-right">Current Price</TableHead>
+                    <TableHead className="text-right">Discount %</TableHead>
+                    <TableHead className="text-right">Sale Price</TableHead>
+                    <TableHead className="text-right">Projected Recovery</TableHead>
+                    <TableHead>Reason</TableHead>
+                    <TableHead>Priority</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {saleRecommendations.map((item, index) => (
+                    <TableRow key={`${item.styleNumber}-${index}`} data-testid={`row-sale-${index}`}>
+                      <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
+                      <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
+                      <TableCell className="max-w-xs truncate">{item.category || 'Uncategorized'}</TableCell>
+                      <TableCell className="text-right">{formatNumber(item.totalActiveQty)}</TableCell>
+                      <TableCell className="text-right font-semibold">{formatCurrency(item.inventoryValue)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(item.avgPrice)}</TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant={item.suggestedDiscountPercent >= 50 ? 'destructive' : 'default'} className="font-semibold">
+                          {item.suggestedDiscountPercent}% OFF
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right text-orange-600 font-semibold">
+                        {formatCurrency(item.discountedPrice)}
+                      </TableCell>
+                      <TableCell className="text-right text-green-600 font-semibold">
+                        {formatCurrency(item.projectedRecovery)}
+                      </TableCell>
+                      <TableCell className="max-w-sm text-sm text-muted-foreground">
+                        {item.reason}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}>
+                          {item.priority}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-center text-muted-foreground py-8">No items recommended for sale at this time</p>
           )}
         </CardContent>
       </Card>

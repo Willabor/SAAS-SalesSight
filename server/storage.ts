@@ -20,7 +20,7 @@ import {
   type InsertReceivingLine
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, asc, sql, count, sum, ilike, or, and } from "drizzle-orm";
+import { eq, desc, asc, sql, count, sum, ilike, or, and, gte } from "drizzle-orm";
 
 export interface IStorage {
   // User operations for Replit Auth
@@ -257,6 +257,28 @@ export interface IStorage {
     daysSinceLastReceive: number | null;
     avgMarginPercent: number;
     recommendedOrderQty: number;
+    priority: string;
+  }>>;
+
+  getSaleRecommendations(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    daysSinceLastSale: number | null;
+    daysSinceLastReceive: number | null;
+    unitsSold90d: number;
+    avgCost: number;
+    avgPrice: number;
+    avgMarginPercent: number;
+    classification: string;
+    seasonalPattern: string;
+    suggestedDiscountPercent: number;
+    discountedPrice: number;
+    projectedRecovery: number;
+    reason: string;
     priority: string;
   }>>;
 
@@ -1965,6 +1987,225 @@ export class DatabaseStorage implements IStorage {
       });
 
     return recommendations.slice(0, limit);
+  }
+
+  async getSaleRecommendations(limit: number = 50): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    totalActiveQty: number;
+    inventoryValue: number;
+    daysSinceLastSale: number | null;
+    daysSinceLastReceive: number | null;
+    unitsSold90d: number;
+    avgCost: number;
+    avgPrice: number;
+    avgMarginPercent: number;
+    classification: string;
+    seasonalPattern: string;
+    suggestedDiscountPercent: number;
+    discountedPrice: number;
+    projectedRecovery: number;
+    reason: string;
+    priority: string;
+  }>> {
+    const allStyles = await this.getStyleInventoryMetrics();
+    
+    // Get sales data:
+    // - unitsSold90d: Count sales in last 90 days only
+    // - lastSaleDate: Most recent sale across ALL time (not just 90 days)
+    // - Filter to active stores only: GM, HM, NM, LM (exclude MM, PM, HQ)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    
+    const salesData = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        totalSold: sql<number>`COALESCE(COUNT(CASE WHEN ${salesTransactions.date} >= ${ninetyDaysAgo.toISOString().split('T')[0]}::date THEN 1 END), 0)`,
+        lastSaleDate: sql<string | null>`MAX(${salesTransactions.date})`,
+      })
+      .from(salesTransactions)
+      .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .where(
+        and(
+          sql`${itemList.styleNumber} IS NOT NULL`,
+          sql`${salesTransactions.store} IN ('GM', 'HM', 'NM', 'LM')`
+        )
+      )
+      .groupBy(itemList.styleNumber);
+    
+    const salesMap = new Map(
+      salesData.map(s => [
+        s.styleNumber || '', 
+        { 
+          totalSold: s.totalSold, 
+          lastSaleDate: s.lastSaleDate 
+        }
+      ])
+    );
+    
+    const recommendations: Array<{
+      styleNumber: string;
+      itemName: string;
+      category: string | null;
+      vendorName: string | null;
+      totalActiveQty: number;
+      inventoryValue: number;
+      daysSinceLastSale: number | null;
+      daysSinceLastReceive: number | null;
+      unitsSold90d: number;
+      avgCost: number;
+      avgPrice: number;
+      avgMarginPercent: number;
+      classification: string;
+      seasonalPattern: string;
+      suggestedDiscountPercent: number;
+      discountedPrice: number;
+      projectedRecovery: number;
+      reason: string;
+      priority: string;
+    }> = [];
+
+    for (const style of allStyles) {
+      const salesInfo = salesMap.get(style.styleNumber);
+      const unitsSold90d = salesInfo?.totalSold || 0;
+      const lastSaleDate = salesInfo?.lastSaleDate || null;
+      
+      // Skip if no inventory value
+      if (style.inventoryValue <= 0) continue;
+      
+      // Criteria for sale recommendations
+      let shouldRecommend = false;
+      let reason = '';
+      let suggestedDiscountPercent = 0;
+      let priority = 'Low';
+      
+      // 1. Dead stock - no sales in 90 days and old inventory
+      if (
+        unitsSold90d === 0 &&
+        style.daysSinceLastReceive !== null &&
+        style.daysSinceLastReceive > 180 &&
+        style.stockStatus !== 'Seasonal Hold'
+      ) {
+        shouldRecommend = true;
+        reason = 'Dead stock - No sales in 90+ days, inventory 180+ days old';
+        
+        if (style.daysSinceLastReceive > 365) {
+          suggestedDiscountPercent = 75;
+          priority = 'High';
+        } else {
+          suggestedDiscountPercent = 50;
+          priority = 'Medium';
+        }
+      }
+      
+      // 2. Seasonal items past their season with no recent sales
+      else if (
+        style.seasonalPattern &&
+        style.seasonalPattern !== 'None' &&
+        style.stockStatus !== 'Seasonal Hold' &&
+        unitsSold90d < 3
+      ) {
+        const currentMonth = new Date().getMonth() + 1;
+        const summerMonths = [4, 5, 6, 7, 8];
+        const winterMonths = [10, 11, 12, 1, 2];
+        
+        const isOffSeason = 
+          (style.seasonalPattern === 'Summer' && !summerMonths.includes(currentMonth)) ||
+          (style.seasonalPattern === 'Winter' && !winterMonths.includes(currentMonth));
+        
+        if (isOffSeason && style.daysSinceLastReceive && style.daysSinceLastReceive > 180) {
+          shouldRecommend = true;
+          reason = `${style.seasonalPattern} item - Off-season with minimal sales`;
+          suggestedDiscountPercent = 40;
+          priority = 'Medium';
+        }
+      }
+      
+      // 3. Overstock - high inventory value but very slow sales
+      else if (
+        style.inventoryValue > 1000 &&
+        unitsSold90d > 0 &&
+        unitsSold90d < 5 &&
+        style.daysSinceLastReceive !== null &&
+        style.daysSinceLastReceive > 90
+      ) {
+        shouldRecommend = true;
+        reason = 'Overstock - High inventory value with very slow sales';
+        suggestedDiscountPercent = 30;
+        priority = style.inventoryValue > 2000 ? 'High' : 'Medium';
+      }
+      
+      // 4. Low margin items blocking capital
+      else if (
+        style.inventoryValue > 500 &&
+        style.avgMarginPercent < 40 &&
+        unitsSold90d < 3 &&
+        style.daysSinceLastReceive !== null &&
+        style.daysSinceLastReceive > 120
+      ) {
+        shouldRecommend = true;
+        reason = 'Low margin with slow movement - Blocking working capital';
+        suggestedDiscountPercent = 25;
+        priority = 'Low';
+      }
+      
+      if (shouldRecommend) {
+        const discountedPrice = style.avgSellingPrice * (1 - suggestedDiscountPercent / 100);
+        const projectedRecovery = discountedPrice * style.totalActiveQty;
+        
+        // Calculate days since last sale if we have the date
+        let daysSinceLastSale: number | null = null;
+        if (lastSaleDate) {
+          const lastSale = new Date(lastSaleDate);
+          const today = new Date();
+          daysSinceLastSale = Math.floor((today.getTime() - lastSale.getTime()) / (1000 * 60 * 60 * 24));
+        }
+        
+        recommendations.push({
+          styleNumber: style.styleNumber,
+          itemName: style.itemName,
+          category: style.category,
+          vendorName: style.vendorName,
+          totalActiveQty: style.totalActiveQty,
+          inventoryValue: style.inventoryValue,
+          daysSinceLastSale,
+          daysSinceLastReceive: style.daysSinceLastReceive,
+          unitsSold90d,
+          avgCost: style.avgOrderCost,
+          avgPrice: style.avgSellingPrice,
+          avgMarginPercent: style.avgMarginPercent,
+          classification: style.classification,
+          seasonalPattern: style.seasonalPattern || 'None',
+          suggestedDiscountPercent,
+          discountedPrice: Number(discountedPrice.toFixed(2)),
+          projectedRecovery: Number(projectedRecovery.toFixed(2)),
+          reason,
+          priority,
+        });
+      }
+    }
+    
+    // Sort by priority (High > Medium > Low), then by inventory value (highest first), 
+    // then by days since last receive (oldest first) for stable deterministic ordering
+    const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+    recommendations.sort((a, b) => {
+      // Primary: Priority
+      if (priorityOrder[a.priority as keyof typeof priorityOrder] !== priorityOrder[b.priority as keyof typeof priorityOrder]) {
+        return priorityOrder[a.priority as keyof typeof priorityOrder] - priorityOrder[b.priority as keyof typeof priorityOrder];
+      }
+      // Secondary: Inventory value (highest first)
+      if (Math.abs(b.inventoryValue - a.inventoryValue) > 0.01) {
+        return b.inventoryValue - a.inventoryValue;
+      }
+      // Tertiary: Days since last receive (oldest first for tie-breaking)
+      const aDays = a.daysSinceLastReceive || 0;
+      const bDays = b.daysSinceLastReceive || 0;
+      return bDays - aDays;
+    });
+    
+    return recommendations.slice(0, Math.min(limit, 200)); // Cap at 200 for protection
   }
 
   async getProductSegmentationReport(): Promise<{
