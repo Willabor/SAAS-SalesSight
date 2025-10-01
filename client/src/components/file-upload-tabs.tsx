@@ -46,6 +46,7 @@ export function FileUploadTabs() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
       queryClient.invalidateQueries({ queryKey: ["/api/upload-history"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
       
       if (result.failed > 0) {
         toast({
