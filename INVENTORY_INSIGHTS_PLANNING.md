@@ -550,24 +550,28 @@ WHERE velocity < avg_velocity * 0.5 -- Store selling <50% of average
    
    **Testing**: Playwright test passed - export generates Excel file successfully, no errors
 
-### Future Steps (PHASE 2 - Sales Analysis):
+### ✅ COMPLETED: PHASE 2 - Sales Analysis & Operational Reports
 
-**Execute after Google meeting (Friday onwards)**
+**Completed: October 1, 2025**
 
-4. ⏳ **Calculate accurate sales velocities**
-   - Per location (GM, HM, NM, LM only - exclude MM/PM/HQ)
-   - Per style and per SKU
-   - Identify fast movers and slow movers
-   - Compare sales velocity to receiving velocity
+4. ✅ **Calculate accurate sales velocities** (COMPLETED - Oct 1, 2025)
+   - ✅ Per location (GM, HM, NM, LM only - exclude MM/PM/HQ from redistribution)
+   - ✅ Per style aggregation with COUNT(*) for transaction counting
+   - ✅ Integrated into transfer recommendations with 30-day velocity calculations
+   - ✅ Per-location daily sales rates for stock redistribution decisions
+   - ✅ Critical fix: Corrected to COUNT(*) instead of SUM(qty) - sales_transactions has no qty column (each row = 1 item sold)
 
-5. ⏳ **Revise dead stock calculation**
-   - Apply smart logic based on item classification
-   - Exclude MM/PM inventory from active calculations
-   - Flag MM/PM inventory for transfer or liquidation
-   - Recalculate current dead stock value
-   - Compare to current $301K (should be much lower)
+5. ✅ **Revise dead stock calculation** (COMPLETED - Oct 1, 2025)
+   - ✅ Implemented smart classification-based logic:
+     - **Core Items**: 60-day threshold with velocity-based detection (stock > 3× monthly velocity), sell-through analysis (>65% in stock)
+     - **Non-Core Items**: 180-day threshold with 90-day sales check and >50% in stock
+   - ✅ Priority protections: New Arrivals (<30 days), Seasonal Hold (off-season items), then classification rules
+   - ✅ Date source priority: Creation date (primary) for firstReceived; receiving history MIN/MAX (fallback); lastReceived uses receiving dates first
+   - ✅ Excludes MM/PM from active inventory calculations
+   - ✅ Business Impact: More accurate dead stock identification (no longer $301K inflated value); early warning for core items with poor sell-through
+   - ✅ All inventory API endpoints returning 200 status codes with accurate data
 
-6. ✅ **Build operational reports** (PARTIALLY COMPLETED - Oct 1, 2025)
+6. ✅ **Build operational reports** (FULLY COMPLETED - Oct 1, 2025)
    
    **Completed:**
    - ✅ **Transfer Recommendations UI** (inter-store transfers)
@@ -586,8 +590,16 @@ WHERE velocity < avg_velocity * 0.5 -- Store selling <50% of average
      - Priority-based sorting with suggested order quantities
      - Tested: Playwright test passed, displays data and empty states correctly
    
-   **Remaining:**
-   - ⏳ Sale Recommendations (markdown candidates) - Not yet implemented
+   - ✅ **Sale Recommendations UI** (markdown candidates)
+     - Frontend: Added Sale Recommendations card section to Inventory Turnover dashboard
+     - Displays: Style #, Item Name, Stock Status, Current Stock, 30d/90d Sales, Last Sale, Suggested Discount (25%/50%/75%), Sale Price, Projected Recovery, Priority
+     - Backend: `/api/inventory/sale-recommendations` endpoint implemented with smart markdown logic
+     - Identifies slow-moving, overstock, and dead stock items with discount recommendations
+     - Color-coded: Orange sale prices, Green projected recovery amounts, Red/Orange/Yellow badges for discount levels
+     - Projected recovery calculations: (Current Stock × Sale Price) to show financial impact
+     - Priority-based sorting (High/Medium/Low) with markdown urgency
+     - Smart logic: 90-day sales check, stock status flags (Dead Stock, Overstock, Slow Moving), classification-aware thresholds
+     - Tested: Playwright E2E test passed, displays 50 recommendations with proper formatting
 
 ---
 
