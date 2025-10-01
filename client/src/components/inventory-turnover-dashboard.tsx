@@ -85,15 +85,39 @@ interface StyleOverstockItem {
   stockStatus: string;
 }
 
+interface EnrichedStyleData extends StyleInventoryMetrics {
+  unitsSold30d: number;
+  unitsSold90d: number;
+  salesVelocity: number;
+  lastSaleDate: string | null;
+  productTitle: string;
+  keywords: string[];
+  googleCategory: string;
+  priority: number;
+  budgetTier: string;
+  segment: string;
+  marginPerUnit: number;
+}
+
 interface ProductSegmentation {
-  coreHighFrequency: StyleInventoryMetrics[];
-  coreMediumFrequency: StyleInventoryMetrics[];
-  coreLowFrequency: StyleInventoryMetrics[];
-  nonCoreRepeat: StyleInventoryMetrics[];
-  oneTimePurchase: StyleInventoryMetrics[];
-  summerItems: StyleInventoryMetrics[];
-  winterItems: StyleInventoryMetrics[];
-  highMarginItems: StyleInventoryMetrics[];
+  metadata: {
+    generatedDate: string;
+    totalStyles: number;
+    totalActiveInventoryValue: number;
+    analysisDateRange: string;
+  };
+  segments: {
+    bestSellers: EnrichedStyleData[];
+    coreHighFrequency: EnrichedStyleData[];
+    coreMediumFrequency: EnrichedStyleData[];
+    coreLowFrequency: EnrichedStyleData[];
+    nonCoreRepeat: EnrichedStyleData[];
+    oneTimePurchase: EnrichedStyleData[];
+    newArrivals: EnrichedStyleData[];
+    summerItems: EnrichedStyleData[];
+    winterItems: EnrichedStyleData[];
+    clearanceCandidates: EnrichedStyleData[];
+  };
 }
 
 export default function InventoryTurnoverDashboard() {
@@ -192,12 +216,12 @@ export default function InventoryTurnoverDashboard() {
   } : null;
 
   // Classification breakdown
-  const classificationBreakdown = segmentation ? [
-    { name: 'Core High (40+)', styles: segmentation.coreHighFrequency.length, value: segmentation.coreHighFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
-    { name: 'Core Medium (10-39)', styles: segmentation.coreMediumFrequency.length, value: segmentation.coreMediumFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
-    { name: 'Core Low (6-9)', styles: segmentation.coreLowFrequency.length, value: segmentation.coreLowFrequency.reduce((sum, s) => sum + s.inventoryValue, 0) },
-    { name: 'Non-Core (2-5)', styles: segmentation.nonCoreRepeat.length, value: segmentation.nonCoreRepeat.reduce((sum, s) => sum + s.inventoryValue, 0) },
-    { name: 'One-Time (1)', styles: segmentation.oneTimePurchase.length, value: segmentation.oneTimePurchase.reduce((sum, s) => sum + s.inventoryValue, 0) },
+  const classificationBreakdown = segmentation?.segments ? [
+    { name: 'Core High (40+)', styles: segmentation.segments.coreHighFrequency?.length ?? 0, value: segmentation.segments.coreHighFrequency?.reduce((sum: number, s: EnrichedStyleData) => sum + s.inventoryValue, 0) ?? 0 },
+    { name: 'Core Medium (10-39)', styles: segmentation.segments.coreMediumFrequency?.length ?? 0, value: segmentation.segments.coreMediumFrequency?.reduce((sum: number, s: EnrichedStyleData) => sum + s.inventoryValue, 0) ?? 0 },
+    { name: 'Core Low (6-9)', styles: segmentation.segments.coreLowFrequency?.length ?? 0, value: segmentation.segments.coreLowFrequency?.reduce((sum: number, s: EnrichedStyleData) => sum + s.inventoryValue, 0) ?? 0 },
+    { name: 'Non-Core (2-5)', styles: segmentation.segments.nonCoreRepeat?.length ?? 0, value: segmentation.segments.nonCoreRepeat?.reduce((sum: number, s: EnrichedStyleData) => sum + s.inventoryValue, 0) ?? 0 },
+    { name: 'One-Time (1)', styles: segmentation.segments.oneTimePurchase?.length ?? 0, value: segmentation.segments.oneTimePurchase?.reduce((sum: number, s: EnrichedStyleData) => sum + s.inventoryValue, 0) ?? 0 },
   ] : [];
 
   const getClassificationBadge = (classification: string) => {
@@ -396,6 +420,205 @@ export default function InventoryTurnoverDashboard() {
     exportMultipleSheetsToExcel(sheets, 'style-inventory-turnover-report');
   };
 
+  const handleExportGoogleMarketing = () => {
+    if (!segmentation) {
+      alert('No segmentation data available');
+      return;
+    }
+
+    const sheets: Array<{ data: Record<string, any>[]; sheetName: string }> = [];
+    const { metadata, segments } = segmentation;
+
+    // Sheet 1: Executive Summary
+    sheets.push({
+      data: [
+        { 'Metric': 'Report Generated', 'Value': new Date(metadata.generatedDate).toLocaleDateString() },
+        { 'Metric': 'Total Styles Analyzed', 'Value': formatNumber(metadata.totalStyles) },
+        { 'Metric': 'Total Active Inventory Value', 'Value': formatCurrency(metadata.totalActiveInventoryValue) },
+        { 'Metric': 'Analysis Date Range', 'Value': metadata.analysisDateRange },
+        { 'Metric': '', 'Value': '' },
+        { 'Metric': 'Segment Breakdown', 'Value': '' },
+        { 'Metric': 'Best Sellers (Priority 5)', 'Value': segments.bestSellers.length },
+        { 'Metric': 'Core Items - High (40+)', 'Value': segments.coreHighFrequency.length },
+        { 'Metric': 'Core Items - Medium (10-39)', 'Value': segments.coreMediumFrequency.length },
+        { 'Metric': 'Core Items - Low (6-9)', 'Value': segments.coreLowFrequency.length },
+        { 'Metric': 'Non-Core Repeat (2-5)', 'Value': segments.nonCoreRepeat.length },
+        { 'Metric': 'One-Time Purchase (1)', 'Value': segments.oneTimePurchase.length },
+        { 'Metric': 'New Arrivals (Last 60 days)', 'Value': segments.newArrivals.length },
+        { 'Metric': 'Summer Seasonal', 'Value': segments.summerItems.length },
+        { 'Metric': 'Winter Seasonal', 'Value': segments.winterItems.length },
+        { 'Metric': 'Clearance Candidates', 'Value': segments.clearanceCandidates.length },
+      ],
+      sheetName: 'Executive Summary',
+    });
+
+    // Sheet 2: Best Sellers (Priority 5)
+    sheets.push({
+      data: formatDataForExport(segments.bestSellers, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title (Google Optimized)',
+        vendorName: 'Brand/Vendor',
+        category: 'Category',
+        totalActiveQty: 'Stock Available',
+        avgSellingPrice: 'Retail Price',
+        avgMarginPercent: 'Margin %',
+        unitsSold30d: 'Sales (30d)',
+        salesVelocity: 'Daily Sales Rate',
+        inventoryValue: 'Inventory Value',
+        budgetTier: 'Ad Budget Tier',
+        keywords: 'Suggested Keywords',
+        googleCategory: 'Google Product Category',
+        priority: 'Campaign Priority (1-5)',
+      }),
+      sheetName: 'Best Sellers - Priority 5',
+    });
+
+    // Sheet 3: Core Items (Evergreen Campaigns)
+    const allCoreItems = [...segments.coreHighFrequency, ...segments.coreMediumFrequency, ...segments.coreLowFrequency]
+      .sort((a, b) => b.priority - a.priority);
+    sheets.push({
+      data: formatDataForExport(allCoreItems, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title',
+        vendorName: 'Brand/Vendor',
+        category: 'Category',
+        classification: 'Core Tier',
+        receiveCount: 'Times Ordered',
+        totalActiveQty: 'Stock Available',
+        unitsSold30d: 'Sales (30d)',
+        avgMarginPercent: 'Margin %',
+        inventoryValue: 'Inventory Value',
+        budgetTier: 'Ad Budget Tier',
+        priority: 'Campaign Priority (1-5)',
+        keywords: 'Suggested Keywords',
+      }),
+      sheetName: 'Core Items - Evergreen',
+    });
+
+    // Sheet 4: New Arrivals
+    sheets.push({
+      data: formatDataForExport(segments.newArrivals, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title',
+        vendorName: 'Brand/Vendor',
+        category: 'Category',
+        totalActiveQty: 'Stock Available',
+        avgSellingPrice: 'Retail Price',
+        marginPerUnit: 'Margin per Unit',
+        inventoryValue: 'Inventory Value',
+        lastReceived: 'Received Date',
+        daysSinceLastReceive: 'Days Since Arrival',
+        budgetTier: 'Ad Budget Tier',
+        keywords: 'Suggested Keywords',
+      }),
+      sheetName: 'New Arrivals',
+    });
+
+    // Sheet 5: Summer Seasonal
+    sheets.push({
+      data: formatDataForExport(segments.summerItems, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title',
+        vendorName: 'Brand/Vendor',
+        totalActiveQty: 'Stock Available',
+        avgSellingPrice: 'Retail Price',
+        unitsSold30d: 'Sales (30d)',
+        inventoryValue: 'Inventory Value',
+        budgetTier: 'Ad Budget Tier',
+        keywords: 'Suggested Keywords',
+      }),
+      sheetName: 'Seasonal - Summer',
+    });
+
+    // Sheet 6: Winter Seasonal
+    sheets.push({
+      data: formatDataForExport(segments.winterItems, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title',
+        vendorName: 'Brand/Vendor',
+        totalActiveQty: 'Stock Available',
+        avgSellingPrice: 'Retail Price',
+        unitsSold30d: 'Sales (30d)',
+        inventoryValue: 'Inventory Value',
+        budgetTier: 'Ad Budget Tier',
+        keywords: 'Suggested Keywords',
+      }),
+      sheetName: 'Seasonal - Winter',
+    });
+
+    // Sheet 7: Clearance (Deep Discount Campaigns)
+    sheets.push({
+      data: formatDataForExport(segments.clearanceCandidates, {
+        styleNumber: 'Style #',
+        productTitle: 'Product Title',
+        vendorName: 'Brand/Vendor',
+        totalActiveQty: 'Stock to Clear',
+        avgOrderCost: 'Our Cost',
+        avgSellingPrice: 'Current Price',
+        inventoryValue: 'Tied Up Capital',
+        daysSinceLastReceive: 'Days Since Last Receive',
+        keywords: 'Suggested Keywords',
+      }),
+      sheetName: 'Clearance - Discount Campaigns',
+    });
+
+    // Sheet 8: Google Shopping Feed Format (GMC-compliant)
+    const feedItems = [
+      ...segments.bestSellers,
+      ...segments.coreHighFrequency.filter((s: EnrichedStyleData) => s.priority >= 3),
+      ...segments.coreMediumFrequency.filter((s: EnrichedStyleData) => s.priority >= 3),
+      ...segments.newArrivals,
+    ];
+
+    sheets.push({
+      data: feedItems.map((item: EnrichedStyleData) => {
+        // Generate rich description for Google Shopping
+        const descriptionParts = [];
+        if (item.vendorName) descriptionParts.push(item.vendorName);
+        descriptionParts.push(item.itemName);
+        if (item.category) descriptionParts.push(`Category: ${item.category}`);
+        if (item.gender) descriptionParts.push(`Gender: ${item.gender}`);
+        if (item.keywords.length > 0) {
+          descriptionParts.push(`Keywords: ${item.keywords.slice(0, 5).join(', ')}`);
+        }
+        const description = descriptionParts.join(' | ');
+
+        return {
+          // Required GMC fields
+          'id': item.styleNumber,
+          'title': item.productTitle,
+          'description': description.substring(0, 5000), // GMC limit
+          'link': `https://yourstore.com/products/${item.styleNumber}`,
+          'image_link': `https://yourstore.com/images/${item.styleNumber}.jpg`,
+          'availability': item.totalActiveQty > 0 ? 'in stock' : 'out of stock',
+          'price': `${item.avgSellingPrice.toFixed(2)} USD`,
+          'condition': 'new',
+          'brand': item.vendorName || 'Unknown',
+          'google_product_category': item.googleCategory,
+          
+          // Recommended GMC fields
+          'product_type': item.category || '',
+          'mpn': item.styleNumber, // Use style number as manufacturer part number
+          'gtin': '', // Leave blank if unknown (UPC/EAN/ISBN)
+          
+          // Custom labels for campaign targeting (0-4 allowed)
+          'custom_label_0': item.segment, // Segment: Best Seller, Core High, etc.
+          'custom_label_1': item.classification, // Classification tier
+          'custom_label_2': item.seasonalPattern, // Seasonal pattern
+          'custom_label_3': item.budgetTier, // Budget tier: High/Medium/Low
+          'custom_label_4': `Priority ${item.priority}`, // Priority score 1-5
+          
+          // Additional useful fields
+          'sale_price': item.avgMarginPercent >= 70 ? `${(item.avgSellingPrice * 0.8).toFixed(2)} USD` : '',
+          'item_group_id': item.styleNumber, // Group by style for size variations
+        };
+      }),
+      sheetName: 'Google Shopping Feed',
+    });
+
+    exportMultipleSheetsToExcel(sheets, `product-segmentation-report-${new Date().toISOString().split('T')[0]}`);
+  };
+
   if (metricsLoading || slowMovingLoading || stockAnalysisLoading || segmentationLoading) {
     return (
       <div className="text-center py-16">
@@ -423,15 +646,26 @@ export default function InventoryTurnoverDashboard() {
           onSave={handleSaveSettings}
           onReset={handleResetSettings}
         />
-        <Button
-          onClick={handleExportAll}
-          variant="default"
-          className="gap-2"
-          data-testid="button-export-all"
-        >
-          <Download className="w-4 h-4" />
-          Export All to Excel
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={handleExportGoogleMarketing}
+            variant="default"
+            className="gap-2"
+            data-testid="button-export-google-marketing"
+          >
+            <Download className="w-4 h-4" />
+            Export Google Marketing Report
+          </Button>
+          <Button
+            onClick={handleExportAll}
+            variant="outline"
+            className="gap-2"
+            data-testid="button-export-all"
+          >
+            <Download className="w-4 h-4" />
+            Export All to Excel
+          </Button>
+        </div>
       </div>
 
       {/* KPI Cards - Row 1 */}

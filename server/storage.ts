@@ -261,14 +261,24 @@ export interface IStorage {
   }>>;
 
   getProductSegmentationReport(): Promise<{
-    coreHighFrequency: Array<any>;
-    coreMediumFrequency: Array<any>;
-    coreLowFrequency: Array<any>;
-    nonCoreRepeat: Array<any>;
-    oneTimePurchase: Array<any>;
-    summerItems: Array<any>;
-    winterItems: Array<any>;
-    highMarginItems: Array<any>;
+    metadata: {
+      generatedDate: string;
+      totalStyles: number;
+      totalActiveInventoryValue: number;
+      analysisDateRange: string;
+    };
+    segments: {
+      bestSellers: Array<any>;
+      coreHighFrequency: Array<any>;
+      coreMediumFrequency: Array<any>;
+      coreLowFrequency: Array<any>;
+      nonCoreRepeat: Array<any>;
+      oneTimePurchase: Array<any>;
+      newArrivals: Array<any>;
+      summerItems: Array<any>;
+      winterItems: Array<any>;
+      clearanceCandidates: Array<any>;
+    };
   }>;
 }
 
@@ -1958,42 +1968,214 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getProductSegmentationReport(): Promise<{
-    coreHighFrequency: Array<any>;
-    coreMediumFrequency: Array<any>;
-    coreLowFrequency: Array<any>;
-    nonCoreRepeat: Array<any>;
-    oneTimePurchase: Array<any>;
-    summerItems: Array<any>;
-    winterItems: Array<any>;
-    highMarginItems: Array<any>;
+    metadata: {
+      generatedDate: string;
+      totalStyles: number;
+      totalActiveInventoryValue: number;
+      analysisDateRange: string;
+    };
+    segments: {
+      bestSellers: Array<any>;
+      coreHighFrequency: Array<any>;
+      coreMediumFrequency: Array<any>;
+      coreLowFrequency: Array<any>;
+      nonCoreRepeat: Array<any>;
+      oneTimePurchase: Array<any>;
+      newArrivals: Array<any>;
+      summerItems: Array<any>;
+      winterItems: Array<any>;
+      clearanceCandidates: Array<any>;
+    };
   }> {
     const allStyles = await this.getStyleInventoryMetrics();
 
+    // Get sales data for the last 30 and 90 days
+    const salesDataResult = await db.execute(sql`
+      WITH style_sales AS (
+        SELECT 
+          il.style_number,
+          COUNT(st.id) FILTER (WHERE st.date >= CURRENT_DATE - INTERVAL '30 days') AS sales_30d,
+          COUNT(st.id) FILTER (WHERE st.date >= CURRENT_DATE - INTERVAL '90 days') AS sales_90d,
+          MAX(st.date) AS last_sale_date
+        FROM item_list il
+        LEFT JOIN sales_transactions st ON st.sku = il.item_number
+        WHERE il.style_number IS NOT NULL AND il.style_number <> ''
+        GROUP BY il.style_number
+      )
+      SELECT * FROM style_sales
+    `);
+
+    const salesData = new Map(
+      (salesDataResult.rows as Array<{ style_number: string; sales_30d: number; sales_90d: number; last_sale_date: string | null }>)
+        .map(row => [row.style_number, row])
+    );
+
+    // Helper functions for Google Ads fields
+    const generateProductTitle = (style: any): string => {
+      const parts = [];
+      if (style.vendorName) parts.push(style.vendorName);
+      
+      const productType = (style.itemName || '')
+        .replace(/\b(mens|womens|unisex|men's|women's)\b/gi, '')
+        .trim();
+      parts.push(productType);
+      
+      return parts.join(' - ').substring(0, 150);
+    };
+
+    const generateKeywords = (style: any): string[] => {
+      const keywords = new Set<string>();
+      
+      if (style.vendorName) {
+        keywords.add(style.vendorName.toLowerCase());
+        if (style.category) {
+          keywords.add(`${style.vendorName.toLowerCase()} ${style.category.toLowerCase()}`);
+        }
+      }
+      
+      const words = (style.itemName || '').toLowerCase().split(/\s+/);
+      words.filter((w: string) => w.length > 3).forEach((w: string) => keywords.add(w));
+      
+      if (style.category) keywords.add(style.category.toLowerCase());
+      if (style.gender) keywords.add(style.gender.toLowerCase());
+      
+      const sales = salesData.get(style.styleNumber);
+      if (sales && sales.sales_30d >= 10) {
+        keywords.add('popular');
+        keywords.add('best seller');
+        keywords.add('trending');
+      }
+      
+      if (style.daysSinceLastReceive !== null && style.daysSinceLastReceive < 60) {
+        keywords.add('new');
+        keywords.add('latest');
+        keywords.add('just arrived');
+      }
+      
+      if (style.seasonalPattern === 'Summer') {
+        keywords.add('summer');
+        keywords.add('warm weather');
+      } else if (style.seasonalPattern === 'Winter') {
+        keywords.add('winter');
+        keywords.add('cold weather');
+      }
+      
+      return Array.from(keywords).slice(0, 20);
+    };
+
+    const mapToGoogleCategory = (category: string | null): string => {
+      if (!category) return 'Apparel & Accessories';
+      
+      const categoryLower = category.toLowerCase();
+      if (categoryLower.includes('pant') || categoryLower.includes('jean')) {
+        return 'Apparel & Accessories > Clothing > Pants';
+      } else if (categoryLower.includes('shirt') || categoryLower.includes('tee') || categoryLower.includes('top')) {
+        return 'Apparel & Accessories > Clothing > Shirts & Tops';
+      } else if (categoryLower.includes('jacket') || categoryLower.includes('coat')) {
+        return 'Apparel & Accessories > Clothing > Outerwear';
+      } else if (categoryLower.includes('shoe') || categoryLower.includes('sneaker')) {
+        return 'Apparel & Accessories > Shoes';
+      } else if (categoryLower.includes('hat') || categoryLower.includes('cap') || categoryLower.includes('beanie')) {
+        return 'Apparel & Accessories > Clothing Accessories > Hats';
+      } else if (categoryLower.includes('hoodie') || categoryLower.includes('sweatshirt')) {
+        return 'Apparel & Accessories > Clothing > Activewear';
+      }
+      
+      return 'Apparel & Accessories';
+    };
+
+    const calculatePriority = (style: any, sales: any): number => {
+      if (sales && sales.sales_30d >= 10) return 5; // Best sellers
+      if (style.classification === 'Core High') return 4;
+      if (style.daysSinceLastReceive !== null && style.daysSinceLastReceive < 30) return 4; // New arrivals
+      if (style.classification === 'Core Medium') return 3;
+      if (style.classification === 'Core Low') return 2;
+      return 1;
+    };
+
+    const getBudgetTier = (style: any, sales: any): string => {
+      if (sales && sales.sales_30d >= 10) return 'High';
+      if (style.classification === 'Core High' || style.classification === 'Core Medium') return 'Medium';
+      if (style.daysSinceLastReceive !== null && style.daysSinceLastReceive < 30) return 'Medium';
+      return 'Low';
+    };
+
+    const getSegmentName = (style: any, sales: any): string => {
+      if (sales && sales.sales_30d >= 10) return 'Best Seller';
+      if (style.daysSinceLastReceive !== null && style.daysSinceLastReceive < 60) return 'New Arrival';
+      if (style.classification.startsWith('Core')) return style.classification;
+      if (style.stockStatus === 'Dead Stock' || (style.daysSinceLastReceive !== null && style.daysSinceLastReceive > 180 && (!sales || sales.sales_90d === 0))) {
+        return 'Clearance';
+      }
+      return 'Standard';
+    };
+
+    // Enrich all styles with Google Ads fields
+    const enrichedStyles = allStyles.map(style => {
+      const sales = salesData.get(style.styleNumber);
+      const salesVelocity = sales ? sales.sales_30d / 30 : 0;
+      
+      return {
+        ...style,
+        unitsSold30d: sales?.sales_30d || 0,
+        unitsSold90d: sales?.sales_90d || 0,
+        salesVelocity,
+        lastSaleDate: sales?.last_sale_date || null,
+        productTitle: generateProductTitle(style),
+        keywords: generateKeywords(style),
+        googleCategory: mapToGoogleCategory(style.category),
+        priority: calculatePriority(style, sales),
+        budgetTier: getBudgetTier(style, sales),
+        segment: getSegmentName(style, sales),
+        marginPerUnit: style.avgSellingPrice - style.avgOrderCost,
+      };
+    });
+
+    const totalActiveInventoryValue = enrichedStyles.reduce((sum, s) => sum + s.inventoryValue, 0);
+
     return {
-      coreHighFrequency: allStyles
-        .filter(s => s.classification === 'Core High')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      coreMediumFrequency: allStyles
-        .filter(s => s.classification === 'Core Medium')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      coreLowFrequency: allStyles
-        .filter(s => s.classification === 'Core Low')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      nonCoreRepeat: allStyles
-        .filter(s => s.classification === 'Non-Core Repeat')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      oneTimePurchase: allStyles
-        .filter(s => s.classification === 'One-Time')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      summerItems: allStyles
-        .filter(s => s.seasonalPattern === 'Summer')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      winterItems: allStyles
-        .filter(s => s.seasonalPattern === 'Winter')
-        .sort((a, b) => b.inventoryValue - a.inventoryValue),
-      highMarginItems: allStyles
-        .filter(s => s.avgMarginPercent >= 70)
-        .sort((a, b) => b.avgMarginPercent - a.avgMarginPercent),
+      metadata: {
+        generatedDate: new Date().toISOString(),
+        totalStyles: enrichedStyles.length,
+        totalActiveInventoryValue,
+        analysisDateRange: 'Last 90 days',
+      },
+      segments: {
+        bestSellers: enrichedStyles
+          .filter(s => s.unitsSold30d >= 10)
+          .sort((a, b) => b.unitsSold30d - a.unitsSold30d),
+        coreHighFrequency: enrichedStyles
+          .filter(s => s.classification === 'Core High')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        coreMediumFrequency: enrichedStyles
+          .filter(s => s.classification === 'Core Medium')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        coreLowFrequency: enrichedStyles
+          .filter(s => s.classification === 'Core Low')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        nonCoreRepeat: enrichedStyles
+          .filter(s => s.classification === 'Non-Core Repeat')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        oneTimePurchase: enrichedStyles
+          .filter(s => s.classification === 'One-Time')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        newArrivals: enrichedStyles
+          .filter(s => s.daysSinceLastReceive !== null && s.daysSinceLastReceive < 60)
+          .sort((a, b) => (a.daysSinceLastReceive || 0) - (b.daysSinceLastReceive || 0)),
+        summerItems: enrichedStyles
+          .filter(s => s.seasonalPattern === 'Summer')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        winterItems: enrichedStyles
+          .filter(s => s.seasonalPattern === 'Winter')
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+        clearanceCandidates: enrichedStyles
+          .filter(s => {
+            const oldStock = s.daysSinceLastReceive !== null && s.daysSinceLastReceive > 180;
+            const noSales = s.unitsSold90d === 0;
+            return oldStock && noSales && s.stockStatus !== 'Seasonal Hold';
+          })
+          .sort((a, b) => b.inventoryValue - a.inventoryValue),
+      },
     };
   }
 }

@@ -89,16 +89,16 @@ export function exportMultipleSheetsToExcel(
 /**
  * Format data for Excel export with custom column headers
  * @param data - Array of objects
- * @param columnMapping - Mapping of keys to display names
+ * @param columnMapping - Mapping of keys to display names (partial mapping allowed)
  */
 export function formatDataForExport<T extends Record<string, any>>(
   data: T[],
-  columnMapping: Record<keyof T, string>
+  columnMapping: Partial<Record<keyof T, string>> | Record<string, string>
 ): Record<string, any>[] {
   return data.map(row => {
     const formattedRow: Record<string, any> = {};
     Object.entries(columnMapping).forEach(([key, displayName]) => {
-      formattedRow[displayName] = row[key as keyof T];
+      formattedRow[displayName as string] = row[key as keyof T];
     });
     return formattedRow;
   });
