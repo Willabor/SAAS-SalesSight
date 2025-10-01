@@ -26,7 +26,7 @@ export async function uploadData(
 export async function uploadDataWithProgress(
   type: 'item-list' | 'sales-transactions',
   data: any[],
-  onProgress: (progress: { processed: number; total: number; uploaded: number; failed: number }) => void,
+  onProgress: (progress: { processed: number; total: number; uploaded: number; skipped: number; failed: number }) => void,
   mode?: string,
   fileName?: string,
   batchSize: number = 100,
@@ -34,6 +34,7 @@ export async function uploadDataWithProgress(
 ): Promise<{
   success: boolean;
   uploaded: number;
+  skipped: number;
   failed: number;
   total: number;
   errors: string[];
@@ -42,6 +43,7 @@ export async function uploadDataWithProgress(
   const endpoint = type === 'item-list' ? '/api/upload/item-list' : '/api/upload/sales-transactions';
   const total = data.length;
   let totalUploaded = 0;
+  let totalSkipped = 0;
   let totalFailed = 0;
   const allErrors: string[] = [];
 
@@ -54,6 +56,7 @@ export async function uploadDataWithProgress(
         return {
           success: false,
           uploaded: totalUploaded,
+          skipped: totalSkipped,
           failed: totalFailed,
           total,
           errors: allErrors.slice(0, 10),
@@ -71,6 +74,7 @@ export async function uploadDataWithProgress(
         return {
           success: false,
           uploaded: totalUploaded,
+          skipped: totalSkipped,
           failed: totalFailed,
           total,
           errors: allErrors.slice(0, 10),
@@ -90,31 +94,34 @@ export async function uploadDataWithProgress(
       
       const response = await apiRequest('POST', endpoint, payload);
       const result = await response.json();
-      
+
       totalUploaded += result.uploaded;
+      totalSkipped += result.skipped || 0;
       totalFailed += result.failed;
       allErrors.push(...result.errors);
-      
+
       // Update progress
       onProgress({
         processed,
         total,
         uploaded: totalUploaded,
+        skipped: totalSkipped,
         failed: totalFailed
       });
-      
+
       // Small delay between batches to allow UI updates
       await new Promise(resolve => setTimeout(resolve, 50));
-      
+
     } catch (error) {
       // If batch fails, count all items in batch as failed
       totalFailed += batch.length;
       allErrors.push(`Batch ${i / batchSize + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      
+
       onProgress({
         processed,
         total,
         uploaded: totalUploaded,
+        skipped: totalSkipped,
         failed: totalFailed
       });
     }
@@ -123,6 +130,7 @@ export async function uploadDataWithProgress(
   return {
     success: totalFailed === 0,
     uploaded: totalUploaded,
+    skipped: totalSkipped,
     failed: totalFailed,
     total,
     errors: allErrors.slice(0, 10) // Limit to first 10 errors

@@ -38,13 +38,10 @@ import {
   Database,
   Eye,
   Download,
-  Pause,
-  Play,
-  StopCircle,
-  RotateCcw,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Link } from "wouter";
+import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 import {
   formatReceivingFile,
   flattenReceivingData,
@@ -638,109 +635,21 @@ export default function ReceivingHistoryPage() {
                   </Alert>
                 )}
 
-                <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg" data-testid="upload-progress-container">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-blue-900">Uploading to Database</p>
-                      {uploadStats.processed > 0 && (
-                        <Badge variant="outline" className="text-xs">
-                          Live Progress
-                        </Badge>
-                      )}
-                    </div>
-                    <Badge variant="secondary">{Math.round((uploadStats.processed / uploadStats.total) * 100)}%</Badge>
-                  </div>
-                  <Progress value={(uploadStats.processed / uploadStats.total) * 100} className="w-full" data-testid="progress-upload" />
-                  <div className="grid grid-cols-4 gap-4 text-center">
-                    <div>
-                      <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
-                      <p className="text-xs text-blue-700">Processed</p>
-                    </div>
-                    <div>
-                      <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
-                      <p className="text-xs text-green-700">Uploaded</p>
-                    </div>
-                    <div>
-                      <p className="text-lg font-bold text-yellow-600">{uploadStats.skipped}</p>
-                      <p className="text-xs text-yellow-700">Skipped</p>
-                    </div>
-                    <div>
-                      <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
-                      <p className="text-xs text-red-700">Failed</p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-blue-800">
-                    {uploadStats.processed} of {uploadStats.total} vouchers processed
-                    {isPaused && <span className="ml-2 text-yellow-600 font-semibold">(Paused)</span>}
-                  </p>
-
-                  {/* Control Buttons */}
-                  <div className="flex gap-2 justify-center">
-                    {!isPaused ? (
-                      <Button
-                        onClick={handlePauseUpload}
-                        variant="outline"
-                        size="sm"
-                        disabled={!isUploading}
-                      >
-                        <Pause className="w-4 h-4 mr-2" />
-                        Pause
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={handleResumeUpload}
-                        variant="outline"
-                        size="sm"
-                      >
-                        <Play className="w-4 h-4 mr-2" />
-                        Resume
-                      </Button>
-                    )}
-                    <Button
-                      onClick={handleStopUpload}
-                      variant="destructive"
-                      size="sm"
-                      disabled={!isUploading}
-                    >
-                      <StopCircle className="w-4 h-4 mr-2" />
-                      Stop
-                    </Button>
-                    <Button
-                      onClick={resetWorkflow}
-                      variant="outline"
-                      size="sm"
-                    >
-                      <RotateCcw className="w-4 h-4 mr-2" />
-                      Clear
-                    </Button>
-                  </div>
-
-                  <Alert className="bg-blue-100 border-blue-300">
-                    <AlertCircle className="h-4 w-4 text-blue-600" />
-                    <AlertDescription className="text-blue-800 text-xs">
-                      <strong>Note:</strong> If you refresh the page during upload, the upload will stop. The data uploaded so far ({uploadStats.uploaded} vouchers) is already saved in the database. Click "Clear" to reset and start over, or check the Receiving Vouchers page to verify your data.
-                    </AlertDescription>
-                  </Alert>
-                </div>
+                <UploadProgressAdvanced
+                  uploadStats={uploadStats}
+                  isPaused={isPaused}
+                  isStopped={isStopped}
+                  uploadType="receiving"
+                  onPause={handlePauseUpload}
+                  onResume={handleResumeUpload}
+                  onStop={handleStopUpload}
+                  onClear={resetWorkflow}
+                  showSkipped={true}
+                  isUploading={isUploading}
+                />
               </div>
             )}
 
-            {/* Stopped State - Show Reset Button */}
-            {isStopped && uploadStats && (
-              <div className="space-y-4">
-                <Alert variant="destructive">
-                  <StopCircle className="h-4 w-4" />
-                  <AlertTitle>Upload Stopped</AlertTitle>
-                  <AlertDescription>
-                    Upload was stopped. {uploadStats.uploaded} vouchers were uploaded before stopping.
-                  </AlertDescription>
-                </Alert>
-                <Button onClick={resetWorkflow} variant="outline">
-                  <RotateCcw className="w-4 h-4 mr-2" />
-                  Reset & Start Over
-                </Button>
-              </div>
-            )}
 
             {/* Step 4: Complete */}
             {currentStep === "complete" && uploadResponse && (

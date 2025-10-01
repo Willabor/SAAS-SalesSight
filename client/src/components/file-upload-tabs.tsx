@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Progress } from "@/components/ui/progress";
-import { Upload, FileText, Pause, Play, StopCircle } from "lucide-react";
+import { Upload, FileText } from "lucide-react";
 import { processExcelFile, processWorkbook } from "@/lib/excel-processor";
 import { uploadDataWithProgress } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -22,6 +22,7 @@ import {
   loadUploadState,
   clearUploadState,
 } from "@/lib/uploadStateManager";
+import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 
 export function FileUploadTabs() {
   const [activeTab, setActiveTab] = useState("item-list");
@@ -35,6 +36,7 @@ export function FileUploadTabs() {
     processed: number;
     total: number;
     uploaded: number;
+    skipped: number;
     failed: number;
   } | null>(null);
   const [uploadResults, setUploadResults] = useState<{
@@ -132,9 +134,8 @@ export function FileUploadTabs() {
           type,
           data,
           (progress) => {
-            const progressWithSkipped = { ...progress, skipped: 0 };
             setUploadStats(progress);
-            onProgress(progressWithSkipped);
+            onProgress(progress);
             // Update upload progress percentage based on processed items
             const percentage = Math.round((progress.processed / progress.total) * 100);
             setUploadProgress(percentage);
@@ -335,72 +336,19 @@ export function FileUploadTabs() {
 
               {/* Upload Progress */}
               {(isUploading || uploadStats) && (
-                <div className="mt-6 p-4 bg-muted rounded-lg space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-foreground">
-                      {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading..."}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {uploadStats ? `${uploadStats.processed.toLocaleString()} / ${uploadStats.total.toLocaleString()}` : ''}
-                    </p>
-                  </div>
-                  <Progress value={uploadProgress} className="h-2" data-testid="progress-item-list" />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{uploadProgress}% complete</span>
-                    {uploadStats && (
-                      <span>
-                        ✓ {uploadStats.uploaded.toLocaleString()} uploaded
-                        {uploadStats.failed > 0 && ` • ✗ ${uploadStats.failed.toLocaleString()} failed`}
-                      </span>
-                    )}
-                  </div>
-                  {isStopped ? (
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={handleResetUpload}
-                      className="flex items-center gap-2 w-full"
-                      data-testid="button-reset-item-list"
-                    >
-                      Reset Upload
-                    </Button>
-                  ) : isUploading ? (
-                    <div className="flex gap-2">
-                      {isPaused ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleResumeUpload}
-                          className="flex items-center gap-2"
-                          data-testid="button-resume-item-list"
-                        >
-                          <Play className="w-4 h-4" />
-                          Resume
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handlePauseUpload}
-                          className="flex items-center gap-2"
-                          data-testid="button-pause-item-list"
-                        >
-                          <Pause className="w-4 h-4" />
-                          Pause
-                        </Button>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={handleStopUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-stop-item-list"
-                      >
-                        <StopCircle className="w-4 h-4" />
-                        Stop
-                      </Button>
-                    </div>
-                  ) : null}
+                <div className="mt-6">
+                  <UploadProgressAdvanced
+                    uploadStats={uploadStats!}
+                    isPaused={isPaused}
+                    isStopped={isStopped}
+                    uploadType={activeTab === "item-list" ? "item-list" : "sales"}
+                    onPause={handlePauseUpload}
+                    onResume={handleResumeUpload}
+                    onStop={handleStopUpload}
+                    onClear={handleResetUpload}
+                    showSkipped={true}
+                    isUploading={isUploading}
+                  />
                 </div>
               )}
             </div>
@@ -465,72 +413,19 @@ export function FileUploadTabs() {
 
               {/* Upload Progress */}
               {(isUploading || uploadStats) && (
-                <div className="mt-6 p-4 bg-muted rounded-lg space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-foreground">
-                      {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading..."}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {uploadStats ? `${uploadStats.processed.toLocaleString()} / ${uploadStats.total.toLocaleString()}` : ''}
-                    </p>
-                  </div>
-                  <Progress value={uploadProgress} className="h-2" data-testid="progress-sales" />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{uploadProgress}% complete</span>
-                    {uploadStats && (
-                      <span>
-                        ✓ {uploadStats.uploaded.toLocaleString()} uploaded
-                        {uploadStats.failed > 0 && ` • ✗ ${uploadStats.failed.toLocaleString()} failed`}
-                      </span>
-                    )}
-                  </div>
-                  {isStopped ? (
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={handleResetUpload}
-                      className="flex items-center gap-2 w-full"
-                      data-testid="button-reset-sales"
-                    >
-                      Reset Upload
-                    </Button>
-                  ) : isUploading ? (
-                    <div className="flex gap-2">
-                      {isPaused ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleResumeUpload}
-                          className="flex items-center gap-2"
-                          data-testid="button-resume-sales"
-                        >
-                          <Play className="w-4 h-4" />
-                          Resume
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handlePauseUpload}
-                          className="flex items-center gap-2"
-                          data-testid="button-pause-sales"
-                        >
-                          <Pause className="w-4 h-4" />
-                          Pause
-                        </Button>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={handleStopUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-stop-sales"
-                      >
-                        <StopCircle className="w-4 h-4" />
-                        Stop
-                      </Button>
-                    </div>
-                  ) : null}
+                <div className="mt-6">
+                  <UploadProgressAdvanced
+                    uploadStats={uploadStats!}
+                    isPaused={isPaused}
+                    isStopped={isStopped}
+                    uploadType={activeTab === "item-list" ? "item-list" : "sales"}
+                    onPause={handlePauseUpload}
+                    onResume={handleResumeUpload}
+                    onStop={handleStopUpload}
+                    onClear={handleResetUpload}
+                    showSkipped={true}
+                    isUploading={isUploading}
+                  />
                 </div>
               )}
             </div>

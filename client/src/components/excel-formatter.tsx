@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Upload, Download, FileText, BarChart3, CheckCircle, Pause, Play, StopCircle } from "lucide-react";
+import { Upload, Download, FileText, BarChart3, CheckCircle } from "lucide-react";
 import { formatItemList, formatSalesFile, flattenSalesData, downloadExcelFile, downloadCSVFile, samplePreview } from "@/lib/formatters";
 import type { ItemListStats, SalesStats, BusinessStats } from "@/lib/formatters";
 import { uploadData, uploadDataWithProgress } from "@/lib/api";
@@ -25,6 +25,7 @@ import {
   subscribeToUploadState,
   clearUploadState,
 } from "@/lib/uploadStateManager";
+import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 
 type ProcessingMode = 'item-list' | 'sales';
 type Step = 'upload' | 'choose-mode' | 'formatting-item-list' | 'item-list-ready-upload' | 'ready-to-format' | 'formatting' | 'ready-to-flatten' | 'flattening' | 'sales-ready-upload';
@@ -45,6 +46,7 @@ export function ExcelFormatter() {
     processed: number;
     total: number;
     uploaded: number;
+    skipped: number;
     failed: number;
   } | null>(null);
   
@@ -276,7 +278,7 @@ export function ExcelFormatter() {
     setIsUploading(true);
     setIsPaused(false);
     setIsStopped(false);
-    setUploadStats({ processed: 0, total: data.length, uploaded: 0, failed: 0 });
+    setUploadStats({ processed: 0, total: data.length, uploaded: 0, skipped: 0, failed: 0 });
     
     try {
       const result = await executeTrackedUpload(
@@ -286,9 +288,8 @@ export function ExcelFormatter() {
           type,
           data,
           (progress) => {
-            const progressWithSkipped = { ...progress, skipped: 0 };
             setUploadStats(progress);
-            onProgress(progressWithSkipped);
+            onProgress(progress);
             // Update upload progress percentage based on uploaded items
             const percentage = Math.round((progress.uploaded / progress.total) * 100);
             setUploadProgress(percentage);
@@ -552,79 +553,18 @@ export function ExcelFormatter() {
 
             {/* Upload Progress Display */}
             {isUploading && uploadStats && (
-              <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <div className="flex items-center justify-between">
-                  <p className="font-medium text-blue-900 dark:text-blue-100">
-                    {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading to Database"}
-                  </p>
-                  <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
-                </div>
-                <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-lg font-bold text-blue-900 dark:text-blue-100">{uploadStats.processed}</p>
-                    <p className="text-xs text-blue-700 dark:text-blue-300">Processed</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-green-600 dark:text-green-400">{uploadStats.uploaded}</p>
-                    <p className="text-xs text-green-700 dark:text-green-300">Uploaded</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-red-600 dark:text-red-400">{uploadStats.failed}</p>
-                    <p className="text-xs text-red-700 dark:text-red-300">Failed</p>
-                  </div>
-                </div>
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  {uploadStats.processed} of {uploadStats.total} items processed
-                </p>
-                {isStopped ? (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={handleResetUpload}
-                    className="flex items-center gap-2 w-full"
-                    data-testid="button-reset-upload"
-                  >
-                    Reset Upload
-                  </Button>
-                ) : isUploading ? (
-                  <div className="flex gap-2">
-                    {isPaused ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleResumeUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-resume-upload"
-                      >
-                        <Play className="w-4 h-4" />
-                        Resume
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePauseUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-pause-upload"
-                      >
-                        <Pause className="w-4 h-4" />
-                        Pause
-                      </Button>
-                    )}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={handleStopUpload}
-                      className="flex items-center gap-2"
-                      data-testid="button-stop-upload"
-                    >
-                      <StopCircle className="w-4 h-4" />
-                      Stop
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
+              <UploadProgressAdvanced
+                uploadStats={uploadStats}
+                isPaused={isPaused}
+                isStopped={isStopped}
+                uploadType="item-list"
+                onPause={handlePauseUpload}
+                onResume={handleResumeUpload}
+                onStop={handleStopUpload}
+                onClear={handleResetUpload}
+                showSkipped={true}
+                isUploading={isUploading}
+              />
             )}
 
             <div className="flex gap-3">
@@ -740,79 +680,18 @@ export function ExcelFormatter() {
 
             {/* Upload Progress Display */}
             {isUploading && uploadStats && (
-              <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <div className="flex items-center justify-between">
-                  <p className="font-medium text-blue-900 dark:text-blue-100">
-                    {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading to Database"}
-                  </p>
-                  <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
-                </div>
-                <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-lg font-bold text-blue-900 dark:text-blue-100">{uploadStats.processed}</p>
-                    <p className="text-xs text-blue-700 dark:text-blue-300">Processed</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-green-600 dark:text-green-400">{uploadStats.uploaded}</p>
-                    <p className="text-xs text-green-700 dark:text-green-300">Uploaded</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-red-600 dark:text-red-400">{uploadStats.failed}</p>
-                    <p className="text-xs text-red-700 dark:text-red-300">Failed</p>
-                  </div>
-                </div>
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  {uploadStats.processed} of {uploadStats.total} items processed
-                </p>
-                {isStopped ? (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={handleResetUpload}
-                    className="flex items-center gap-2 w-full"
-                    data-testid="button-reset-upload"
-                  >
-                    Reset Upload
-                  </Button>
-                ) : isUploading ? (
-                  <div className="flex gap-2">
-                    {isPaused ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleResumeUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-resume-upload"
-                      >
-                        <Play className="w-4 h-4" />
-                        Resume
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePauseUpload}
-                        className="flex items-center gap-2"
-                        data-testid="button-pause-upload"
-                      >
-                        <Pause className="w-4 h-4" />
-                        Pause
-                      </Button>
-                    )}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={handleStopUpload}
-                      className="flex items-center gap-2"
-                      data-testid="button-stop-upload"
-                    >
-                      <StopCircle className="w-4 h-4" />
-                      Stop
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
+              <UploadProgressAdvanced
+                uploadStats={uploadStats}
+                isPaused={isPaused}
+                isStopped={isStopped}
+                uploadType="sales"
+                onPause={handlePauseUpload}
+                onResume={handleResumeUpload}
+                onStop={handleStopUpload}
+                onClear={handleResetUpload}
+                showSkipped={true}
+                isUploading={isUploading}
+              />
             )}
 
             <div className="flex gap-3">
