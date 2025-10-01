@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,11 +8,22 @@ import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Upload, Download, FileText, BarChart3, CheckCircle } from "lucide-react";
+import { Upload, Download, FileText, BarChart3, CheckCircle, Pause, Play, StopCircle } from "lucide-react";
 import { formatItemList, formatSalesFile, flattenSalesData, downloadExcelFile, downloadCSVFile, samplePreview } from "@/lib/formatters";
 import type { ItemListStats, SalesStats, BusinessStats } from "@/lib/formatters";
 import { uploadData, uploadDataWithProgress } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import {
+  executeTrackedUpload,
+  pauseUpload,
+  resumeUpload,
+  stopUpload,
+  isUploadPaused,
+  isUploadStopped,
+  resetUploadControlFlags,
+  loadUploadState,
+  subscribeToUploadState,
+} from "@/lib/uploadStateManager";
 
 type ProcessingMode = 'item-list' | 'sales';
 type Step = 'upload' | 'choose-mode' | 'formatting-item-list' | 'item-list-ready-upload' | 'ready-to-format' | 'formatting' | 'ready-to-flatten' | 'flattening' | 'sales-ready-upload';
@@ -27,6 +38,8 @@ export function ExcelFormatter() {
   
   // Upload progress tracking
   const [isUploading, setIsUploading] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
   const [uploadStats, setUploadStats] = useState<{
     processed: number;
     total: number;
@@ -49,6 +62,42 @@ export function ExcelFormatter() {
   const fileRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  // Restore and subscribe to upload state for cross-page persistence
+  useEffect(() => {
+    // Check for existing upload state on mount
+    const savedState = loadUploadState();
+    if (savedState && (savedState.uploadType === 'item-list' || savedState.uploadType === 'sales')) {
+      // Restore upload state
+      setIsUploading(savedState.isUploading);
+      setIsPaused(savedState.isPaused);
+      if (savedState.stats) {
+        setUploadStats(savedState.stats);
+        const percentage = Math.round((savedState.stats.processed / savedState.stats.total) * 100);
+        setUploadProgress(percentage);
+      }
+    }
+
+    // Subscribe to state changes
+    const unsubscribe = subscribeToUploadState((state) => {
+      if (state && (state.uploadType === 'item-list' || state.uploadType === 'sales')) {
+        setIsUploading(state.isUploading);
+        setIsPaused(state.isPaused);
+        if (state.stats) {
+          setUploadStats(state.stats);
+          const percentage = Math.round((state.stats.processed / state.stats.total) * 100);
+          setUploadProgress(percentage);
+        }
+      } else if (!state) {
+        // State was cleared - reset UI if still showing old progress
+        setIsUploading(false);
+        setUploadStats(null);
+        setIsPaused(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const uploadMutation = useMutation({
     mutationFn: async ({ data, type, mode, fileName }: {
@@ -207,39 +256,67 @@ export function ExcelFormatter() {
     
     let data: any[];
     let type: 'item-list' | 'sales-transactions';
+    let uploadType: 'item-list' | 'sales';
     
     if (processingMode === 'item-list' && parsedItemData) {
       data = parsedItemData;
       type = 'item-list';
+      uploadType = 'item-list';
     } else if (processingMode === 'sales' && parsedSalesData) {
       data = parsedSalesData;
       type = 'sales-transactions';
+      uploadType = 'sales';
     } else {
       return;
     }
 
+    // Reset control flags before starting
+    resetUploadControlFlags();
     setIsUploading(true);
+    setIsPaused(false);
+    setIsStopped(false);
     setUploadStats({ processed: 0, total: data.length, uploaded: 0, failed: 0 });
     
     try {
-      const result = await uploadDataWithProgress(
-        type,
-        data,
-        (progress) => {
-          setUploadStats(progress);
-          // Update upload progress percentage based on uploaded items
-          const percentage = Math.round((progress.uploaded / progress.total) * 100);
-          setUploadProgress(percentage);
-          setStatus(`Uploading to database: ${progress.processed} of ${progress.total} items processed (${progress.uploaded} uploaded, ${progress.failed} failed)`);
-        },
-        processingMode === 'item-list' ? uploadMode : undefined,
-        file.name
+      const result = await executeTrackedUpload(
+        uploadType,
+        file.name,
+        (onProgress) => uploadDataWithProgress(
+          type,
+          data,
+          (progress) => {
+            const progressWithSkipped = { ...progress, skipped: 0 };
+            setUploadStats(progress);
+            onProgress(progressWithSkipped);
+            // Update upload progress percentage based on uploaded items
+            const percentage = Math.round((progress.uploaded / progress.total) * 100);
+            setUploadProgress(percentage);
+            setStatus(`Uploading to database: ${progress.processed} of ${progress.total} items processed (${progress.uploaded} uploaded, ${progress.failed} failed)`);
+          },
+          processingMode === 'item-list' ? uploadMode : undefined,
+          file.name,
+          100,
+          () => ({ isPaused: isUploadPaused(), isStopped: isUploadStopped() })
+        ),
+        data.length,
+        'flatten'
       );
+
+      // Check if upload was stopped
+      if (result.stopped) {
+        setIsStopped(true);
+        toast({
+          title: "Upload Stopped",
+          description: `Upload was stopped. ${result.uploaded} records were uploaded before stopping.`,
+        });
+        return;
+      }
 
       // Invalidate queries to refresh stats
       queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
       queryClient.invalidateQueries({ queryKey: ["/api/upload-history"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
 
       if (result.failed > 0) {
         toast({
@@ -270,6 +347,22 @@ export function ExcelFormatter() {
         setUploadStats(null);
       }, 3000); // Clear progress after 3 seconds
     }
+  };
+
+  const handlePauseUpload = () => {
+    pauseUpload();
+    setIsPaused(true);
+  };
+
+  const handleResumeUpload = () => {
+    resumeUpload();
+    setIsPaused(false);
+  };
+
+  const handleStopUpload = () => {
+    stopUpload();
+    setIsStopped(true);
+    setIsPaused(false);
   };
 
   const downloadItemList = () => {
@@ -446,29 +539,68 @@ export function ExcelFormatter() {
 
             {/* Upload Progress Display */}
             {isUploading && uploadStats && (
-              <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <div className="flex items-center justify-between">
-                  <p className="font-medium text-blue-900">Uploading to Database</p>
+                  <p className="font-medium text-blue-900 dark:text-blue-100">
+                    {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading to Database"}
+                  </p>
                   <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
                 </div>
                 <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div>
-                    <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
-                    <p className="text-xs text-blue-700">Processed</p>
+                    <p className="text-lg font-bold text-blue-900 dark:text-blue-100">{uploadStats.processed}</p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">Processed</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
-                    <p className="text-xs text-green-700">Uploaded</p>
+                    <p className="text-lg font-bold text-green-600 dark:text-green-400">{uploadStats.uploaded}</p>
+                    <p className="text-xs text-green-700 dark:text-green-300">Uploaded</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
-                    <p className="text-xs text-red-700">Failed</p>
+                    <p className="text-lg font-bold text-red-600 dark:text-red-400">{uploadStats.failed}</p>
+                    <p className="text-xs text-red-700 dark:text-red-300">Failed</p>
                   </div>
                 </div>
-                <p className="text-sm text-blue-800">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
                   {uploadStats.processed} of {uploadStats.total} items processed
                 </p>
+                {isUploading && !isStopped && (
+                  <div className="flex gap-2">
+                    {isPaused ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleResumeUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-resume-upload"
+                      >
+                        <Play className="w-4 h-4" />
+                        Resume
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePauseUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-pause-upload"
+                      >
+                        <Pause className="w-4 h-4" />
+                        Pause
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleStopUpload}
+                      className="flex items-center gap-2"
+                      data-testid="button-stop-upload"
+                    >
+                      <StopCircle className="w-4 h-4" />
+                      Stop
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -585,29 +717,68 @@ export function ExcelFormatter() {
 
             {/* Upload Progress Display */}
             {isUploading && uploadStats && (
-              <div className="space-y-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <div className="flex items-center justify-between">
-                  <p className="font-medium text-blue-900">Uploading to Database</p>
+                  <p className="font-medium text-blue-900 dark:text-blue-100">
+                    {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading to Database"}
+                  </p>
                   <Badge variant="secondary">{Math.round((uploadStats.uploaded / uploadStats.total) * 100)}%</Badge>
                 </div>
                 <Progress value={(uploadStats.uploaded / uploadStats.total) * 100} className="w-full" />
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div>
-                    <p className="text-lg font-bold text-blue-900">{uploadStats.processed}</p>
-                    <p className="text-xs text-blue-700">Processed</p>
+                    <p className="text-lg font-bold text-blue-900 dark:text-blue-100">{uploadStats.processed}</p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">Processed</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-green-600">{uploadStats.uploaded}</p>
-                    <p className="text-xs text-green-700">Uploaded</p>
+                    <p className="text-lg font-bold text-green-600 dark:text-green-400">{uploadStats.uploaded}</p>
+                    <p className="text-xs text-green-700 dark:text-green-300">Uploaded</p>
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-red-600">{uploadStats.failed}</p>
-                    <p className="text-xs text-red-700">Failed</p>
+                    <p className="text-lg font-bold text-red-600 dark:text-red-400">{uploadStats.failed}</p>
+                    <p className="text-xs text-red-700 dark:text-red-300">Failed</p>
                   </div>
                 </div>
-                <p className="text-sm text-blue-800">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
                   {uploadStats.processed} of {uploadStats.total} items processed
                 </p>
+                {isUploading && !isStopped && (
+                  <div className="flex gap-2">
+                    {isPaused ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleResumeUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-resume-upload"
+                      >
+                        <Play className="w-4 h-4" />
+                        Resume
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePauseUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-pause-upload"
+                      >
+                        <Pause className="w-4 h-4" />
+                        Pause
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleStopUpload}
+                      className="flex items-center gap-2"
+                      data-testid="button-stop-upload"
+                    >
+                      <StopCircle className="w-4 h-4" />
+                      Stop
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 

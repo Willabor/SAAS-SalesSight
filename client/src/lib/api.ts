@@ -49,9 +49,7 @@ export async function uploadDataWithProgress(
   for (let i = 0; i < data.length; i += batchSize) {
     // Check if upload should be paused or stopped
     if (checkPauseStop) {
-      const { isPaused, isStopped } = checkPauseStop();
-
-      if (isStopped) {
+      if (checkPauseStop().isStopped) {
         // Stop immediately - return current progress with stopped flag
         return {
           success: false,
@@ -63,8 +61,8 @@ export async function uploadDataWithProgress(
         };
       }
 
-      // Wait while paused
-      while (isPaused && !checkPauseStop().isStopped) {
+      // Wait while paused - re-check isPaused each iteration for resume to work
+      while (checkPauseStop().isPaused && !checkPauseStop().isStopped) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -167,9 +165,7 @@ export async function uploadReceivingWithProgress(
   for (let i = 0; i < vouchers.length; i += batchSize) {
     // Check if upload should be paused or stopped
     if (checkPauseStop) {
-      const { isPaused, isStopped } = checkPauseStop();
-
-      if (isStopped) {
+      if (checkPauseStop().isStopped) {
         // Stop immediately - return current progress with stopped flag
         return {
           success: false,
@@ -184,8 +180,8 @@ export async function uploadReceivingWithProgress(
         };
       }
 
-      // Wait while paused
-      while (isPaused && !checkPauseStop().isStopped) {
+      // Wait while paused - re-check isPaused each iteration for resume to work
+      while (checkPauseStop().isPaused && !checkPauseStop().isStopped) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
