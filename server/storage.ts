@@ -1699,55 +1699,59 @@ export class DatabaseStorage implements IStorage {
     classification: string;
     stockStatus: string;
   }>> {
+    // OPTIMIZED: Get all styles with their metrics in one call
     const allStyles = await this.getStyleInventoryMetrics();
 
-    // For each style, calculate sales velocity
-    const stylesWithSales = await Promise.all(
-      allStyles.map(async (style) => {
-        // Get sales count for this style
-        const [salesData] = await db
-          .select({
-            unitsSold: sql<number>`COUNT(DISTINCT ${salesTransactions.id})`,
-          })
-          .from(salesTransactions)
-          .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
-          .where(
-            and(
-              eq(itemList.styleNumber, style.styleNumber),
-              eq(itemList.itemName, style.itemName),
-              sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '${sql.raw(daysRange.toString())} days'`
-            )
-          );
-
-        const unitsSold = salesData?.unitsSold || 0;
-        const avgDailySales = unitsSold / daysRange;
-        const daysOfSupply = avgDailySales > 0 ? style.totalActiveQty / avgDailySales : 999;
-
-        let stockStatus = 'Normal';
-        if (daysOfSupply > 90) {
-          stockStatus = 'Overstock';
-        } else if (daysOfSupply < 7 && avgDailySales > 0) {
-          stockStatus = 'Understock';
-        } else if (avgDailySales === 0 && style.totalActiveQty > 0) {
-          stockStatus = 'No Sales';
-        }
-
-        return {
-          styleNumber: style.styleNumber,
-          itemName: style.itemName,
-          category: style.category,
-          vendorName: style.vendorName,
-          totalActiveQty: style.totalActiveQty,
-          inventoryValue: style.inventoryValue,
-          avgMarginPercent: style.avgMarginPercent,
-          unitsSold,
-          avgDailySales: Number(avgDailySales.toFixed(2)),
-          daysOfSupply: Number(daysOfSupply.toFixed(1)),
-          classification: style.classification,
-          stockStatus,
-        };
+    // OPTIMIZED: Get sales data for ALL styles in a single query
+    const salesByStyle = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        itemName: itemList.itemName,
+        unitsSold: sql<number>`COUNT(DISTINCT ${salesTransactions.id})`,
       })
+      .from(salesTransactions)
+      .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .where(
+        sql`${salesTransactions.date} >= CURRENT_DATE - INTERVAL '${sql.raw(daysRange.toString())} days'`
+      )
+      .groupBy(itemList.styleNumber, itemList.itemName);
+
+    // Create a map for quick lookup
+    const salesMap = new Map(
+      salesByStyle.map(s => [`${s.styleNumber}|${s.itemName}`, Number(s.unitsSold)])
     );
+
+    // Calculate metrics for all styles
+    const stylesWithSales = allStyles.map(style => {
+      const key = `${style.styleNumber}|${style.itemName}`;
+      const unitsSold = salesMap.get(key) || 0;
+      const avgDailySales = unitsSold / daysRange;
+      const daysOfSupply = avgDailySales > 0 ? style.totalActiveQty / avgDailySales : 999;
+
+      let stockStatus = 'Normal';
+      if (daysOfSupply > 90) {
+        stockStatus = 'Overstock';
+      } else if (daysOfSupply < 7 && avgDailySales > 0) {
+        stockStatus = 'Understock';
+      } else if (avgDailySales === 0 && style.totalActiveQty > 0) {
+        stockStatus = 'No Sales';
+      }
+
+      return {
+        styleNumber: style.styleNumber,
+        itemName: style.itemName,
+        category: style.category,
+        vendorName: style.vendorName,
+        totalActiveQty: style.totalActiveQty,
+        inventoryValue: style.inventoryValue,
+        avgMarginPercent: style.avgMarginPercent,
+        unitsSold,
+        avgDailySales: Number(avgDailySales.toFixed(2)),
+        daysOfSupply: Number(daysOfSupply.toFixed(1)),
+        classification: style.classification,
+        stockStatus,
+      };
+    });
 
     // Filter for overstock or understock
     const filtered = stylesWithSales.filter(
