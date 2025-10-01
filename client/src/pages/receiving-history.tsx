@@ -278,13 +278,13 @@ export default function ReceivingHistoryPage() {
       // Update response state
       setUploadResponse({
         success: result.success,
-        message: `Upload complete. ${result.uploaded} vouchers and ${result.lines} line items uploaded successfully.`,
+        message: `Upload complete. ${result.uploaded} vouchers and ${result.lines || 0} line items uploaded successfully.`,
         uploaded: result.uploaded,
-        lines: result.lines,
-        skipped: result.skipped,
+        lines: result.lines || 0,
+        skipped: result.skipped || 0,
         failed: result.failed,
         errors: result.errors,
-        duplicateVouchers: result.duplicateVouchers
+        duplicateVouchers: result.duplicateVouchers || []
       });
 
       setCurrentStep("complete");

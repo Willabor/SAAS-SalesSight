@@ -29,13 +29,15 @@ export async function uploadDataWithProgress(
   onProgress: (progress: { processed: number; total: number; uploaded: number; failed: number }) => void,
   mode?: string,
   fileName?: string,
-  batchSize: number = 100
+  batchSize: number = 100,
+  checkPauseStop?: () => { isPaused: boolean; isStopped: boolean }
 ): Promise<{
   success: boolean;
   uploaded: number;
   failed: number;
   total: number;
   errors: string[];
+  stopped?: boolean;
 }> {
   const endpoint = type === 'item-list' ? '/api/upload/item-list' : '/api/upload/sales-transactions';
   const total = data.length;
@@ -45,6 +47,40 @@ export async function uploadDataWithProgress(
 
   // Process data in batches
   for (let i = 0; i < data.length; i += batchSize) {
+    // Check if upload should be paused or stopped
+    if (checkPauseStop) {
+      const { isPaused, isStopped } = checkPauseStop();
+
+      if (isStopped) {
+        // Stop immediately - return current progress with stopped flag
+        return {
+          success: false,
+          uploaded: totalUploaded,
+          failed: totalFailed,
+          total,
+          errors: allErrors.slice(0, 10),
+          stopped: true
+        };
+      }
+
+      // Wait while paused
+      while (isPaused && !checkPauseStop().isStopped) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Check again after pause in case it was stopped
+      if (checkPauseStop().isStopped) {
+        return {
+          success: false,
+          uploaded: totalUploaded,
+          failed: totalFailed,
+          total,
+          errors: allErrors.slice(0, 10),
+          stopped: true
+        };
+      }
+    }
+
     const batch = data.slice(i, i + batchSize);
     const processed = Math.min(i + batchSize, total);
     
@@ -113,6 +149,7 @@ export async function uploadReceivingWithProgress(
   lines: number;
   skipped: number;
   failed: number;
+  total: number;
   errors: string[];
   duplicateVouchers: any[];
   stopped?: boolean;
@@ -140,6 +177,7 @@ export async function uploadReceivingWithProgress(
           lines: totalLines,
           skipped: totalSkipped,
           failed: totalFailed,
+          total: vouchers.length,
           errors: allErrors.slice(0, 10),
           duplicateVouchers: allDuplicates.slice(0, 10),
           stopped: true
@@ -159,6 +197,7 @@ export async function uploadReceivingWithProgress(
           lines: totalLines,
           skipped: totalSkipped,
           failed: totalFailed,
+          total: vouchers.length,
           errors: allErrors.slice(0, 10),
           duplicateVouchers: allDuplicates.slice(0, 10),
           stopped: true
@@ -215,6 +254,7 @@ export async function uploadReceivingWithProgress(
     lines: totalLines,
     skipped: totalSkipped,
     failed: totalFailed,
+    total: vouchers.length,
     errors: allErrors.slice(0, 10), // Limit to first 10 errors
     duplicateVouchers: allDuplicates.slice(0, 10)
   };

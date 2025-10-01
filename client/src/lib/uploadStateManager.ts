@@ -23,10 +23,12 @@ interface UploadResult {
   success: boolean;
   uploaded: number;
   lines?: number;
-  skipped: number;
+  skipped?: number;
   failed: number;
+  total: number;
   errors: string[];
   duplicateVouchers?: any[];
+  stopped?: boolean;
 }
 
 const STORAGE_KEY = 'app_upload_state';

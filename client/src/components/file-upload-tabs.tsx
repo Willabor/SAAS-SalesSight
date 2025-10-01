@@ -1,20 +1,42 @@
-import { useState, useRef } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useRef, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Upload, FileText } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Upload, FileText, Pause, Play, StopCircle } from "lucide-react";
 import { processExcelFile, processWorkbook } from "@/lib/excel-processor";
-import { uploadData } from "@/lib/api";
+import { uploadDataWithProgress } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import {
+  executeTrackedUpload,
+  subscribeToUploadState,
+  pauseUpload,
+  resumeUpload,
+  stopUpload,
+  resetUploadControlFlags,
+  isUploadPaused,
+  isUploadStopped,
+  loadUploadState,
+  clearUploadState,
+} from "@/lib/uploadStateManager";
 
 export function FileUploadTabs() {
   const [activeTab, setActiveTab] = useState("item-list");
   const [uploadMode, setUploadMode] = useState("initial");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStats, setUploadStats] = useState<{
+    processed: number;
+    total: number;
+    uploaded: number;
+    failed: number;
+  } | null>(null);
   const [uploadResults, setUploadResults] = useState<{
     successful: number;
     failed: number;
@@ -27,27 +49,135 @@ export function FileUploadTabs() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const uploadMutation = useMutation({
-    mutationFn: async ({ data, type, mode, fileName }: {
-      data: any[];
-      type: 'item-list' | 'sales-transactions';
-      mode?: string;
-      fileName: string;
-    }) => {
-      return uploadData(type, data, mode, fileName);
-    },
-    onSuccess: (result) => {
+  // Restore upload state on mount and subscribe to changes
+  useEffect(() => {
+    const savedState = loadUploadState();
+
+    if (savedState && (savedState.uploadType === 'item-list' || savedState.uploadType === 'sales')) {
+      // If state shows upload completed or not actively uploading, clear it
+      if (!savedState.isUploading || savedState.currentStep === 'complete') {
+        clearUploadState();
+        return;
+      }
+
+      // Restore upload state
+      setIsUploading(savedState.isUploading);
+      setIsPaused(savedState.isPaused);
+      if (savedState.stats) {
+        setUploadStats(savedState.stats);
+        const percentage = Math.round((savedState.stats.processed / savedState.stats.total) * 100);
+        setUploadProgress(percentage);
+      }
+    }
+
+    // Subscribe to upload state changes
+    const unsubscribe = subscribeToUploadState((state) => {
+      if (state && (state.uploadType === 'item-list' || state.uploadType === 'sales')) {
+        setIsUploading(state.isUploading);
+        setIsPaused(state.isPaused);
+        if (state.stats) {
+          setUploadStats(state.stats);
+          const percentage = Math.round((state.stats.processed / state.stats.total) * 100);
+          setUploadProgress(percentage);
+        }
+
+        // If upload completed while we were on another page
+        if (!state.isUploading && state.currentStep === 'complete') {
+          // Will be cleared automatically after 3 seconds
+        }
+      } else if (state === null) {
+        // State was cleared - reset UI if still showing old progress
+        setIsUploading(false);
+        setUploadStats(null);
+        setIsPaused(false);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const handleFileSelect = async (file: File, type: 'item-list' | 'sales-transactions') => {
+    if (!file) return;
+
+    // Prevent double-click and concurrent uploads
+    if (isUploading || isProcessing) return;
+
+    // Reset control flags
+    resetUploadControlFlags();
+    setIsPaused(false);
+    setIsStopped(false);
+
+    setIsProcessing(true);
+    setUploadProgress(0);
+    setUploadResults(null);
+    setUploadStats(null);
+
+    try {
+      // Process Excel file
+      const workbook = await processExcelFile(file);
+      const data = processWorkbook(workbook, type);
+      
+      setIsProcessing(false);
+      setIsUploading(true);
+      setUploadProgress(0);
+
+      // Use executeTrackedUpload to persist state across navigation
+      const uploadType = type === 'sales-transactions' ? 'sales' : 'item-list';
+      const result = await executeTrackedUpload(
+        uploadType,
+        file.name,
+        (onProgress) => uploadDataWithProgress(
+          type,
+          data,
+          (progress) => {
+            const progressWithSkipped = { ...progress, skipped: 0 };
+            setUploadStats(progress);
+            onProgress(progressWithSkipped);
+            // Update upload progress percentage based on processed items
+            const percentage = Math.round((progress.processed / progress.total) * 100);
+            setUploadProgress(percentage);
+
+            // Invalidate stats every 10 batches to update the cards in real-time
+            if (progress.processed % 1000 === 0 || progress.processed === progress.total) {
+              queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
+            }
+          },
+          type === 'item-list' ? uploadMode : undefined,
+          file.name,
+          100, // batch size
+          () => ({ isPaused: isUploadPaused(), isStopped: isUploadStopped() })
+        ),
+        data.length,
+        'flatten'
+      );
+
+      // Check if upload was stopped
+      if (result.stopped) {
+        setIsStopped(true);
+        toast({
+          title: "Upload Stopped",
+          description: `Upload was stopped. ${result.uploaded} records were uploaded before stopping.`,
+        });
+        return;
+      }
+
+      // Update response state
       setUploadResults({
         successful: result.uploaded,
         failed: result.failed,
         total: result.total,
         errors: result.errors,
       });
+
+      // Invalidate queries to refresh stats
       queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
       queryClient.invalidateQueries({ queryKey: ["/api/upload-history"] });
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
-      
+
       if (result.failed > 0) {
         toast({
           title: "Upload completed with errors",
@@ -56,58 +186,53 @@ export function FileUploadTabs() {
         });
       } else {
         toast({
-          title: "Upload successful",
+          title: "Upload Successful",
           description: `${result.uploaded} records uploaded successfully`,
         });
       }
-    },
-    onError: (error) => {
-      toast({
-        title: "Upload failed",
-        description: error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive",
-      });
-    },
-  });
 
-  const handleFileSelect = async (file: File, type: 'item-list' | 'sales-transactions') => {
-    if (!file) return;
-
-    setIsProcessing(true);
-    setUploadProgress(0);
-    setUploadResults(null);
-
-    try {
-      const workbook = await processExcelFile(file);
-      const data = processWorkbook(workbook, type);
-      
-      setUploadProgress(50);
-      
-      await uploadMutation.mutateAsync({
-        data,
-        type,
-        mode: type === 'item-list' ? uploadMode : undefined,
-        fileName: file.name,
-      });
-      
-      setUploadProgress(100);
     } catch (error) {
       toast({
-        title: "File processing failed",
-        description: error instanceof Error ? error.message : "Failed to process Excel file",
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Failed to process or upload file",
         variant: "destructive",
       });
     } finally {
+      setIsUploading(false);
       setIsProcessing(false);
+      setIsPaused(false);
+      setTimeout(() => {
+        setUploadStats(null);
+      }, 3000); // Clear progress after 3 seconds
     }
   };
 
   const handleItemListUpload = () => {
-    itemListFileRef.current?.click();
+    if (!isUploading) {
+      itemListFileRef.current?.click();
+    }
   };
 
   const handleSalesUpload = () => {
-    salesFileRef.current?.click();
+    if (!isUploading) {
+      salesFileRef.current?.click();
+    }
+  };
+
+  const handlePauseUpload = () => {
+    pauseUpload();
+    setIsPaused(true);
+  };
+
+  const handleResumeUpload = () => {
+    resumeUpload();
+    setIsPaused(false);
+  };
+
+  const handleStopUpload = () => {
+    stopUpload();
+    setIsStopped(true);
+    setIsPaused(false);
   };
 
   return (
@@ -137,9 +262,9 @@ export function FileUploadTabs() {
             {/* Upload Mode Selection */}
             <div className="lg:col-span-1">
               <h3 className="text-lg font-semibold text-foreground mb-4">Upload Mode</h3>
-              <RadioGroup value={uploadMode} onValueChange={setUploadMode} className="space-y-3">
+              <RadioGroup value={uploadMode} onValueChange={setUploadMode} className="space-y-3" disabled={isUploading || isProcessing}>
                 <div className="flex items-center space-x-3">
-                  <RadioGroupItem value="initial" id="initial" />
+                  <RadioGroupItem value="initial" id="initial" disabled={isUploading || isProcessing} />
                   <Label htmlFor="initial" className="cursor-pointer">
                     <div>
                       <p className="font-medium text-foreground">Initial Upload</p>
@@ -148,7 +273,7 @@ export function FileUploadTabs() {
                   </Label>
                 </div>
                 <div className="flex items-center space-x-3">
-                  <RadioGroupItem value="weekly_update" id="weekly" />
+                  <RadioGroupItem value="weekly_update" id="weekly" disabled={isUploading || isProcessing} />
                   <Label htmlFor="weekly" className="cursor-pointer">
                     <div>
                       <p className="font-medium text-foreground">Weekly Update</p>
@@ -163,7 +288,9 @@ export function FileUploadTabs() {
             <div className="lg:col-span-2">
               <h3 className="text-lg font-semibold text-foreground mb-4">Select Excel File</h3>
               <div 
-                className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary transition-colors cursor-pointer"
+                className={`border-2 border-dashed border-border rounded-lg p-8 text-center transition-colors ${
+                  isUploading || isProcessing ? 'cursor-not-allowed opacity-60' : 'hover:border-primary cursor-pointer'
+                }`}
                 onClick={handleItemListUpload}
                 data-testid="dropzone-item-list"
               >
@@ -174,10 +301,10 @@ export function FileUploadTabs() {
                 <p className="text-muted-foreground mb-4">or click to browse your files</p>
                 <Button 
                   className="bg-primary text-primary-foreground hover:bg-primary/90"
-                  disabled={isProcessing}
+                  disabled={isProcessing || isUploading}
                   data-testid="button-choose-file-item-list"
                 >
-                  {isProcessing ? "Processing..." : "Choose File"}
+                  {isProcessing ? "Processing..." : isUploading ? "Uploading..." : "Choose File"}
                 </Button>
                 <p className="text-xs text-muted-foreground mt-3">Supports .xlsx, .xls files up to 50MB</p>
               </div>
@@ -191,7 +318,69 @@ export function FileUploadTabs() {
                 }}
                 className="hidden"
                 data-testid="input-file-item-list"
+                disabled={isUploading || isProcessing}
               />
+
+              {/* Upload Progress */}
+              {(isUploading || uploadStats) && (
+                <div className="mt-6 p-4 bg-muted rounded-lg space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-foreground">
+                      {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading..."}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {uploadStats ? `${uploadStats.processed.toLocaleString()} / ${uploadStats.total.toLocaleString()}` : ''}
+                    </p>
+                  </div>
+                  <Progress value={uploadProgress} className="h-2" data-testid="progress-item-list" />
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{uploadProgress}% complete</span>
+                    {uploadStats && (
+                      <span>
+                        ✓ {uploadStats.uploaded.toLocaleString()} uploaded
+                        {uploadStats.failed > 0 && ` • ✗ ${uploadStats.failed.toLocaleString()} failed`}
+                      </span>
+                    )}
+                  </div>
+                  {isUploading && !isStopped && (
+                    <div className="flex gap-2">
+                      {isPaused ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleResumeUpload}
+                          className="flex items-center gap-2"
+                          data-testid="button-resume-item-list"
+                        >
+                          <Play className="w-4 h-4" />
+                          Resume
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handlePauseUpload}
+                          className="flex items-center gap-2"
+                          data-testid="button-pause-item-list"
+                        >
+                          <Pause className="w-4 h-4" />
+                          Pause
+                        </Button>
+                      )}
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleStopUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-stop-item-list"
+                      >
+                        <StopCircle className="w-4 h-4" />
+                        Stop
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </TabsContent>
@@ -220,7 +409,9 @@ export function FileUploadTabs() {
             <div>
               <h3 className="text-lg font-semibold text-foreground mb-4">Select Excel File</h3>
               <div 
-                className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-primary transition-colors cursor-pointer"
+                className={`border-2 border-dashed border-border rounded-lg p-6 text-center transition-colors ${
+                  isUploading || isProcessing ? 'cursor-not-allowed opacity-60' : 'hover:border-primary cursor-pointer'
+                }`}
                 onClick={handleSalesUpload}
                 data-testid="dropzone-sales-transactions"
               >
@@ -231,10 +422,10 @@ export function FileUploadTabs() {
                 <p className="text-sm text-muted-foreground mb-3">Drop file or click to browse</p>
                 <Button 
                   className="bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                  disabled={isProcessing}
+                  disabled={isProcessing || isUploading}
                   data-testid="button-choose-file-sales"
                 >
-                  {isProcessing ? "Processing..." : "Choose File"}
+                  {isProcessing ? "Processing..." : isUploading ? "Uploading..." : "Choose File"}
                 </Button>
               </div>
               <Input
@@ -247,7 +438,69 @@ export function FileUploadTabs() {
                 }}
                 className="hidden"
                 data-testid="input-file-sales"
+                disabled={isUploading || isProcessing}
               />
+
+              {/* Upload Progress */}
+              {(isUploading || uploadStats) && (
+                <div className="mt-6 p-4 bg-muted rounded-lg space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-foreground">
+                      {isStopped ? "Upload Stopped" : isPaused ? "Upload Paused" : "Uploading..."}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {uploadStats ? `${uploadStats.processed.toLocaleString()} / ${uploadStats.total.toLocaleString()}` : ''}
+                    </p>
+                  </div>
+                  <Progress value={uploadProgress} className="h-2" data-testid="progress-sales" />
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{uploadProgress}% complete</span>
+                    {uploadStats && (
+                      <span>
+                        ✓ {uploadStats.uploaded.toLocaleString()} uploaded
+                        {uploadStats.failed > 0 && ` • ✗ ${uploadStats.failed.toLocaleString()} failed`}
+                      </span>
+                    )}
+                  </div>
+                  {isUploading && !isStopped && (
+                    <div className="flex gap-2">
+                      {isPaused ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleResumeUpload}
+                          className="flex items-center gap-2"
+                          data-testid="button-resume-sales"
+                        >
+                          <Play className="w-4 h-4" />
+                          Resume
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handlePauseUpload}
+                          className="flex items-center gap-2"
+                          data-testid="button-pause-sales"
+                        >
+                          <Pause className="w-4 h-4" />
+                          Pause
+                        </Button>
+                      )}
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleStopUpload}
+                        className="flex items-center gap-2"
+                        data-testid="button-stop-sales"
+                      >
+                        <StopCircle className="w-4 h-4" />
+                        Stop
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </TabsContent>
