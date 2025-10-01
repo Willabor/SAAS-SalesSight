@@ -24,6 +24,8 @@ import {
   BarChart3,
   DollarSign,
   Download,
+  ArrowRightLeft,
+  ShoppingCart,
 } from "lucide-react";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
 import { InventorySettingsDialog } from "@/components/inventory-settings-dialog";
@@ -120,6 +122,37 @@ interface ProductSegmentation {
   };
 }
 
+interface TransferRecommendation {
+  styleNumber: string;
+  itemName: string;
+  category: string | null;
+  fromStore: string;
+  toStore: string;
+  fromStoreQty: number;
+  toStoreQty: number;
+  fromStoreDailySales: number;
+  toStoreDailySales: number;
+  recommendedQty: number;
+  priority: string;
+  avgMarginPercent: number;
+}
+
+interface RestockingRecommendation {
+  styleNumber: string;
+  itemName: string;
+  category: string | null;
+  vendorName: string | null;
+  totalActiveQty: number;
+  avgDailySales: number;
+  daysOfSupply: number;
+  classification: string;
+  lastReceived: string | null;
+  daysSinceLastReceive: number | null;
+  avgMarginPercent: number;
+  recommendedOrderQty: number;
+  priority: string;
+}
+
 export default function InventoryTurnoverDashboard() {
   const [settings, setSettings] = useState<InventorySettings>(() => loadSettings());
   const [showClassificationBreakdown, setShowClassificationBreakdown] = useState(false);
@@ -184,6 +217,28 @@ export default function InventoryTurnoverDashboard() {
         credentials: 'include',
       });
       if (!response.ok) throw new Error("Failed to fetch product segmentation");
+      return response.json();
+    },
+  });
+
+  const { data: transferRecommendations, isLoading: transferLoading } = useQuery<TransferRecommendation[]>({
+    queryKey: ["inventory", "transfer-recommendations", 20],
+    queryFn: async () => {
+      const response = await fetch(`/api/inventory/transfer-recommendations?limit=20`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch transfer recommendations");
+      return response.json();
+    },
+  });
+
+  const { data: restockingRecommendations, isLoading: restockingLoading } = useQuery<RestockingRecommendation[]>({
+    queryKey: ["inventory", "restocking-recommendations", 20],
+    queryFn: async () => {
+      const response = await fetch(`/api/inventory/restocking-recommendations?limit=20`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch restocking recommendations");
       return response.json();
     },
   });
@@ -950,6 +1005,138 @@ export default function InventoryTurnoverDashboard() {
             </div>
           ) : (
             <p className="text-center text-muted-foreground py-8">No stock issues detected</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Transfer Recommendations */}
+      <Card data-testid="card-transfer-recommendations">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ArrowRightLeft className="w-5 h-5 text-blue-600" />
+            <div>
+              <CardTitle>Transfer Recommendations</CardTitle>
+              <CardDescription>
+                Move inventory from slow stores to fast-selling stores (showing top 20)
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {transferLoading ? (
+            <p className="text-center text-muted-foreground py-8">Loading transfer recommendations...</p>
+          ) : transferRecommendations && transferRecommendations.length > 0 ? (
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Style #</TableHead>
+                    <TableHead>Item Name</TableHead>
+                    <TableHead>From Store</TableHead>
+                    <TableHead>To Store</TableHead>
+                    <TableHead className="text-right">Transfer Qty</TableHead>
+                    <TableHead className="text-right">From Stock</TableHead>
+                    <TableHead className="text-right">To Stock</TableHead>
+                    <TableHead className="text-right">From Sales/Day</TableHead>
+                    <TableHead className="text-right">To Sales/Day</TableHead>
+                    <TableHead>Priority</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {transferRecommendations.map((item, index) => (
+                    <TableRow key={`${item.styleNumber}-${item.fromStore}-${item.toStore}-${index}`} data-testid={`row-transfer-${index}`}>
+                      <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
+                      <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="font-mono">{item.fromStore}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="font-mono bg-blue-50">{item.toStore}</Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold">{formatNumber(item.recommendedQty)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(item.fromStoreQty)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(item.toStoreQty)}</TableCell>
+                      <TableCell className="text-right">{item.fromStoreDailySales.toFixed(2)}</TableCell>
+                      <TableCell className="text-right text-blue-600 font-semibold">{item.toStoreDailySales.toFixed(2)}</TableCell>
+                      <TableCell>
+                        <Badge variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}>
+                          {item.priority}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-center text-muted-foreground py-8">No transfer opportunities found</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Restocking Recommendations */}
+      <Card data-testid="card-restocking-recommendations">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ShoppingCart className="w-5 h-5 text-green-600" />
+            <div>
+              <CardTitle>Restocking Recommendations</CardTitle>
+              <CardDescription>
+                Core items approaching stockout or with low days of supply (showing top 20)
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {restockingLoading ? (
+            <p className="text-center text-muted-foreground py-8">Loading restocking recommendations...</p>
+          ) : restockingRecommendations && restockingRecommendations.length > 0 ? (
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Style #</TableHead>
+                    <TableHead>Item Name</TableHead>
+                    <TableHead>Vendor</TableHead>
+                    <TableHead>Classification</TableHead>
+                    <TableHead className="text-right">Current Stock</TableHead>
+                    <TableHead className="text-right">Avg Daily Sales</TableHead>
+                    <TableHead className="text-right">Days of Supply</TableHead>
+                    <TableHead className="text-right">Suggested Order Qty</TableHead>
+                    <TableHead className="text-right">Margin %</TableHead>
+                    <TableHead>Priority</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {restockingRecommendations.map((item, index) => (
+                    <TableRow key={`${item.styleNumber}-${index}`} data-testid={`row-restocking-${index}`}>
+                      <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
+                      <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
+                      <TableCell className="max-w-xs truncate">{item.vendorName || 'Unknown'}</TableCell>
+                      <TableCell>{getClassificationBadge(item.classification)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(item.totalActiveQty)}</TableCell>
+                      <TableCell className="text-right">{item.avgDailySales.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">
+                        <span className={item.daysOfSupply < 7 ? 'text-red-600 font-semibold' : ''}>
+                          {item.daysOfSupply < 999 ? item.daysOfSupply.toFixed(0) : '999+'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold text-green-600">
+                        {formatNumber(item.recommendedOrderQty)}
+                      </TableCell>
+                      <TableCell className="text-right">{item.avgMarginPercent.toFixed(1)}%</TableCell>
+                      <TableCell>
+                        <Badge variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}>
+                          {item.priority}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-center text-muted-foreground py-8">No restocking needed at this time</p>
           )}
         </CardContent>
       </Card>
