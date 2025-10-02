@@ -158,6 +158,7 @@ interface MLDataFilters {
   minPrice: number;
   maxPrice: number;
   minInventory: number;
+  maxInventory: number;
   excludeZeroInventory: boolean;
 }
 
@@ -191,6 +192,7 @@ const defaultMLSettings: MLSettings = {
     minPrice: 0,
     maxPrice: 99999,
     minInventory: 1,
+    maxInventory: 99999,
     excludeZeroInventory: true,
   },
 };
@@ -944,7 +946,133 @@ export default function GoogleMarketingPage() {
                           </div>
                         )}
 
-                        {/* Inventory Filter */}
+                        {/* Gender/Demographics Filters */}
+                        {filterOptions?.genders && filterOptions.genders.length > 0 && (
+                          <div className="space-y-2">
+                            <Label>Gender/Demographics</Label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {filterOptions.genders.map((gender) => (
+                                <div key={gender} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`gender-${gender}`}
+                                    checked={
+                                      mlSettings.filters.includedGenders.length === 0 ||
+                                      mlSettings.filters.includedGenders.includes(gender)
+                                    }
+                                    onCheckedChange={(checked) => {
+                                      if (mlSettings.filters.includedGenders.length === 0) {
+                                        // First unchecked - select all except this one
+                                        const allExceptThis = filterOptions.genders.filter(g => g !== gender);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, includedGenders: allExceptThis }
+                                        });
+                                      } else {
+                                        const genders = checked
+                                          ? [...mlSettings.filters.includedGenders, gender]
+                                          : mlSettings.filters.includedGenders.filter(g => g !== gender);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, includedGenders: genders }
+                                        });
+                                      }
+                                    }}
+                                  />
+                                  <Label htmlFor={`gender-${gender}`} className="cursor-pointer font-normal">
+                                    {gender}
+                                  </Label>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {mlSettings.filters.includedGenders.length === 0
+                                ? 'All genders selected'
+                                : `${mlSettings.filters.includedGenders.length} of ${filterOptions.genders.length} selected`}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Price Range Filters */}
+                        <div className="space-y-4">
+                          <h4 className="font-medium text-sm">Price Range Filters</h4>
+
+                          <div className="space-y-2">
+                            <Label>Selling Price Range</Label>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                <Label htmlFor="min-price" className="text-xs text-muted-foreground">Min ($)</Label>
+                                <Input
+                                  id="min-price"
+                                  type="number"
+                                  min="0"
+                                  value={mlSettings.filters.minPrice}
+                                  onChange={(e) => setMLSettings({
+                                    ...mlSettings,
+                                    filters: { ...mlSettings.filters, minPrice: parseFloat(e.target.value) || 0 }
+                                  })}
+                                  className="w-full"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label htmlFor="max-price" className="text-xs text-muted-foreground">Max ($)</Label>
+                                <Input
+                                  id="max-price"
+                                  type="number"
+                                  min="0"
+                                  value={mlSettings.filters.maxPrice}
+                                  onChange={(e) => setMLSettings({
+                                    ...mlSettings,
+                                    filters: { ...mlSettings.filters, maxPrice: parseFloat(e.target.value) || 99999 }
+                                  })}
+                                  className="w-full"
+                                />
+                              </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Filter products by selling price range ($0-$99,999)
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Inventory Threshold Filters */}
+                        <div className="space-y-2">
+                          <Label>Inventory Thresholds</Label>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <Label htmlFor="min-inventory" className="text-xs text-muted-foreground">Min Qty</Label>
+                              <Input
+                                id="min-inventory"
+                                type="number"
+                                min="0"
+                                value={mlSettings.filters.minInventory}
+                                onChange={(e) => setMLSettings({
+                                  ...mlSettings,
+                                  filters: { ...mlSettings.filters, minInventory: parseInt(e.target.value) || 0 }
+                                })}
+                                className="w-full"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor="max-inventory" className="text-xs text-muted-foreground">Max Qty</Label>
+                              <Input
+                                id="max-inventory"
+                                type="number"
+                                min="0"
+                                value={mlSettings.filters.maxInventory}
+                                onChange={(e) => setMLSettings({
+                                  ...mlSettings,
+                                  filters: { ...mlSettings.filters, maxInventory: parseInt(e.target.value) || 99999 }
+                                })}
+                                className="w-full"
+                              />
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Include products with inventory between min and max units
+                          </p>
+                        </div>
+
+                        {/* Exclude Zero Inventory */}
                         <div className="space-y-2">
                           <div className="flex items-center space-x-2">
                             <Checkbox
