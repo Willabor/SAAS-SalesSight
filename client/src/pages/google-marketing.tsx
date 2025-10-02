@@ -291,14 +291,19 @@ export default function GoogleMarketingPage() {
   const handleRetrainModel = async () => {
     setIsTraining(true);
     try {
+      console.log('Training with settings:', mlSettings);
       const response = await fetch('/api/ml/train-segmentation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mlSettings),
       });
 
+      console.log('Training response status:', response.status);
+
       if (!response.ok) {
-        throw new Error('Training failed');
+        const errorText = await response.text();
+        console.error('Training failed response:', errorText);
+        throw new Error(`Training failed with status ${response.status}: ${errorText.substring(0, 200)}`);
       }
 
       const result = await response.json();
@@ -309,7 +314,8 @@ export default function GoogleMarketingPage() {
       alert(`Model retrained successfully!\nVersion: ${result.model_version}\nAccuracy: ${(result.test_accuracy * 100).toFixed(2)}%`);
       setSettingsOpen(false);
     } catch (error) {
-      alert('Failed to retrain model. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to retrain model: ${errorMessage}`);
       console.error('Training error:', error);
     } finally {
       setIsTraining(false);
