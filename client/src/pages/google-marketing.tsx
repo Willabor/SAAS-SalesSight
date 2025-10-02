@@ -239,8 +239,8 @@ const ML_FEATURES = {
     { id: 'margin_to_price_ratio', name: 'Margin to Price Ratio', description: 'Profitability ratio' },
     { id: 'turnover_rate', name: 'Turnover Rate', description: 'How quickly inventory sells' },
     { id: 'is_dead_stock', name: 'Is Dead Stock', description: 'No sales in 180+ days' },
-    { id: 'is_new_arrival', name: 'Is New Arrival', description: `Recently received (<${mlSettings.newArrivalsDays} days)` },
-    { id: 'is_high_frequency', name: 'Is High Frequency', description: `Core product (${mlSettings.coreHighThreshold}+ receives)` },
+    { id: 'is_new_arrival', name: 'Is New Arrival', description: 'Recently received inventory' },
+    { id: 'is_high_frequency', name: 'Is High Frequency', description: 'Core high-frequency product' },
   ],
   receiving: [
     { id: 'receiving_frequency', name: 'Receiving Frequency', description: 'Restock rate (voucher count)' },
