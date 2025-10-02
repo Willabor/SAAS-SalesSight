@@ -17,7 +17,10 @@ import {
   type ReceivingVoucher,
   type InsertReceivingVoucher,
   type ReceivingLine,
-  type InsertReceivingLine
+  type InsertReceivingLine,
+  mlSettingsLog,
+  type MLSettingsLog,
+  type InsertMLSettingsLog
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, asc, sql, count, sum, ilike, or, and, gte } from "drizzle-orm";
@@ -302,6 +305,10 @@ export interface IStorage {
       clearanceCandidates: Array<any>;
     };
   }>;
+
+  // ML Settings Log operations
+  createMLSettingsLog(log: InsertMLSettingsLog): Promise<MLSettingsLog>;
+  getMLSettingsLogs(limit?: number): Promise<MLSettingsLog[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2578,6 +2585,21 @@ export class DatabaseStorage implements IStorage {
           .sort((a, b) => b.inventoryValue - a.inventoryValue),
       },
     };
+  }
+
+  // ML Settings Log operations
+  async createMLSettingsLog(log: InsertMLSettingsLog): Promise<MLSettingsLog> {
+    const [result] = await db.insert(mlSettingsLog).values(log).returning();
+    return result;
+  }
+
+  async getMLSettingsLogs(limit: number = 50): Promise<MLSettingsLog[]> {
+    const logs = await db
+      .select()
+      .from(mlSettingsLog)
+      .orderBy(desc(mlSettingsLog.createdAt))
+      .limit(limit);
+    return logs;
   }
 }
 

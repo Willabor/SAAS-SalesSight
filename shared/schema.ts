@@ -277,3 +277,5 @@ export type MlModel = typeof mlModels.$inferSelect;
 export type InsertMlModel = z.infer<typeof insertMlModelSchema>;
 export type MlFeedback = typeof mlFeedback.$inferSelect;
 export type InsertMlFeedback = z.infer<typeof insertMlFeedbackSchema>;
+export type MLSettingsLog = typeof mlSettingsLog.$inferSelect;
+export type InsertMLSettingsLog = z.infer<typeof insertMlSettingsLogSchema>;

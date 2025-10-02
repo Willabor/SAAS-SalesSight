@@ -1115,6 +1115,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           trainingDurationMs: trainingDuration,
         };
 
+        // Save to database
+        await storage.createMLSettingsLog(logEntry);
+
         console.log("📊 ML Settings Log:", {
           user: logEntry.userId,
           version: logEntry.modelVersion,
@@ -1124,9 +1127,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           receivingHistory: logEntry.receivingHistoryEnabled,
           featureSelection: logEntry.featureSelectionEnabled,
         });
-
-        // TODO: Save to database when ml_settings_log table is created
-        // await db.insert(mlSettingsLog).values(logEntry);
       } catch (logError) {
         console.error("Failed to log ML settings:", logError);
         // Don't fail the request if logging fails
@@ -1140,13 +1140,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Log failed training attempt
       try {
         const user = (req.user as any);
+        const filters = req.body.filters || {};
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+        const failedLogEntry = {
+          userId: user?.claims?.sub || null,
+          modelVersion: null,
+          settingsSnapshot: JSON.stringify(req.body),
+          changedFields: null,
+          trainingDays: req.body.trainingDays,
+          newArrivalsDays: req.body.newArrivalsDays,
+          bestSellerThreshold: req.body.bestSellerThreshold,
+          coreHighThreshold: req.body.coreHighThreshold,
+          coreMediumThreshold: req.body.coreMediumThreshold,
+          coreLowThreshold: req.body.coreLowThreshold,
+          clearanceDays: req.body.clearanceDays,
+          filtersEnabled: Object.keys(filters).length > 0,
+          receivingHistoryEnabled: filters.includeReceivingHistory || false,
+          featureSelectionEnabled: (filters.selectedFeatures && filters.selectedFeatures.length > 0) || false,
+          testAccuracy: null,
+          trainingStatus: 'failed',
+          errorMessage: errorMessage,
+          trainingDurationMs: 0,
+        };
+
+        // Save failed attempt to database
+        await storage.createMLSettingsLog(failedLogEntry);
+
         console.log("❌ ML Training Failed:", {
           user: user?.claims?.sub || 'unknown',
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: errorMessage,
           settings: req.body,
         });
-        // TODO: Save failed attempt to database
       } catch (logError) {
+        console.error("Failed to log error:", logError);
         // Ignore logging errors
       }
 
@@ -1157,11 +1184,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get ML settings log (training history)
   app.get("/api/ml/settings-log", isAuthenticated, async (req, res) => {
     try {
-      // TODO: Query from ml_settings_log table when database is updated
-      // For now, return empty array
-      // const logs = await storage.getMLSettingsLog();
-      const logs: any[] = [];
-
+      const logs = await storage.getMLSettingsLogs(100);
       res.json(logs);
     } catch (error) {
       console.error("Error fetching ML settings log:", error);
