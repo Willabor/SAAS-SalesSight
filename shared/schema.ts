@@ -154,6 +154,30 @@ export const mlFeedback = pgTable("ml_feedback", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ML Settings Change Log
+export const mlSettingsLog = pgTable("ml_settings_log", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").references(() => users.id),
+  modelVersion: varchar("model_version"),
+  settingsSnapshot: jsonb("settings_snapshot").notNull(), // Complete settings object
+  changedFields: jsonb("changed_fields"), // Array of field names that changed
+  trainingDays: integer("training_days"),
+  newArrivalsDays: integer("new_arrivals_days"),
+  bestSellerThreshold: integer("best_seller_threshold"),
+  coreHighThreshold: integer("core_high_threshold"),
+  coreMediumThreshold: integer("core_medium_threshold"),
+  coreLowThreshold: integer("core_low_threshold"),
+  clearanceDays: integer("clearance_days"),
+  filtersEnabled: boolean("filters_enabled").default(false),
+  receivingHistoryEnabled: boolean("receiving_history_enabled").default(false),
+  featureSelectionEnabled: boolean("feature_selection_enabled").default(false),
+  testAccuracy: numeric("test_accuracy"),
+  trainingStatus: varchar("training_status"), // 'success', 'failed', 'in_progress'
+  errorMessage: text("error_message"),
+  trainingDurationMs: integer("training_duration_ms"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 export const itemListRelations = relations(itemList, ({ many }) => ({
   transactions: many(salesTransactions),
@@ -219,6 +243,11 @@ export const insertMlPredictionSchema = createInsertSchema(mlPredictions).omit({
 });
 
 export const insertMlModelSchema = createInsertSchema(mlModels).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMlSettingsLogSchema = createInsertSchema(mlSettingsLog).omit({
   id: true,
   createdAt: true,
 });

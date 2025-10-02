@@ -1077,6 +1077,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log("Training ML model with settings:", settings);
 
+      const startTime = Date.now();
       const response = await fetch(`${mlServiceUrl}/api/ml/train-segmentation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1088,10 +1089,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const result = await response.json();
+      const trainingDuration = Date.now() - startTime;
+
+      // Log ML settings change
+      try {
+        const user = (req.user as any);
+        const logEntry = {
+          userId: user?.claims?.sub || null,
+          modelVersion: result.model_version,
+          settingsSnapshot: JSON.stringify(req.body),
+          changedFields: null, // TODO: Track which fields changed from previous
+          trainingDays: req.body.trainingDays,
+          newArrivalsDays: req.body.newArrivalsDays,
+          bestSellerThreshold: req.body.bestSellerThreshold,
+          coreHighThreshold: req.body.coreHighThreshold,
+          coreMediumThreshold: req.body.coreMediumThreshold,
+          coreLowThreshold: req.body.coreLowThreshold,
+          clearanceDays: req.body.clearanceDays,
+          filtersEnabled: Object.keys(filters).length > 0,
+          receivingHistoryEnabled: filters.includeReceivingHistory || false,
+          featureSelectionEnabled: (filters.selectedFeatures && filters.selectedFeatures.length > 0) || false,
+          testAccuracy: result.test_accuracy ? result.test_accuracy.toString() : null,
+          trainingStatus: 'success',
+          errorMessage: null,
+          trainingDurationMs: trainingDuration,
+        };
+
+        console.log("📊 ML Settings Log:", {
+          user: logEntry.userId,
+          version: logEntry.modelVersion,
+          accuracy: logEntry.testAccuracy,
+          duration: `${trainingDuration}ms`,
+          filtersEnabled: logEntry.filtersEnabled,
+          receivingHistory: logEntry.receivingHistoryEnabled,
+          featureSelection: logEntry.featureSelectionEnabled,
+        });
+
+        // TODO: Save to database when ml_settings_log table is created
+        // await db.insert(mlSettingsLog).values(logEntry);
+      } catch (logError) {
+        console.error("Failed to log ML settings:", logError);
+        // Don't fail the request if logging fails
+      }
+
       res.json(result);
 
     } catch (error) {
       console.error("ML training failed:", error);
+
+      // Log failed training attempt
+      try {
+        const user = (req.user as any);
+        console.log("❌ ML Training Failed:", {
+          user: user?.claims?.sub || 'unknown',
+          error: error instanceof Error ? error.message : 'Unknown error',
+          settings: req.body,
+        });
+        // TODO: Save failed attempt to database
+      } catch (logError) {
+        // Ignore logging errors
+      }
+
       res.status(500).json({ error: "Failed to train ML model" });
     }
   });
