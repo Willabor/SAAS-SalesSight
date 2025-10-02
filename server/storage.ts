@@ -1520,14 +1520,15 @@ export class DatabaseStorage implements IStorage {
       WITH base_styles AS (
         SELECT
           il.style_number AS "styleNumber",
-          il.item_name AS "itemName",
-          il.category,
-          il.vendor_name AS "vendorName",
-          il.gender,
+          MAX(il.item_name) AS "itemName",
+          MAX(il.category) AS "category",
+          MAX(il.vendor_name) AS "vendorName",
+          MAX(il.gender) AS "gender",
           SUM(COALESCE(il.gm_qty, 0) + COALESCE(il.hm_qty, 0) + COALESCE(il.nm_qty, 0) + COALESCE(il.lm_qty, 0) + COALESCE(il.hq_qty, 0)) AS "totalActiveQty",
           SUM(COALESCE(il.mm_qty, 0) + COALESCE(il.pm_qty, 0)) AS "totalClosedStoresQty",
           AVG(CAST(COALESCE(il.order_cost, '0') AS NUMERIC)) AS "avgOrderCost",
           AVG(CAST(COALESCE(il.selling_price, '0') AS NUMERIC)) AS "avgSellingPrice",
+          SUM((COALESCE(il.gm_qty, 0) + COALESCE(il.hm_qty, 0) + COALESCE(il.nm_qty, 0) + COALESCE(il.lm_qty, 0) + COALESCE(il.hq_qty, 0)) * CAST(COALESCE(il.order_cost, '0') AS NUMERIC)) AS "inventoryValue",
           MIN(il.creation_date::date) AS "creationDate"
         FROM item_list il
         WHERE il.style_number IS NOT NULL 
@@ -1547,12 +1548,11 @@ export class DatabaseStorage implements IStorage {
               AND LOWER(il.item_name) NOT LIKE '%online discount taken%'
             )
           )
-        GROUP BY il.style_number, il.item_name, il.category, il.vendor_name, il.gender
+        GROUP BY il.style_number
       ),
       receiving_counts AS (
         SELECT 
           il.style_number AS "styleNumber",
-          il.item_name AS "itemName",
           COUNT(DISTINCT rv.id) AS "receiveCount",
           SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (6, 7, 8) THEN 1 ELSE 0 END) AS "summerReceives",
           SUM(CASE WHEN EXTRACT(MONTH FROM rv.date) IN (12, 1, 2) THEN 1 ELSE 0 END) AS "winterReceives",
@@ -1564,7 +1564,7 @@ export class DatabaseStorage implements IStorage {
         JOIN receiving_vouchers rv ON rl.voucher_id = rv.id
         JOIN item_list il ON rl.item_number = il.item_number
         WHERE il.style_number IS NOT NULL AND il.style_number <> ''
-        GROUP BY il.style_number, il.item_name
+        GROUP BY il.style_number
       ),
       sales_metrics AS (
         SELECT
@@ -1594,7 +1594,7 @@ export class DatabaseStorage implements IStorage {
           WHEN bs."avgSellingPrice" > 0 THEN ROUND(((bs."avgSellingPrice" - bs."avgOrderCost") / NULLIF(bs."avgSellingPrice", 0)) * 100, 2)
           ELSE 0
         END AS "avgMarginPercent",
-        (bs."totalActiveQty" * bs."avgOrderCost") AS "inventoryValue",
+        bs."inventoryValue",
         COALESCE(rc."lastReceivedDate", bs."creationDate") AS "lastReceived",
         COALESCE(bs."creationDate", rc."firstReceivedDate") AS "firstReceived",
         CASE 
@@ -1619,7 +1619,7 @@ export class DatabaseStorage implements IStorage {
         COALESCE(sm."totalUnits", 0) AS "totalUnits",
         CASE WHEN bs."creationDate" IS NULL THEN true ELSE false END AS "usedReceivingFallback"
       FROM base_styles bs
-      LEFT JOIN receiving_counts rc ON bs."styleNumber" = rc."styleNumber" AND bs."itemName" = rc."itemName"
+      LEFT JOIN receiving_counts rc ON bs."styleNumber" = rc."styleNumber"
       LEFT JOIN sales_metrics sm ON bs."styleNumber" = sm."styleNumber"
     `);
 
