@@ -11,6 +11,7 @@ import SalesTransactionsPage from "@/pages/sales-transactions";
 import SalesInsightsPage from "@/pages/sales-insights";
 import ReceivingHistoryPage from "@/pages/receiving-history";
 import VoucherViewerPage from "@/pages/voucher-viewer";
+import GoogleMarketingPage from "@/pages/google-marketing";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -26,6 +27,7 @@ function Router() {
           <Route path="/item-list" component={ItemListPage} />
           <Route path="/sales-transactions" component={SalesTransactionsPage} />
           <Route path="/sales-insights" component={SalesInsightsPage} />
+          <Route path="/google-marketing" component={GoogleMarketingPage} />
           <Route path="/receiving" component={ReceivingHistoryPage} />
           <Route path="/receiving/viewer" component={VoucherViewerPage} />
         </>

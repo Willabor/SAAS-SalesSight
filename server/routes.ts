@@ -986,6 +986,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ML-powered product segmentation endpoint
+  app.get("/api/inventory/ml-product-segmentation", isAuthenticated, async (req, res) => {
+    try {
+      const mlServiceUrl = process.env.ML_SERVICE_URL;
+
+      if (!mlServiceUrl) {
+        console.log("ML_SERVICE_URL not configured, falling back to rule-based segmentation");
+        const ruleBasedReport = await storage.getProductSegmentationReport();
+        return res.json(ruleBasedReport);
+      }
+
+      // Fetch ML-powered segmentation from Python service
+      const response = await fetch(`${mlServiceUrl}/api/ml/product-segmentation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          // Could include parameters here if needed
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`ML service responded with status ${response.status}`);
+      }
+
+      const mlSegmentation = await response.json();
+      res.json(mlSegmentation);
+
+    } catch (error) {
+      console.error("ML segmentation failed, falling back to rule-based:", error);
+      // Fallback to rule-based segmentation
+      try {
+        const ruleBasedReport = await storage.getProductSegmentationReport();
+        res.json(ruleBasedReport);
+      } catch (fallbackError) {
+        console.error("Error in fallback segmentation:", fallbackError);
+        res.status(500).json({ error: "Failed to fetch product segmentation" });
+      }
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
