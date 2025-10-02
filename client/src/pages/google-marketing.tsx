@@ -124,6 +124,15 @@ interface MLSegmentation {
     analysisDateRange: string;
     modelVersion: string;
     mlPowered: boolean;
+    modelSettings?: {
+      salesPeriodDays: number;
+      newArrivalsDays: number;
+      bestSellerThreshold: number;
+      coreHighThreshold: number;
+      coreMediumThreshold: number;
+      coreLowThreshold: number;
+      clearanceDays: number;
+    };
   };
   segments: {
     bestSellers: EnrichedStyleData[];
@@ -230,8 +239,8 @@ const ML_FEATURES = {
     { id: 'margin_to_price_ratio', name: 'Margin to Price Ratio', description: 'Profitability ratio' },
     { id: 'turnover_rate', name: 'Turnover Rate', description: 'How quickly inventory sells' },
     { id: 'is_dead_stock', name: 'Is Dead Stock', description: 'No sales in 180+ days' },
-    { id: 'is_new_arrival', name: 'Is New Arrival', description: 'Recently received (<60 days)' },
-    { id: 'is_high_frequency', name: 'Is High Frequency', description: 'Core product (40+ receives)' },
+    { id: 'is_new_arrival', name: 'Is New Arrival', description: `Recently received (<${mlSettings.newArrivalsDays} days)` },
+    { id: 'is_high_frequency', name: 'Is High Frequency', description: `Core product (${mlSettings.coreHighThreshold}+ receives)` },
   ],
   receiving: [
     { id: 'receiving_frequency', name: 'Receiving Frequency', description: 'Restock rate (voucher count)' },
@@ -276,6 +285,29 @@ export default function GoogleMarketingPage() {
   const data = useMLSegmentation ? mlData : ruleBasedData;
   const isLoading = useMLSegmentation ? mlLoading : ruleLoading;
   const error = useMLSegmentation ? mlError : ruleError;
+
+  // Get model settings with fallbacks to defaults
+  const modelSettings = (mlData as MLSegmentation)?.metadata?.modelSettings || {
+    salesPeriodDays: 90,
+    newArrivalsDays: 60,
+    bestSellerThreshold: 50,
+    coreHighThreshold: 40,
+    coreMediumThreshold: 20,
+    coreLowThreshold: 6,
+    clearanceDays: 180
+  };
+
+  // Dynamic label helpers
+  const getCoreHighLabel = () => `${modelSettings.coreHighThreshold}+ orders`;
+  const getCoreMediumLabel = () => {
+    const max = modelSettings.coreHighThreshold - 1;
+    return `${modelSettings.coreMediumThreshold}-${max} orders`;
+  };
+  const getCoreLowLabel = () => {
+    const max = modelSettings.coreMediumThreshold - 1;
+    return `${modelSettings.coreLowThreshold}-${max} orders`;
+  };
+  const getNewArrivalsLabel = () => `Last ${modelSettings.newArrivalsDays} days`;
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -357,12 +389,12 @@ export default function GoogleMarketingPage() {
       { 'Metric': '', 'Value': '' },
       { 'Metric': 'Segment Breakdown', 'Value': '' },
       { 'Metric': 'Best Sellers (Priority 5)', 'Value': segments.bestSellers.length },
-      { 'Metric': 'Core Items - High (40+)', 'Value': segments.coreHighFrequency.length },
-      { 'Metric': 'Core Items - Medium (10-39)', 'Value': segments.coreMediumFrequency.length },
-      { 'Metric': 'Core Items - Low (6-9)', 'Value': segments.coreLowFrequency.length },
+      { 'Metric': `Core Items - High (${getCoreHighLabel()})`, 'Value': segments.coreHighFrequency.length },
+      { 'Metric': `Core Items - Medium (${getCoreMediumLabel()})`, 'Value': segments.coreMediumFrequency.length },
+      { 'Metric': `Core Items - Low (${getCoreLowLabel()})`, 'Value': segments.coreLowFrequency.length },
       { 'Metric': 'Non-Core Repeat (2-5)', 'Value': segments.nonCoreRepeat.length },
       { 'Metric': 'One-Time Purchase (1)', 'Value': segments.oneTimePurchase.length },
-      { 'Metric': 'New Arrivals (Last 60 days)', 'Value': segments.newArrivals.length },
+      { 'Metric': `New Arrivals (${getNewArrivalsLabel()})`, 'Value': segments.newArrivals.length },
       { 'Metric': 'Summer Seasonal', 'Value': segments.summerItems.length },
       { 'Metric': 'Winter Seasonal', 'Value': segments.winterItems.length },
       { 'Metric': 'Clearance Candidates', 'Value': segments.clearanceCandidates.length }
@@ -1685,7 +1717,7 @@ export default function GoogleMarketingPage() {
                     <Package className="w-5 h-5" />
                     Core High
                   </CardTitle>
-                  <Badge variant="secondary">40+ orders</Badge>
+                  <Badge variant="secondary">{getCoreHighLabel()}</Badge>
                 </div>
                 <CardDescription>High-frequency evergreen items</CardDescription>
               </CardHeader>
@@ -1705,7 +1737,7 @@ export default function GoogleMarketingPage() {
                     <Package className="w-5 h-5" />
                     Core Medium
                   </CardTitle>
-                  <Badge variant="secondary">10-39 orders</Badge>
+                  <Badge variant="secondary">{getCoreMediumLabel()}</Badge>
                 </div>
                 <CardDescription>Medium-frequency core items</CardDescription>
               </CardHeader>
@@ -1725,7 +1757,7 @@ export default function GoogleMarketingPage() {
                     <Package className="w-5 h-5" />
                     Core Low
                   </CardTitle>
-                  <Badge variant="secondary">6-9 orders</Badge>
+                  <Badge variant="secondary">{getCoreLowLabel()}</Badge>
                 </div>
                 <CardDescription>Low-frequency core items</CardDescription>
               </CardHeader>
@@ -1745,7 +1777,7 @@ export default function GoogleMarketingPage() {
                     <Sparkles className="w-5 h-5" />
                     New Arrivals
                   </CardTitle>
-                  <Badge variant="secondary">Last 60 days</Badge>
+                  <Badge variant="secondary">{getNewArrivalsLabel()}</Badge>
                 </div>
                 <CardDescription>Recently received inventory</CardDescription>
               </CardHeader>
