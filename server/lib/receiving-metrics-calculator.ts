@@ -40,11 +40,14 @@ export async function calculateMetricsForStyle(
 
   // Calculate unique months and years
   const uniqueMonths = new Set(
-    sortedHistory.map(h => `${h.receive_date.getFullYear()}-${h.receive_date.getMonth()}`)
+    sortedHistory.map(h => {
+      const date = new Date(h.receive_date);
+      return `${date.getFullYear()}-${date.getMonth()}`;
+    })
   ).size;
 
   const uniqueYears = new Set(
-    sortedHistory.map(h => h.receive_date.getFullYear())
+    sortedHistory.map(h => new Date(h.receive_date).getFullYear())
   ).size;
 
   // Calculate average days between receives
@@ -87,9 +90,9 @@ export async function calculateMetricsForStyle(
   return {
     styleNumber,
     itemNumber: firstReceive.item_number,
-    firstReceiveDate: firstReceive.receive_date.toISOString().split('T')[0],
-    lastReceiveDate: lastReceive.receive_date.toISOString().split('T')[0],
-    creationDate: creationDate?.toISOString().split('T')[0] || null,
+    firstReceiveDate: new Date(firstReceive.receive_date).toISOString().split('T')[0],
+    lastReceiveDate: new Date(lastReceive.receive_date).toISOString().split('T')[0],
+    creationDate: creationDate ? new Date(creationDate).toISOString().split('T')[0] : null,
     totalReceiveCount: totalReceives,
     uniqueReceiveMonths: uniqueMonths,
     uniqueReceiveYears: uniqueYears,

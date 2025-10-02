@@ -44,10 +44,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  Search, 
-  Trash2, 
-  DatabaseZap, 
+import {
+  Search,
+  Trash2,
+  DatabaseZap,
   Package,
   ChevronLeft,
   ChevronRight,
@@ -59,7 +59,9 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Settings,
 } from "lucide-react";
+import { useLocation } from "wouter";
 import { AppHeader } from "@/components/app-header";
 import type { ItemList } from "@shared/schema";
 
@@ -77,6 +79,7 @@ interface ColumnConfig {
 }
 
 export default function ItemListPage() {
+  const [, setLocation] = useLocation();
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -416,6 +419,15 @@ export default function ItemListPage() {
                 </CardDescription>
               </div>
               <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setLocation('/receiving-metrics-settings')}
+                  title="Receiving Metrics Settings"
+                >
+                  <Settings className="w-4 h-4" />
+                </Button>
+
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="outline" className="flex items-center gap-2" data-testid="button-columns">
