@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # Node.js Backend + React Frontend
+  node-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - ML_SERVICE_URL=http://ml-service:8000
+      - DATABASE_URL=${DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - REPL_ID=${REPL_ID}
+      - REPLIT_DOMAINS=${REPLIT_DOMAINS}
+      - ISSUER_URL=${ISSUER_URL}
+    depends_on:
+      - ml-service
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Python ML Service
+  ml-service:
+    build:
+      context: ./ml_service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - ML_SERVICE_PORT=8000
+    volumes:
+      # Persist trained models
+      - ml-models:/app/models/cache
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  ml-models:
+    driver: local

@@ -108,6 +108,52 @@ export const receivingLines = pgTable("receiving_lines", {
   uploadedAt: timestamp("uploaded_at").defaultNow(),
 });
 
+// ML Predictions table
+export const mlPredictions = pgTable("ml_predictions", {
+  id: serial("id").primaryKey(),
+  predictionType: varchar("prediction_type", { length: 50 }).notNull(),
+  styleNumber: varchar("style_number", { length: 100 }),
+  store: varchar("store", { length: 10 }),
+  predictionValue: numeric("prediction_value"),
+  confidenceScore: numeric("confidence_score"),
+  featuresSnapshot: jsonb("features_snapshot"),
+  modelVersion: varchar("model_version", { length: 20 }),
+  createdAt: timestamp("created_at").defaultNow(),
+  validUntil: timestamp("valid_until"),
+}, (table) => [
+  index("idx_prediction_type").on(table.predictionType),
+  index("idx_style_store").on(table.styleNumber, table.store),
+  index("idx_valid_until").on(table.validUntil),
+]);
+
+// ML Models metadata table
+export const mlModels = pgTable("ml_models", {
+  id: serial("id").primaryKey(),
+  modelType: varchar("model_type", { length: 50 }).notNull(),
+  modelVersion: varchar("model_version", { length: 20 }).notNull(),
+  trainingDate: timestamp("training_date").notNull(),
+  trainingSamples: integer("training_samples"),
+  accuracyScore: numeric("accuracy_score"),
+  precisionScore: numeric("precision_score"),
+  recallScore: numeric("recall_score"),
+  rocAucScore: numeric("roc_auc_score"),
+  modelParams: jsonb("model_params"),
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique().on(table.modelType, table.modelVersion),
+]);
+
+// ML Feedback table (for future enhancement)
+export const mlFeedback = pgTable("ml_feedback", {
+  id: serial("id").primaryKey(),
+  predictionId: integer("prediction_id").references(() => mlPredictions.id),
+  actualOutcome: numeric("actual_outcome"),
+  predictionAccuracy: numeric("prediction_accuracy"),
+  userFeedback: text("user_feedback"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 export const itemListRelations = relations(itemList, ({ many }) => ({
   transactions: many(salesTransactions),
@@ -167,6 +213,21 @@ export const insertReceivingLineSchema = createInsertSchema(receivingLines).omit
   uploadedAt: true,
 });
 
+export const insertMlPredictionSchema = createInsertSchema(mlPredictions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMlModelSchema = createInsertSchema(mlModels).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMlFeedbackSchema = createInsertSchema(mlFeedback).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type UpsertUser = typeof users.$inferInsert;
@@ -181,3 +242,9 @@ export type ReceivingVoucher = typeof receivingVouchers.$inferSelect;
 export type InsertReceivingVoucher = z.infer<typeof insertReceivingVoucherSchema>;
 export type ReceivingLine = typeof receivingLines.$inferSelect;
 export type InsertReceivingLine = z.infer<typeof insertReceivingLineSchema>;
+export type MlPrediction = typeof mlPredictions.$inferSelect;
+export type InsertMlPrediction = z.infer<typeof insertMlPredictionSchema>;
+export type MlModel = typeof mlModels.$inferSelect;
+export type InsertMlModel = z.infer<typeof insertMlModelSchema>;
+export type MlFeedback = typeof mlFeedback.$inferSelect;
+export type InsertMlFeedback = z.infer<typeof insertMlFeedbackSchema>;

@@ -9,6 +9,8 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -136,6 +138,11 @@ interface TransferRecommendation {
   recommendedQty: number;
   priority: string;
   avgMarginPercent: number;
+  mlPowered?: boolean;
+  successProbability?: number;
+  mlPriorityScore?: number;
+  confidenceLevel?: 'High' | 'Medium' | 'Low';
+  modelVersion?: string;
 }
 
 interface RestockingRecommendation {
@@ -183,6 +190,7 @@ export default function InventoryTurnoverDashboard() {
   const [filterSeasonalPattern, setFilterSeasonalPattern] = useState<string>('all');
   const [filterStockStatus, setFilterStockStatus] = useState<string>('all');
   const [excludeSeasonalHold, setExcludeSeasonalHold] = useState(true);
+  const [useMLPredictions, setUseMLPredictions] = useState(false);
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -245,9 +253,13 @@ export default function InventoryTurnoverDashboard() {
   });
 
   const { data: transferRecommendations, isLoading: transferLoading } = useQuery<TransferRecommendation[]>({
-    queryKey: ["inventory", "transfer-recommendations", 20],
+    queryKey: ["inventory", "transfer-recommendations", useMLPredictions, 20],
     queryFn: async () => {
-      const response = await fetch(`/api/inventory/transfer-recommendations?limit=20`, {
+      const endpoint = useMLPredictions
+        ? '/api/inventory/transfer-recommendations-ml'
+        : '/api/inventory/transfer-recommendations';
+
+      const response = await fetch(`${endpoint}?limit=20`, {
         credentials: 'include',
       });
       if (!response.ok) throw new Error("Failed to fetch transfer recommendations");
@@ -406,6 +418,95 @@ export default function InventoryTurnoverDashboard() {
     });
 
     exportToExcel(exportData, 'style-stock-analysis', 'Style Stock Analysis');
+  };
+
+  const handleExportTransferRecommendations = () => {
+    if (!transferRecommendations || transferRecommendations.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const fieldMapping: any = {
+      styleNumber: 'Style Number',
+      itemName: 'Item Name',
+      category: 'Category',
+      fromStore: 'From Store',
+      toStore: 'To Store',
+      fromStoreQty: 'From Store Qty',
+      toStoreQty: 'To Store Qty',
+      fromStoreDailySales: 'From Daily Sales',
+      toStoreDailySales: 'To Daily Sales',
+      recommendedQty: 'Recommended Transfer Qty',
+      avgMarginPercent: 'Margin %',
+      priority: 'Priority',
+    };
+
+    // Add ML fields if using ML predictions
+    if (useMLPredictions && transferRecommendations[0]?.mlPowered) {
+      fieldMapping.successProbability = 'Success Probability';
+      fieldMapping.confidenceLevel = 'Confidence Level';
+      fieldMapping.mlPriorityScore = 'ML Priority Score';
+      fieldMapping.modelVersion = 'Model Version';
+    }
+
+    const exportData = formatDataForExport(transferRecommendations, fieldMapping);
+    exportToExcel(exportData, 'transfer-recommendations', 'Transfer Recommendations');
+  };
+
+  const handleExportRestockingRecommendations = () => {
+    if (!restockingRecommendations || restockingRecommendations.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const exportData = formatDataForExport(restockingRecommendations, {
+      styleNumber: 'Style Number',
+      itemName: 'Item Name',
+      vendorName: 'Vendor',
+      category: 'Category',
+      classification: 'Classification',
+      totalActiveQty: 'Current Stock',
+      avgDailySales: 'Avg Daily Sales',
+      daysOfSupply: 'Days of Supply',
+      recommendedOrderQty: 'Suggested Order Qty',
+      avgMarginPercent: 'Margin %',
+      lastReceived: 'Last Received',
+      daysSinceLastReceive: 'Days Since Receive',
+      priority: 'Priority',
+    });
+
+    exportToExcel(exportData, 'restocking-recommendations', 'Restocking Recommendations');
+  };
+
+  const handleExportSaleRecommendations = () => {
+    if (!saleRecommendations || saleRecommendations.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    const exportData = formatDataForExport(saleRecommendations, {
+      styleNumber: 'Style Number',
+      itemName: 'Item Name',
+      category: 'Category',
+      vendorName: 'Vendor',
+      classification: 'Classification',
+      seasonalPattern: 'Seasonal Pattern',
+      totalActiveQty: 'Current Stock',
+      inventoryValue: 'Inventory Value',
+      avgCost: 'Avg Cost',
+      avgPrice: 'Current Price',
+      suggestedDiscountPercent: 'Discount %',
+      discountedPrice: 'Sale Price',
+      projectedRecovery: 'Projected Recovery',
+      avgMarginPercent: 'Margin %',
+      daysSinceLastSale: 'Days Since Last Sale',
+      daysSinceLastReceive: 'Days Since Receive',
+      unitsSold90d: 'Units Sold (90d)',
+      reason: 'Reason',
+      priority: 'Priority',
+    });
+
+    exportToExcel(exportData, 'sale-recommendations', 'Sale Recommendations');
   };
 
   const handleExportAll = () => {
@@ -1046,13 +1147,47 @@ export default function InventoryTurnoverDashboard() {
       {/* Transfer Recommendations */}
       <Card data-testid="card-transfer-recommendations">
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <ArrowRightLeft className="w-5 h-5 text-blue-600" />
-            <div>
-              <CardTitle>Transfer Recommendations</CardTitle>
-              <CardDescription>
-                Move inventory from slow stores to fast-selling stores (showing top 20)
-              </CardDescription>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ArrowRightLeft className="w-5 h-5 text-blue-600" />
+              <div>
+                <div className="flex items-center gap-2">
+                  <CardTitle>Transfer Recommendations</CardTitle>
+                  {useMLPredictions && transferRecommendations?.[0]?.mlPowered && (
+                    <Badge variant="default" className="bg-purple-600">
+                      🤖 AI-Powered
+                    </Badge>
+                  )}
+                </div>
+                <CardDescription>
+                  {useMLPredictions
+                    ? "Machine learning predictions based on 90 days of sales patterns"
+                    : "Move inventory from slow stores to fast-selling stores (showing top 20)"}
+                </CardDescription>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              {/* ML Toggle Switch */}
+              <div className="flex items-center gap-2">
+                <Label htmlFor="ml-toggle" className="text-sm">Use AI</Label>
+                <Switch
+                  id="ml-toggle"
+                  checked={useMLPredictions}
+                  onCheckedChange={setUseMLPredictions}
+                />
+              </div>
+
+              <Button
+                onClick={handleExportTransferRecommendations}
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                data-testid="button-export-transfer-recommendations"
+              >
+                <Download className="w-3 h-3" />
+                Export
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -1073,6 +1208,7 @@ export default function InventoryTurnoverDashboard() {
                     <TableHead className="text-right">To Stock</TableHead>
                     <TableHead className="text-right">From Sales/Day</TableHead>
                     <TableHead className="text-right">To Sales/Day</TableHead>
+                    {useMLPredictions && <TableHead className="text-right">Confidence</TableHead>}
                     <TableHead>Priority</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1092,6 +1228,28 @@ export default function InventoryTurnoverDashboard() {
                       <TableCell className="text-right">{formatNumber(item.toStoreQty)}</TableCell>
                       <TableCell className="text-right">{item.fromStoreDailySales.toFixed(2)}</TableCell>
                       <TableCell className="text-right text-blue-600 font-semibold">{item.toStoreDailySales.toFixed(2)}</TableCell>
+                      {useMLPredictions && (
+                        <TableCell className="text-right">
+                          {item.mlPowered && item.successProbability ? (
+                            <Badge
+                              variant={
+                                item.confidenceLevel === 'High' ? 'default' :
+                                item.confidenceLevel === 'Medium' ? 'secondary' :
+                                'outline'
+                              }
+                              className={
+                                item.confidenceLevel === 'High' ? 'bg-green-600' :
+                                item.confidenceLevel === 'Medium' ? 'bg-yellow-600' :
+                                'bg-gray-400'
+                              }
+                            >
+                              {(item.successProbability * 100).toFixed(0)}%
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">-</span>
+                          )}
+                        </TableCell>
+                      )}
                       <TableCell>
                         <Badge variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}>
                           {item.priority}
@@ -1111,14 +1269,26 @@ export default function InventoryTurnoverDashboard() {
       {/* Restocking Recommendations */}
       <Card data-testid="card-restocking-recommendations">
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <ShoppingCart className="w-5 h-5 text-green-600" />
-            <div>
-              <CardTitle>Restocking Recommendations</CardTitle>
-              <CardDescription>
-                Core items approaching stockout or with low days of supply (showing top 20)
-              </CardDescription>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShoppingCart className="w-5 h-5 text-green-600" />
+              <div>
+                <CardTitle>Restocking Recommendations</CardTitle>
+                <CardDescription>
+                  Core items approaching stockout or with low days of supply (showing top 20)
+                </CardDescription>
+              </div>
             </div>
+            <Button
+              onClick={handleExportRestockingRecommendations}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              data-testid="button-export-restocking-recommendations"
+            >
+              <Download className="w-3 h-3" />
+              Export
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -1178,14 +1348,26 @@ export default function InventoryTurnoverDashboard() {
       {/* Sale Recommendations */}
       <Card data-testid="card-sale-recommendations">
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <Tag className="w-5 h-5 text-orange-600" />
-            <div>
-              <CardTitle>Sale Recommendations</CardTitle>
-              <CardDescription>
-                Items recommended for markdown or clearance (showing top 20)
-              </CardDescription>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Tag className="w-5 h-5 text-orange-600" />
+              <div>
+                <CardTitle>Sale Recommendations</CardTitle>
+                <CardDescription>
+                  Items recommended for markdown or clearance (showing top 20)
+                </CardDescription>
+              </div>
             </div>
+            <Button
+              onClick={handleExportSaleRecommendations}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              data-testid="button-export-sale-recommendations"
+            >
+              <Download className="w-3 h-3" />
+              Export
+            </Button>
           </div>
         </CardHeader>
         <CardContent>

@@ -249,6 +249,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         uploaded,
+        skipped: 0, // Item list doesn't track skipped records
         failed,
         total: data.length,
         errors: errors.slice(0, 5), // Return first 5 errors
@@ -897,6 +898,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching transfer recommendations:", error);
       res.status(500).json({ error: "Failed to fetch transfer recommendations" });
+    }
+  });
+
+  app.get("/api/inventory/transfer-recommendations-ml", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      // Call Python ML service
+      const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+      const mlResponse = await fetch(`${mlServiceUrl}/api/ml/predict-transfers?limit=${limit}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (!mlResponse.ok) {
+        throw new Error(`ML service error: ${mlResponse.statusText}`);
+      }
+
+      const mlData = await mlResponse.json();
+
+      // Transform to match frontend interface
+      const recommendations = mlData.predictions.map((pred: any) => ({
+        styleNumber: pred.style_number,
+        itemName: pred.item_name,
+        category: pred.category,
+        fromStore: pred.from_store,
+        toStore: pred.to_store,
+        fromStoreQty: pred.from_store_qty,
+        toStoreQty: pred.to_store_qty,
+        fromStoreDailySales: pred.from_store_daily_sales,
+        toStoreDailySales: pred.to_store_daily_sales,
+        recommendedQty: pred.recommended_qty,
+        priority: pred.ml_priority,
+        avgMarginPercent: pred.margin_percent,
+
+        // ML-specific fields
+        mlPowered: true,
+        successProbability: pred.success_probability,
+        mlPriorityScore: pred.ml_priority_score,
+        confidenceLevel: pred.success_probability > 0.7 ? 'High' :
+                        pred.success_probability > 0.5 ? 'Medium' : 'Low',
+        modelVersion: pred.model_version
+      }));
+
+      res.json(recommendations);
+
+    } catch (error) {
+      console.error('ML prediction error:', error);
+
+      // Fallback to rule-based recommendations
+      const limit = parseInt(req.query.limit as string) || 20;
+      const fallback = await storage.getTransferRecommendations(limit);
+      res.json(fallback.map(item => ({ ...item, mlPowered: false })));
     }
   });
 

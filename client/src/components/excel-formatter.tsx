@@ -294,6 +294,12 @@ export function ExcelFormatter() {
             const percentage = Math.round((progress.uploaded / progress.total) * 100);
             setUploadProgress(percentage);
             setStatus(`Uploading to database: ${progress.processed} of ${progress.total} items processed (${progress.uploaded} uploaded, ${progress.failed} failed)`);
+
+            // Invalidate dashboard stats during upload for real-time updates
+            if (progress.processed % 500 === 0 || progress.processed === progress.total) {
+              queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
+            }
           },
           processingMode === 'item-list' ? uploadMode : undefined,
           file.name,

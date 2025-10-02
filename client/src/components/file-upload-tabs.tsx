@@ -140,8 +140,8 @@ export function FileUploadTabs() {
             const percentage = Math.round((progress.processed / progress.total) * 100);
             setUploadProgress(percentage);
 
-            // Invalidate stats every 10 batches to update the cards in real-time
-            if (progress.processed % 1000 === 0 || progress.processed === progress.total) {
+            // Invalidate dashboard stats during upload for real-time updates
+            if (progress.processed % 500 === 0 || progress.processed === progress.total) {
               queryClient.invalidateQueries({ queryKey: ["/api/stats/item-list"] });
               queryClient.invalidateQueries({ queryKey: ["/api/stats/sales"] });
             }

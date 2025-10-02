@@ -1,6 +1,6 @@
-modules = ["nodejs-20", "web", "postgresql-16"]
+modules = ["nodejs-20", "web", "postgresql-16", "python-3.11"]
 run = "npm run dev"
-hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
+hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist", "ml_service/venv", "ml_service/__pycache__"]
 
 [nix]
 channel = "stable-24_05"
@@ -34,8 +34,13 @@ externalPort = 4200
 localPort = 39603
 externalPort = 3001
 
+[[ports]]
+localPort = 40805
+externalPort = 5000
+
 [env]
 PORT = "5000"
+ML_SERVICE_URL = "http://localhost:8000"
 
 [agent]
 integrations = ["javascript_database:1.0.0", "javascript_object_storage:1.0.0", "javascript_log_in_with_replit:1.0.0"]
