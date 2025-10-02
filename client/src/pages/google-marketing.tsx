@@ -160,6 +160,8 @@ interface MLDataFilters {
   minInventory: number;
   maxInventory: number;
   excludeZeroInventory: boolean;
+  includeReceivingHistory: boolean;
+  receivingHistoryDays: number;
 }
 
 interface MLSettings {
@@ -194,6 +196,8 @@ const defaultMLSettings: MLSettings = {
     minInventory: 1,
     maxInventory: 99999,
     excludeZeroInventory: true,
+    includeReceivingHistory: false,
+    receivingHistoryDays: 180,
   },
 };
 
@@ -1090,6 +1094,66 @@ export default function GoogleMarketingPage() {
                           <p className="text-xs text-muted-foreground">
                             Focus training on products that are currently in stock
                           </p>
+                        </div>
+
+                        {/* Receiving History Integration (Phase 3) */}
+                        <div className="space-y-4 pt-4 border-t">
+                          <h4 className="font-medium text-sm flex items-center gap-2">
+                            <Package className="w-4 h-4" />
+                            Receiving History (Advanced)
+                          </h4>
+
+                          <div className="space-y-2">
+                            <div className="flex items-center space-x-2">
+                              <Checkbox
+                                id="include-receiving-history"
+                                checked={mlSettings.filters.includeReceivingHistory}
+                                onCheckedChange={(checked) => setMLSettings({
+                                  ...mlSettings,
+                                  filters: { ...mlSettings.filters, includeReceivingHistory: checked as boolean }
+                                })}
+                              />
+                              <Label htmlFor="include-receiving-history" className="cursor-pointer font-normal">
+                                Include receiving history data
+                              </Label>
+                            </div>
+
+                            {mlSettings.filters.includeReceivingHistory && (
+                              <div className="space-y-2 pl-6">
+                                <div className="space-y-1">
+                                  <Label htmlFor="receiving-days" className="text-xs text-muted-foreground">
+                                    Receiving History Period (days)
+                                  </Label>
+                                  <Input
+                                    id="receiving-days"
+                                    type="number"
+                                    min="30"
+                                    max="365"
+                                    value={mlSettings.filters.receivingHistoryDays}
+                                    onChange={(e) => setMLSettings({
+                                      ...mlSettings,
+                                      filters: { ...mlSettings.filters, receivingHistoryDays: parseInt(e.target.value) || 180 }
+                                    })}
+                                    className="w-full"
+                                  />
+                                </div>
+
+                                <div className="text-xs text-muted-foreground space-y-1 bg-muted/50 p-3 rounded">
+                                  <p className="font-medium">Additional features when enabled:</p>
+                                  <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                                    <li>Receiving frequency (restock rate)</li>
+                                    <li>Cost volatility (price changes over time)</li>
+                                    <li>Reorder rate (days between receives)</li>
+                                    <li>Reversal rate (quality/return issues)</li>
+                                  </ul>
+                                </div>
+                              </div>
+                            )}
+
+                            <p className="text-xs text-muted-foreground">
+                              Add receiving patterns to improve "New Arrivals" detection and restock analysis
+                            </p>
+                          </div>
                         </div>
                       </CollapsibleContent>
                     </Collapsible>
