@@ -277,9 +277,11 @@ export default function GoogleMarketingPage() {
   });
 
   // Fetch ML-powered segmentation
-  const { data: mlData, isLoading: mlLoading, error: mlError } = useQuery<MLSegmentation>({
+  const { data: mlData, isLoading: mlLoading, error: mlError, refetch: refetchML } = useQuery<MLSegmentation>({
     queryKey: ["/api/inventory/ml-product-segmentation"],
     enabled: useMLSegmentation,
+    refetchOnMount: 'always',
+    staleTime: 0,
   });
 
   const data = useMLSegmentation ? mlData : ruleBasedData;
@@ -633,7 +635,12 @@ export default function GoogleMarketingPage() {
               <Switch
                 id="ml-segmentation"
                 checked={useMLSegmentation}
-                onCheckedChange={setUseMLSegmentation}
+                onCheckedChange={(checked) => {
+                  setUseMLSegmentation(checked);
+                  if (checked) {
+                    refetchML();
+                  }
+                }}
                 data-testid="switch-ml-segmentation"
               />
               <Label htmlFor="ml-segmentation" className="flex items-center gap-2 cursor-pointer">

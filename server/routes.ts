@@ -1086,7 +1086,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (!response.ok) {
-        throw new Error(`ML service training failed with status ${response.status}`);
+        const errorText = await response.text();
+        console.error(`ML service error (${response.status}):`, errorText);
+        throw new Error(`ML service training failed with status ${response.status}: ${errorText}`);
       }
 
       const result = await response.json();
