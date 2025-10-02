@@ -16,60 +16,56 @@ interface ReceivingMetricsStats {
 export default function ReceivingMetricsSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [isCalculating, setIsCalculating] = useState(false);
 
   // Fetch current stats
   const { data: stats, isLoading } = useQuery<ReceivingMetricsStats>({
     queryKey: ["/api/receiving-metrics/stats"],
   });
 
-  // Calculate all metrics mutation
+  // Simple fetch without React Query mutation
+  const handleCalculateClick = async () => {
+    console.log("[DEBUG] Starting calculation...");
+    setIsCalculating(true);
+
+    try {
+      const res = await fetch("/api/receiving-metrics/calculate", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      console.log("[DEBUG] Response status:", res.status);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("[DEBUG] Error response:", errorText);
+        alert(`Failed: ${res.status} ${errorText}`);
+        setIsCalculating(false);
+        return;
+      }
+
+      const data = await res.json();
+      console.log("[DEBUG] Response data:", data);
+
+      // Refresh stats
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/stats"] });
+
+      alert(`✓ Success! Calculated metrics for ${data.total} styles in ${(data.duration / 1000).toFixed(1)}s`);
+      setIsCalculating(false);
+    } catch (err) {
+      console.error("[DEBUG] Fetch error:", err);
+      alert(`Error: ${err}`);
+      setIsCalculating(false);
+    }
+  };
+
+  // Calculate all metrics mutation (DISABLED - using simple fetch instead)
   const calculateMutation = useMutation({
     mutationFn: async () => {
-      console.log("[DEBUG] Starting calculation...");
-      try {
-        const res = await fetch("/api/receiving-metrics/calculate", {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-        console.log("[DEBUG] Response received:", res);
-        console.log("[DEBUG] Response status:", res.status);
-        if (!res.ok) {
-          const errorText = await res.text();
-          console.error("[DEBUG] Error response:", errorText);
-          throw new Error(`Failed to calculate metrics: ${res.status} ${errorText}`);
-        }
-        const data = await res.json();
-        console.log("[DEBUG] Response data:", data);
-        return data;
-      } catch (err) {
-        console.error("[DEBUG] Fetch error:", err);
-        throw err;
-      }
-    },
-    onSuccess: (data) => {
-      console.log("[DEBUG] Calculation succeeded:", data);
-      queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/stats"] });
-      // Delay toast to avoid MutationObserver issues
-      setTimeout(() => {
-        toast({
-          title: "✓ Calculation Complete",
-          description: `Successfully calculated metrics for ${data.total} styles in ${(data.duration / 1000).toFixed(1)}s`,
-        });
-      }, 100);
-    },
-    onError: (error: Error) => {
-      console.error("[DEBUG] Calculation failed:", error);
-      // Delay toast to avoid MutationObserver issues
-      setTimeout(() => {
-        toast({
-          title: "Calculation Failed",
-          description: error.message,
-          variant: "destructive",
-        });
-      }, 100);
+      throw new Error("Disabled - use handleCalculateClick instead");
     },
   });
 
@@ -99,8 +95,17 @@ export default function ReceivingMetricsSettings() {
     },
   });
 
-  const handleCalculate = () => {
-    calculateMutation.mutate();
+  const handleCalculate = (e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+
+    // Use setTimeout to break out of the current execution context
+    setTimeout(() => {
+      handleCalculateClick().catch(err => {
+        console.error("Top-level catch:", err);
+        alert(`Unhandled error: ${err}`);
+      });
+    }, 0);
   };
 
   const handleClearAndRebuild = async () => {
@@ -286,10 +291,10 @@ export default function ReceivingMetricsSettings() {
           <div className="flex gap-3">
             <Button
               onClick={handleCalculate}
-              disabled={calculateMutation.isPending}
+              disabled={isCalculating}
               className="flex items-center gap-2"
             >
-              {calculateMutation.isPending ? (
+              {isCalculating ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
                   Calculating...
