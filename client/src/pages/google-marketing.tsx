@@ -681,7 +681,11 @@ export default function GoogleMarketingPage() {
                           <Slider
                             id="training-days"
                             value={[mlSettings.trainingDays]}
-                            onValueChange={(value) => setMLSettings({ ...mlSettings, trainingDays: value[0] })}
+                            onValueChange={(value) => setMLSettings({
+                              ...mlSettings,
+                              trainingDays: value[0],
+                              filters: { ...mlSettings.filters, salesPeriodDays: value[0] }
+                            })}
                             min={30}
                             max={365}
                             step={30}
@@ -690,7 +694,14 @@ export default function GoogleMarketingPage() {
                           <Input
                             type="number"
                             value={mlSettings.trainingDays}
-                            onChange={(e) => setMLSettings({ ...mlSettings, trainingDays: parseInt(e.target.value) })}
+                            onChange={(e) => {
+                              const days = parseInt(e.target.value);
+                              setMLSettings({
+                                ...mlSettings,
+                                trainingDays: days,
+                                filters: { ...mlSettings.filters, salesPeriodDays: days }
+                              });
+                            }}
                             className="w-20"
                           />
                         </div>

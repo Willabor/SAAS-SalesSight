@@ -1048,8 +1048,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get settings from request body or use defaults
       const filters = req.body.filters || {};
+      const trainingDays = req.body.trainingDays || 90;
       const settings = {
-        days_back: req.body.trainingDays || 90,
+        days_back: trainingDays,
         new_arrivals_days: req.body.newArrivalsDays || 60,
         best_seller_threshold: req.body.bestSellerThreshold || 50,
         core_high_threshold: req.body.coreHighThreshold || 40,
@@ -1057,7 +1058,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         core_low_threshold: req.body.coreLowThreshold || 6,
         clearance_days: req.body.clearanceDays || 180,
         filters: {
-          sales_period_days: filters.salesPeriodDays,
+          sales_period_days: filters.salesPeriodDays || trainingDays,
           exclude_before: filters.excludeBefore,
           included_categories: filters.includedCategories || [],
           excluded_categories: filters.excludedCategories || [],
