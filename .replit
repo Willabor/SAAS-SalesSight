@@ -34,10 +34,6 @@ externalPort = 4200
 localPort = 39603
 externalPort = 3001
 
-[[ports]]
-localPort = 43527
-externalPort = 5000
-
 [env]
 PORT = "5000"
 ML_SERVICE_URL = "http://localhost:8000"

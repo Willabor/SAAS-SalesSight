@@ -12,6 +12,17 @@ The application provides:
 
 # Recent Changes (October 2025)
 
+## Inventory Value Double-Counting Bug Fix (October 2, 2025)
+- **Critical Fix**: Corrected inventory value calculation discrepancy between rule-based and ML segmentation
+- **Root Cause**: 
+  - Rule-based query was grouping by `(style_number, item_name, category, vendor_name, gender)`, creating duplicate rows for styles with SKU variations
+  - ML query was adding `avail_qty + (gm_qty + hm_qty + nm_qty + lm_qty + hq_qty)`, double-counting since `avail_qty` = sum of store quantities
+- **Solution**:
+  - Changed both queries to `GROUP BY style_number` only
+  - Use `SUM((gm + hm + nm + lm + hq) × cost)` for accurate inventory value
+  - Use `MAX()` aggregation for representative text fields (item_name, category, vendor, gender)
+- **Result**: Both segmentation methods now report consistent inventory value (~$524K for 2,214 styles)
+
 ## Phase 2: Operational Reports - Completed
 - **Sale Recommendations**: Markdown candidates for slow-moving/overstock items with projected recovery calculations
 - **Transfer Recommendations**: Inter-store inventory redistribution based on per-location sales velocity (GM/HM/NM/LM active stores only)
