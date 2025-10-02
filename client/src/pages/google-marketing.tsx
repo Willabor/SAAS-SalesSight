@@ -162,6 +162,7 @@ interface MLDataFilters {
   excludeZeroInventory: boolean;
   includeReceivingHistory: boolean;
   receivingHistoryDays: number;
+  selectedFeatures: string[];
 }
 
 interface MLSettings {
@@ -198,7 +199,48 @@ const defaultMLSettings: MLSettings = {
     excludeZeroInventory: true,
     includeReceivingHistory: false,
     receivingHistoryDays: 180,
+    selectedFeatures: [], // Empty = use all features
   },
+};
+
+// Available ML features with descriptions
+const ML_FEATURES = {
+  recency: [
+    { id: 'days_since_last_sale', name: 'Days Since Last Sale', description: 'Recency of last customer purchase' },
+    { id: 'days_since_last_receive', name: 'Days Since Last Receive', description: 'How recently product was restocked' },
+  ],
+  frequency: [
+    { id: 'receive_count', name: 'Receive Count', description: 'Number of times product was restocked' },
+    { id: 'units_sold_30d', name: 'Units Sold (30d)', description: 'Sales volume in last 30 days' },
+    { id: 'units_sold_90d', name: 'Units Sold (90d)', description: 'Sales volume in last 90 days' },
+  ],
+  monetary: [
+    { id: 'avg_selling_price', name: 'Average Selling Price', description: 'Retail price point' },
+    { id: 'avg_margin_percent', name: 'Average Margin %', description: 'Profit margin percentage' },
+    { id: 'inventory_value', name: 'Inventory Value', description: 'Total value of current stock' },
+    { id: 'margin_per_unit', name: 'Margin Per Unit', description: 'Dollar profit per item' },
+  ],
+  inventory: [
+    { id: 'total_active_qty', name: 'Total Active Quantity', description: 'Current stock level' },
+    { id: 'sales_velocity', name: 'Sales Velocity', description: 'Average daily sales rate' },
+  ],
+  computed: [
+    { id: 'revenue_per_unit', name: 'Revenue Per Unit', description: 'Expected revenue per sale' },
+    { id: 'margin_to_price_ratio', name: 'Margin to Price Ratio', description: 'Profitability ratio' },
+    { id: 'turnover_rate', name: 'Turnover Rate', description: 'How quickly inventory sells' },
+    { id: 'is_dead_stock', name: 'Is Dead Stock', description: 'No sales in 180+ days' },
+    { id: 'is_new_arrival', name: 'Is New Arrival', description: 'Recently received (<60 days)' },
+    { id: 'is_high_frequency', name: 'Is High Frequency', description: 'Core product (40+ receives)' },
+  ],
+  receiving: [
+    { id: 'receiving_frequency', name: 'Receiving Frequency', description: 'Restock rate (voucher count)' },
+    { id: 'cost_volatility', name: 'Cost Volatility', description: 'Price stability over time' },
+    { id: 'reversal_rate', name: 'Reversal Rate', description: 'Return/quality issue rate' },
+    { id: 'avg_days_between_receives', name: 'Avg Days Between Receives', description: 'Reorder cycle time' },
+    { id: 'is_frequent_restock', name: 'Is Frequent Restock', description: 'High restock frequency (5+ times)' },
+    { id: 'has_cost_volatility', name: 'Has Cost Volatility', description: 'Unstable pricing (>$2 STDDEV)' },
+    { id: 'high_reversal_risk', name: 'High Reversal Risk', description: 'Quality concerns (>10% reversals)' },
+  ],
 };
 
 export default function GoogleMarketingPage() {
@@ -1155,6 +1197,324 @@ export default function GoogleMarketingPage() {
                             </p>
                           </div>
                         </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+
+                    {/* Feature Selection (Phase 4) */}
+                    <Collapsible className="space-y-4 pt-4 border-t">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-sm text-muted-foreground flex items-center gap-2">
+                          <Sparkles className="w-4 h-4" />
+                          Feature Selection (Advanced)
+                        </h3>
+                        <CollapsibleTrigger asChild>
+                          <Button variant="ghost" size="sm" className="gap-1">
+                            <span className="text-xs">
+                              {mlSettings.filters.selectedFeatures.length === 0
+                                ? 'All features'
+                                : `${mlSettings.filters.selectedFeatures.length} selected`}
+                            </span>
+                            <ChevronDown className="w-4 h-4" />
+                          </Button>
+                        </CollapsibleTrigger>
+                      </div>
+
+                      <CollapsibleContent className="space-y-4">
+                        <p className="text-xs text-muted-foreground">
+                          Select which features to include in ML training. Leave empty to use all available features (recommended).
+                        </p>
+
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                              setMLSettings({
+                                ...mlSettings,
+                                filters: { ...mlSettings.filters, selectedFeatures: allFeatures }
+                              });
+                            }}
+                          >
+                            Select All
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setMLSettings({
+                              ...mlSettings,
+                              filters: { ...mlSettings.filters, selectedFeatures: [] }
+                            })}
+                          >
+                            Clear All
+                          </Button>
+                        </div>
+
+                        {/* Recency Features */}
+                        <div className="space-y-2">
+                          <h4 className="font-medium text-sm">Recency Features</h4>
+                          <div className="space-y-1">
+                            {ML_FEATURES.recency.map((feature) => (
+                              <div key={feature.id} className="flex items-start space-x-2">
+                                <Checkbox
+                                  id={`feature-${feature.id}`}
+                                  checked={
+                                    mlSettings.filters.selectedFeatures.length === 0 ||
+                                    mlSettings.filters.selectedFeatures.includes(feature.id)
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    if (mlSettings.filters.selectedFeatures.length === 0) {
+                                      const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                      const newFeatures = checked
+                                        ? allFeatures
+                                        : allFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    } else {
+                                      const newFeatures = checked
+                                        ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                        : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    }
+                                  }}
+                                />
+                                <div className="flex-1">
+                                  <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                    {feature.name}
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Frequency Features */}
+                        <div className="space-y-2">
+                          <h4 className="font-medium text-sm">Frequency Features</h4>
+                          <div className="space-y-1">
+                            {ML_FEATURES.frequency.map((feature) => (
+                              <div key={feature.id} className="flex items-start space-x-2">
+                                <Checkbox
+                                  id={`feature-${feature.id}`}
+                                  checked={
+                                    mlSettings.filters.selectedFeatures.length === 0 ||
+                                    mlSettings.filters.selectedFeatures.includes(feature.id)
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    if (mlSettings.filters.selectedFeatures.length === 0) {
+                                      const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                      const newFeatures = checked
+                                        ? allFeatures
+                                        : allFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    } else {
+                                      const newFeatures = checked
+                                        ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                        : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    }
+                                  }}
+                                />
+                                <div className="flex-1">
+                                  <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                    {feature.name}
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Monetary Features */}
+                        <div className="space-y-2">
+                          <h4 className="font-medium text-sm">Monetary Features</h4>
+                          <div className="space-y-1">
+                            {ML_FEATURES.monetary.map((feature) => (
+                              <div key={feature.id} className="flex items-start space-x-2">
+                                <Checkbox
+                                  id={`feature-${feature.id}`}
+                                  checked={
+                                    mlSettings.filters.selectedFeatures.length === 0 ||
+                                    mlSettings.filters.selectedFeatures.includes(feature.id)
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    if (mlSettings.filters.selectedFeatures.length === 0) {
+                                      const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                      const newFeatures = checked
+                                        ? allFeatures
+                                        : allFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    } else {
+                                      const newFeatures = checked
+                                        ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                        : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    }
+                                  }}
+                                />
+                                <div className="flex-1">
+                                  <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                    {feature.name}
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Inventory Features */}
+                        <div className="space-y-2">
+                          <h4 className="font-medium text-sm">Inventory Features</h4>
+                          <div className="space-y-1">
+                            {ML_FEATURES.inventory.map((feature) => (
+                              <div key={feature.id} className="flex items-start space-x-2">
+                                <Checkbox
+                                  id={`feature-${feature.id}`}
+                                  checked={
+                                    mlSettings.filters.selectedFeatures.length === 0 ||
+                                    mlSettings.filters.selectedFeatures.includes(feature.id)
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    if (mlSettings.filters.selectedFeatures.length === 0) {
+                                      const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                      const newFeatures = checked
+                                        ? allFeatures
+                                        : allFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    } else {
+                                      const newFeatures = checked
+                                        ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                        : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    }
+                                  }}
+                                />
+                                <div className="flex-1">
+                                  <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                    {feature.name}
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Computed Features */}
+                        <div className="space-y-2">
+                          <h4 className="font-medium text-sm">Computed Features</h4>
+                          <div className="space-y-1">
+                            {ML_FEATURES.computed.map((feature) => (
+                              <div key={feature.id} className="flex items-start space-x-2">
+                                <Checkbox
+                                  id={`feature-${feature.id}`}
+                                  checked={
+                                    mlSettings.filters.selectedFeatures.length === 0 ||
+                                    mlSettings.filters.selectedFeatures.includes(feature.id)
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    if (mlSettings.filters.selectedFeatures.length === 0) {
+                                      const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                      const newFeatures = checked
+                                        ? allFeatures
+                                        : allFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    } else {
+                                      const newFeatures = checked
+                                        ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                        : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                      });
+                                    }
+                                  }}
+                                />
+                                <div className="flex-1">
+                                  <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                    {feature.name}
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Receiving Features (only show if receiving history enabled) */}
+                        {mlSettings.filters.includeReceivingHistory && (
+                          <div className="space-y-2">
+                            <h4 className="font-medium text-sm">Receiving Features</h4>
+                            <div className="space-y-1">
+                              {ML_FEATURES.receiving.map((feature) => (
+                                <div key={feature.id} className="flex items-start space-x-2">
+                                  <Checkbox
+                                    id={`feature-${feature.id}`}
+                                    checked={
+                                      mlSettings.filters.selectedFeatures.length === 0 ||
+                                      mlSettings.filters.selectedFeatures.includes(feature.id)
+                                    }
+                                    onCheckedChange={(checked) => {
+                                      if (mlSettings.filters.selectedFeatures.length === 0) {
+                                        const allFeatures = Object.values(ML_FEATURES).flat().map(f => f.id);
+                                        const newFeatures = checked
+                                          ? allFeatures
+                                          : allFeatures.filter(f => f !== feature.id);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                        });
+                                      } else {
+                                        const newFeatures = checked
+                                          ? [...mlSettings.filters.selectedFeatures, feature.id]
+                                          : mlSettings.filters.selectedFeatures.filter(f => f !== feature.id);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, selectedFeatures: newFeatures }
+                                        });
+                                      }
+                                    }}
+                                  />
+                                  <div className="flex-1">
+                                    <Label htmlFor={`feature-${feature.id}`} className="cursor-pointer font-normal text-sm">
+                                      {feature.name}
+                                    </Label>
+                                    <p className="text-xs text-muted-foreground">{feature.description}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </CollapsibleContent>
                     </Collapsible>
 
