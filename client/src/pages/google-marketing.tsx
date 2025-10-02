@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Card,
   CardContent,
@@ -311,11 +312,17 @@ export default function GoogleMarketingPage() {
       // Invalidate queries to refresh data
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/ml-product-segmentation"] });
 
-      alert(`Model retrained successfully!\nVersion: ${result.model_version}\nAccuracy: ${(result.test_accuracy * 100).toFixed(2)}%`);
+      toast.success('Model Retrained Successfully!', {
+        description: `Version: ${result.model_version} • Accuracy: ${(result.test_accuracy * 100).toFixed(2)}%`,
+        duration: 5000,
+      });
       setSettingsOpen(false);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      alert(`Failed to retrain model: ${errorMessage}`);
+      toast.error('Training Failed', {
+        description: errorMessage,
+        duration: 7000,
+      });
       console.error('Training error:', error);
     } finally {
       setIsTraining(false);
