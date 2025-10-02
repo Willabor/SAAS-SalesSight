@@ -6,6 +6,11 @@ import { insertItemListSchema, insertSalesTransactionSchema, insertUploadHistory
 import { z } from "zod";
 import { db } from "./db";
 import { sql } from "drizzle-orm";
+import {
+  calculateMetricsForStyle,
+  calculateAllMetrics,
+  getAffectedStylesFromVouchers
+} from "./lib/receiving-metrics-calculator";
 
 // Timezone-agnostic date normalization to YYYY-MM-DD
 function normalizeDate(dateInput: string | null | undefined): string | null {
@@ -1192,6 +1197,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching ML settings log:", error);
       res.status(500).json({ error: "Failed to fetch ML settings log" });
+    }
+  });
+
+  // Receiving Metrics endpoints
+  app.post("/api/receiving-metrics/calculate", isAuthenticated, async (req, res) => {
+    try {
+      const user = (req.user as any);
+      const calculatedBy = user?.claims?.sub || 'unknown';
+
+      const startTime = Date.now();
+      const result = await calculateAllMetrics(calculatedBy);
+
+      // Save to database
+      await storage.batchUpsertReceivingMetrics(result.metrics);
+
+      const duration = Date.now() - startTime;
+
+      res.json({
+        success: true,
+        total: result.total,
+        duration,
+        message: `Successfully calculated metrics for ${result.total} styles`
+      });
+    } catch (error) {
+      console.error("Error calculating metrics:", error);
+      res.status(500).json({ error: "Failed to calculate metrics" });
+    }
+  });
+
+  app.post("/api/receiving-metrics/calculate/:styleNumber", isAuthenticated, async (req, res) => {
+    try {
+      const { styleNumber } = req.params;
+      const user = (req.user as any);
+      const calculatedBy = user?.claims?.sub || 'unknown';
+
+      const metrics = await calculateMetricsForStyle(styleNumber, calculatedBy);
+
+      if (!metrics) {
+        return res.status(404).json({ error: "No receiving history found for this style" });
+      }
+
+      const result = await storage.upsertReceivingMetrics(metrics);
+      res.json(result);
+    } catch (error) {
+      console.error("Error calculating metrics:", error);
+      res.status(500).json({ error: "Failed to calculate metrics" });
+    }
+  });
+
+  app.get("/api/receiving-metrics", isAuthenticated, async (req, res) => {
+    try {
+      const lifecycle = req.query.lifecycle as string | undefined;
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const result = await storage.getAllReceivingMetrics({ lifecycle, limit, offset });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching metrics:", error);
+      res.status(500).json({ error: "Failed to fetch metrics" });
+    }
+  });
+
+  app.get("/api/receiving-metrics/stats", isAuthenticated, async (req, res) => {
+    try {
+      const stats = await storage.getReceivingMetricsStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+      res.status(500).json({ error: "Failed to fetch stats" });
+    }
+  });
+
+  app.get("/api/receiving-metrics/:styleNumber", isAuthenticated, async (req, res) => {
+    try {
+      const { styleNumber } = req.params;
+      const metrics = await storage.getReceivingMetrics(styleNumber);
+
+      if (!metrics) {
+        return res.status(404).json({ error: "Metrics not found for this style" });
+      }
+
+      res.json(metrics);
+    } catch (error) {
+      console.error("Error fetching metrics:", error);
+      res.status(500).json({ error: "Failed to fetch metrics" });
+    }
+  });
+
+  app.delete("/api/receiving-metrics", isAuthenticated, async (req, res) => {
+    try {
+      const deleted = await storage.deleteAllReceivingMetrics();
+      res.json({ success: true, deleted });
+    } catch (error) {
+      console.error("Error deleting metrics:", error);
+      res.status(500).json({ error: "Failed to delete metrics" });
     }
   });
 

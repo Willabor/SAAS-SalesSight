@@ -1,11 +1,12 @@
-import { 
-  users, 
-  itemList, 
-  salesTransactions, 
+import {
+  users,
+  itemList,
+  salesTransactions,
   uploadHistory,
   receivingVouchers,
   receivingLines,
-  type User, 
+  itemReceivingMetrics,
+  type User,
   type UpsertUser,
   type InsertUser,
   type ItemList,
@@ -18,6 +19,8 @@ import {
   type InsertReceivingVoucher,
   type ReceivingLine,
   type InsertReceivingLine,
+  type ItemReceivingMetrics,
+  type InsertItemReceivingMetrics,
   mlSettingsLog,
   type MLSettingsLog,
   type InsertMLSettingsLog
@@ -309,6 +312,22 @@ export interface IStorage {
   // ML Settings Log operations
   createMLSettingsLog(log: InsertMLSettingsLog): Promise<MLSettingsLog>;
   getMLSettingsLogs(limit?: number): Promise<MLSettingsLog[]>;
+
+  // Item Receiving Metrics operations
+  getReceivingMetrics(styleNumber: string): Promise<ItemReceivingMetrics | undefined>;
+  getAllReceivingMetrics(filters?: {
+    lifecycle?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ metrics: ItemReceivingMetrics[]; total: number }>;
+  upsertReceivingMetrics(metrics: InsertItemReceivingMetrics): Promise<ItemReceivingMetrics>;
+  batchUpsertReceivingMetrics(metrics: InsertItemReceivingMetrics[]): Promise<void>;
+  deleteAllReceivingMetrics(): Promise<number>;
+  getReceivingMetricsStats(): Promise<{
+    total: number;
+    byLifecycle: Record<string, number>;
+    lastCalculated: Date | null;
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2600,6 +2619,140 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(mlSettingsLog.createdAt))
       .limit(limit);
     return logs;
+  }
+
+  // Item Receiving Metrics operations
+  async getReceivingMetrics(styleNumber: string): Promise<ItemReceivingMetrics | undefined> {
+    const [result] = await db
+      .select()
+      .from(itemReceivingMetrics)
+      .where(eq(itemReceivingMetrics.styleNumber, styleNumber))
+      .limit(1);
+    return result;
+  }
+
+  async getAllReceivingMetrics(filters?: {
+    lifecycle?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ metrics: ItemReceivingMetrics[]; total: number }> {
+    const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
+
+    let query = db.select().from(itemReceivingMetrics);
+
+    if (filters?.lifecycle) {
+      query = query.where(eq(itemReceivingMetrics.lifecycleStage, filters.lifecycle)) as any;
+    }
+
+    const metrics = await query
+      .orderBy(desc(itemReceivingMetrics.lastCalculatedAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(itemReceivingMetrics)
+      .where(filters?.lifecycle ? eq(itemReceivingMetrics.lifecycleStage, filters.lifecycle) : sql`1=1`);
+
+    return { metrics, total };
+  }
+
+  async upsertReceivingMetrics(metrics: InsertItemReceivingMetrics): Promise<ItemReceivingMetrics> {
+    const [result] = await db
+      .insert(itemReceivingMetrics)
+      .values(metrics)
+      .onConflictDoUpdate({
+        target: itemReceivingMetrics.styleNumber,
+        set: {
+          ...metrics,
+          lastCalculatedAt: sql`NOW()`
+        }
+      })
+      .returning();
+    return result;
+  }
+
+  async batchUpsertReceivingMetrics(metrics: InsertItemReceivingMetrics[]): Promise<void> {
+    if (metrics.length === 0) return;
+
+    // Process in batches of 100
+    const batchSize = 100;
+    for (let i = 0; i < metrics.length; i += batchSize) {
+      const batch = metrics.slice(i, i + batchSize);
+      await db
+        .insert(itemReceivingMetrics)
+        .values(batch)
+        .onConflictDoUpdate({
+          target: itemReceivingMetrics.styleNumber,
+          set: {
+            itemNumber: sql`EXCLUDED.item_number`,
+            firstReceiveDate: sql`EXCLUDED.first_receive_date`,
+            lastReceiveDate: sql`EXCLUDED.last_receive_date`,
+            creationDate: sql`EXCLUDED.creation_date`,
+            totalReceiveCount: sql`EXCLUDED.total_receive_count`,
+            uniqueReceiveMonths: sql`EXCLUDED.unique_receive_months`,
+            uniqueReceiveYears: sql`EXCLUDED.unique_receive_years`,
+            avgDaysBetweenReceives: sql`EXCLUDED.avg_days_between_receives`,
+            daysSinceFirstReceive: sql`EXCLUDED.days_since_first_receive`,
+            daysSinceLastReceive: sql`EXCLUDED.days_since_last_receive`,
+            isNewItem: sql`EXCLUDED.is_new_item`,
+            isRestockedItem: sql`EXCLUDED.is_restocked_item`,
+            isSeasonalItem: sql`EXCLUDED.is_seasonal_item`,
+            isOneTimeBuy: sql`EXCLUDED.is_one_time_buy`,
+            isCoreItem: sql`EXCLUDED.is_core_item`,
+            lifecycleStage: sql`EXCLUDED.lifecycle_stage`,
+            lastCalculatedAt: sql`NOW()`,
+            calculatedBy: sql`EXCLUDED.calculated_by`
+          }
+        });
+    }
+  }
+
+  async deleteAllReceivingMetrics(): Promise<number> {
+    const result = await db.delete(itemReceivingMetrics);
+    return result.rowCount || 0;
+  }
+
+  async getReceivingMetricsStats(): Promise<{
+    total: number;
+    byLifecycle: Record<string, number>;
+    lastCalculated: Date | null;
+  }> {
+    // Get total count
+    const [{ total }] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(itemReceivingMetrics);
+
+    // Get count by lifecycle stage
+    const lifecycleCounts = await db
+      .select({
+        lifecycle: itemReceivingMetrics.lifecycleStage,
+        count: sql<number>`count(*)::int`
+      })
+      .from(itemReceivingMetrics)
+      .groupBy(itemReceivingMetrics.lifecycleStage);
+
+    const byLifecycle: Record<string, number> = {};
+    lifecycleCounts.forEach(row => {
+      if (row.lifecycle) {
+        byLifecycle[row.lifecycle] = row.count;
+      }
+    });
+
+    // Get last calculated timestamp
+    const [lastCalc] = await db
+      .select({ lastCalculated: itemReceivingMetrics.lastCalculatedAt })
+      .from(itemReceivingMetrics)
+      .orderBy(desc(itemReceivingMetrics.lastCalculatedAt))
+      .limit(1);
+
+    return {
+      total,
+      byLifecycle,
+      lastCalculated: lastCalc?.lastCalculated || null
+    };
   }
 }
 
