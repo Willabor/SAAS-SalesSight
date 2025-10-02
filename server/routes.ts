@@ -1154,6 +1154,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get ML settings log (training history)
+  app.get("/api/ml/settings-log", isAuthenticated, async (req, res) => {
+    try {
+      // TODO: Query from ml_settings_log table when database is updated
+      // For now, return empty array
+      // const logs = await storage.getMLSettingsLog();
+      const logs: any[] = [];
+
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching ML settings log:", error);
+      res.status(500).json({ error: "Failed to fetch ML settings log" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

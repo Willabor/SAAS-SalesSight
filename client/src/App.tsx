@@ -13,6 +13,7 @@ import SalesInsightsPage from "@/pages/sales-insights";
 import ReceivingHistoryPage from "@/pages/receiving-history";
 import VoucherViewerPage from "@/pages/voucher-viewer";
 import GoogleMarketingPage from "@/pages/google-marketing";
+import MLSettingsLogPage from "@/pages/ml-settings-log";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -29,6 +30,7 @@ function Router() {
           <Route path="/sales-transactions" component={SalesTransactionsPage} />
           <Route path="/sales-insights" component={SalesInsightsPage} />
           <Route path="/google-marketing" component={GoogleMarketingPage} />
+          <Route path="/ml/training-history" component={MLSettingsLogPage} />
           <Route path="/receiving" component={ReceivingHistoryPage} />
           <Route path="/receiving/viewer" component={VoucherViewerPage} />
         </>
