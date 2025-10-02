@@ -30,6 +30,19 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Package,
   TrendingUp,
@@ -43,6 +56,9 @@ import {
   AlertCircle,
   Settings,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Filter,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
@@ -131,6 +147,20 @@ interface MLSegmentation {
 }
 
 // ML Settings Interface
+interface MLDataFilters {
+  salesPeriodDays: number;
+  excludeBefore: string;
+  includedCategories: string[];
+  excludedCategories: string[];
+  includedStores: string[];
+  excludedVendors: string[];
+  includedGenders: string[];
+  minPrice: number;
+  maxPrice: number;
+  minInventory: number;
+  excludeZeroInventory: boolean;
+}
+
 interface MLSettings {
   trainingDays: number;
   newArrivalsDays: number;
@@ -139,6 +169,7 @@ interface MLSettings {
   coreMediumThreshold: number;
   coreLowThreshold: number;
   clearanceDays: number;
+  filters: MLDataFilters;
 }
 
 const defaultMLSettings: MLSettings = {
@@ -149,6 +180,19 @@ const defaultMLSettings: MLSettings = {
   coreMediumThreshold: 20,
   coreLowThreshold: 6,
   clearanceDays: 180,
+  filters: {
+    salesPeriodDays: 90,
+    excludeBefore: '',
+    includedCategories: [],
+    excludedCategories: [],
+    includedStores: ['GM', 'HM', 'NM', 'LM', 'HQ'],
+    excludedVendors: [],
+    includedGenders: [],
+    minPrice: 0,
+    maxPrice: 99999,
+    minInventory: 1,
+    excludeZeroInventory: true,
+  },
 };
 
 export default function GoogleMarketingPage() {
@@ -156,7 +200,17 @@ export default function GoogleMarketingPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mlSettings, setMLSettings] = useState<MLSettings>(defaultMLSettings);
   const [isTraining, setIsTraining] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const queryClient = useQueryClient();
+
+  // Fetch available categories and vendors for filter options
+  const { data: filterOptions } = useQuery<{
+    categories: string[];
+    vendors: string[];
+    genders: string[];
+  }>({
+    queryKey: ["/api/inventory/filter-options"],
+  });
 
   // Fetch rule-based segmentation
   const { data: ruleBasedData, isLoading: ruleLoading, error: ruleError } = useQuery<ProductSegmentation>({
@@ -701,6 +755,216 @@ export default function GoogleMarketingPage() {
                         </p>
                       </div>
                     </div>
+
+                    {/* Data Filters */}
+                    <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen} className="space-y-4">
+                      <div className="flex items-center justify-between pt-4 border-t">
+                        <h3 className="font-semibold text-sm text-muted-foreground flex items-center gap-2">
+                          <Filter className="w-4 h-4" />
+                          Data Filters
+                        </h3>
+                        <CollapsibleTrigger asChild>
+                          <Button variant="ghost" size="sm" className="gap-1">
+                            {filtersOpen ? (
+                              <>
+                                Collapse <ChevronUp className="w-4 h-4" />
+                              </>
+                            ) : (
+                              <>
+                                Expand <ChevronDown className="w-4 h-4" />
+                              </>
+                            )}
+                          </Button>
+                        </CollapsibleTrigger>
+                      </div>
+
+                      <CollapsibleContent className="space-y-4">
+                        {/* Date Filters */}
+                        <div className="space-y-2 pt-2">
+                          <Label htmlFor="sales-period-days">Sales History Period (days)</Label>
+                          <div className="flex items-center gap-4">
+                            <Slider
+                              id="sales-period-days"
+                              value={[mlSettings.filters.salesPeriodDays]}
+                              onValueChange={(value) => setMLSettings({
+                                ...mlSettings,
+                                filters: { ...mlSettings.filters, salesPeriodDays: value[0] }
+                              })}
+                              min={30}
+                              max={365}
+                              step={30}
+                              className="flex-1"
+                            />
+                            <Input
+                              type="number"
+                              value={mlSettings.filters.salesPeriodDays}
+                              onChange={(e) => setMLSettings({
+                                ...mlSettings,
+                                filters: { ...mlSettings.filters, salesPeriodDays: parseInt(e.target.value) }
+                              })}
+                              className="w-20"
+                            />
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Include sales data from the last X days (30-365 days)
+                          </p>
+                        </div>
+
+                        {/* Store Filters */}
+                        <div className="space-y-2">
+                          <Label>Store Locations</Label>
+                          <div className="grid grid-cols-2 gap-2">
+                            {['GM', 'HM', 'NM', 'LM', 'HQ'].map((store) => (
+                              <div key={store} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`store-${store}`}
+                                  checked={mlSettings.filters.includedStores.includes(store)}
+                                  onCheckedChange={(checked) => {
+                                    const stores = checked
+                                      ? [...mlSettings.filters.includedStores, store]
+                                      : mlSettings.filters.includedStores.filter(s => s !== store);
+                                    setMLSettings({
+                                      ...mlSettings,
+                                      filters: { ...mlSettings.filters, includedStores: stores }
+                                    });
+                                  }}
+                                />
+                                <Label htmlFor={`store-${store}`} className="cursor-pointer font-normal">
+                                  {store} {store === 'HQ' && '(Warehouse)'}
+                                </Label>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Select which store locations to include in training data
+                          </p>
+                        </div>
+
+                        {/* Category Filters */}
+                        {filterOptions?.categories && filterOptions.categories.length > 0 && (
+                          <div className="space-y-2">
+                            <Label>Product Categories</Label>
+                            <div className="max-h-32 overflow-y-auto border rounded p-2 space-y-2">
+                              {filterOptions.categories.map((category) => (
+                                <div key={category} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`category-${category}`}
+                                    checked={
+                                      mlSettings.filters.includedCategories.length === 0 ||
+                                      mlSettings.filters.includedCategories.includes(category)
+                                    }
+                                    onCheckedChange={(checked) => {
+                                      if (mlSettings.filters.includedCategories.length === 0) {
+                                        // First unchecked - select all except this one
+                                        const allExceptThis = filterOptions.categories.filter(c => c !== category);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, includedCategories: allExceptThis }
+                                        });
+                                      } else {
+                                        const categories = checked
+                                          ? [...mlSettings.filters.includedCategories, category]
+                                          : mlSettings.filters.includedCategories.filter(c => c !== category);
+                                        setMLSettings({
+                                          ...mlSettings,
+                                          filters: { ...mlSettings.filters, includedCategories: categories }
+                                        });
+                                      }
+                                    }}
+                                  />
+                                  <Label htmlFor={`category-${category}`} className="cursor-pointer font-normal">
+                                    {category || '(Uncategorized)'}
+                                  </Label>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setMLSettings({
+                                  ...mlSettings,
+                                  filters: { ...mlSettings.filters, includedCategories: [] }
+                                })}
+                              >
+                                Select All
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setMLSettings({
+                                  ...mlSettings,
+                                  filters: { ...mlSettings.filters, includedCategories: filterOptions.categories }
+                                })}
+                              >
+                                Clear All
+                              </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {mlSettings.filters.includedCategories.length === 0
+                                ? 'All categories selected'
+                                : `${mlSettings.filters.includedCategories.length} of ${filterOptions.categories.length} selected`}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Vendor Filters */}
+                        {filterOptions?.vendors && filterOptions.vendors.length > 0 && (
+                          <div className="space-y-2">
+                            <Label>Excluded Vendors</Label>
+                            <div className="max-h-32 overflow-y-auto border rounded p-2 space-y-2">
+                              {filterOptions.vendors.map((vendor) => (
+                                <div key={vendor} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`vendor-${vendor}`}
+                                    checked={mlSettings.filters.excludedVendors.includes(vendor)}
+                                    onCheckedChange={(checked) => {
+                                      const vendors = checked
+                                        ? [...mlSettings.filters.excludedVendors, vendor]
+                                        : mlSettings.filters.excludedVendors.filter(v => v !== vendor);
+                                      setMLSettings({
+                                        ...mlSettings,
+                                        filters: { ...mlSettings.filters, excludedVendors: vendors }
+                                      });
+                                    }}
+                                  />
+                                  <Label htmlFor={`vendor-${vendor}`} className="cursor-pointer font-normal">
+                                    {vendor || '(No Vendor)'}
+                                  </Label>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {mlSettings.filters.excludedVendors.length === 0
+                                ? 'No vendors excluded'
+                                : `${mlSettings.filters.excludedVendors.length} vendor(s) excluded`}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Inventory Filter */}
+                        <div className="space-y-2">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="exclude-zero-inventory"
+                              checked={mlSettings.filters.excludeZeroInventory}
+                              onCheckedChange={(checked) => setMLSettings({
+                                ...mlSettings,
+                                filters: { ...mlSettings.filters, excludeZeroInventory: checked as boolean }
+                              })}
+                            />
+                            <Label htmlFor="exclude-zero-inventory" className="cursor-pointer font-normal">
+                              Exclude products with zero inventory
+                            </Label>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Focus training on products that are currently in stock
+                          </p>
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
 
                     {/* Reset to Defaults */}
                     <div className="flex items-center justify-between pt-4 border-t">

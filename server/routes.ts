@@ -1026,6 +1026,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get filter options (categories, vendors, genders) for ML settings
+  app.get("/api/inventory/filter-options", isAuthenticated, async (req, res) => {
+    try {
+      const options = await storage.getItemListFilterOptions();
+      res.json(options);
+    } catch (error) {
+      console.error("Error fetching filter options:", error);
+      res.status(500).json({ error: "Failed to fetch filter options" });
+    }
+  });
+
   // ML Training endpoint with custom settings
   app.post("/api/ml/train-segmentation", isAuthenticated, async (req, res) => {
     try {
@@ -1044,6 +1055,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         core_medium_threshold: req.body.coreMediumThreshold || 20,
         core_low_threshold: req.body.coreLowThreshold || 6,
         clearance_days: req.body.clearanceDays || 180,
+        filters: req.body.filters || {},
       };
 
       console.log("Training ML model with settings:", settings);
