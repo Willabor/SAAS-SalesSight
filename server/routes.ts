@@ -1047,6 +1047,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Get settings from request body or use defaults
+      const filters = req.body.filters || {};
       const settings = {
         days_back: req.body.trainingDays || 90,
         new_arrivals_days: req.body.newArrivalsDays || 60,
@@ -1055,7 +1056,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         core_medium_threshold: req.body.coreMediumThreshold || 20,
         core_low_threshold: req.body.coreLowThreshold || 6,
         clearance_days: req.body.clearanceDays || 180,
-        filters: req.body.filters || {},
+        filters: {
+          sales_period_days: filters.salesPeriodDays,
+          exclude_before: filters.excludeBefore,
+          included_categories: filters.includedCategories || [],
+          excluded_categories: filters.excludedCategories || [],
+          included_stores: filters.includedStores || [],
+          excluded_vendors: filters.excludedVendors || [],
+          included_genders: filters.includedGenders || [],
+          min_price: filters.minPrice,
+          max_price: filters.maxPrice,
+          min_inventory: filters.minInventory,
+          max_inventory: filters.maxInventory,
+          exclude_zero_inventory: filters.excludeZeroInventory,
+          include_receiving_history: filters.includeReceivingHistory,
+          receiving_history_days: filters.receivingHistoryDays,
+          selected_features: filters.selectedFeatures || [],
+        },
       };
 
       console.log("Training ML model with settings:", settings);
