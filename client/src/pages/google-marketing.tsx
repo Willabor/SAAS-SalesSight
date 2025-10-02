@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -20,6 +20,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
+import {
   Package,
   TrendingUp,
   DollarSign,
@@ -30,6 +41,8 @@ import {
   Target,
   Zap,
   AlertCircle,
+  Settings,
+  RefreshCw,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
@@ -117,8 +130,33 @@ interface MLSegmentation {
   };
 }
 
+// ML Settings Interface
+interface MLSettings {
+  trainingDays: number;
+  newArrivalsDays: number;
+  bestSellerThreshold: number;
+  coreHighThreshold: number;
+  coreMediumThreshold: number;
+  coreLowThreshold: number;
+  clearanceDays: number;
+}
+
+const defaultMLSettings: MLSettings = {
+  trainingDays: 90,
+  newArrivalsDays: 60,
+  bestSellerThreshold: 50,
+  coreHighThreshold: 40,
+  coreMediumThreshold: 20,
+  coreLowThreshold: 6,
+  clearanceDays: 180,
+};
+
 export default function GoogleMarketingPage() {
   const [useMLSegmentation, setUseMLSegmentation] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mlSettings, setMLSettings] = useState<MLSettings>(defaultMLSettings);
+  const [isTraining, setIsTraining] = useState(false);
+  const queryClient = useQueryClient();
 
   // Fetch rule-based segmentation
   const { data: ruleBasedData, isLoading: ruleLoading, error: ruleError } = useQuery<ProductSegmentation>({
@@ -145,6 +183,35 @@ export default function GoogleMarketingPage() {
 
   const formatNumber = (value: number) => {
     return new Intl.NumberFormat('en-US').format(value);
+  };
+
+  // Retrain ML model with custom settings
+  const handleRetrainModel = async () => {
+    setIsTraining(true);
+    try {
+      const response = await fetch('/api/ml/train-segmentation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mlSettings),
+      });
+
+      if (!response.ok) {
+        throw new Error('Training failed');
+      }
+
+      const result = await response.json();
+
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/ml-product-segmentation"] });
+
+      alert(`Model retrained successfully!\nVersion: ${result.model_version}\nAccuracy: ${(result.test_accuracy * 100).toFixed(2)}%`);
+      setSettingsOpen(false);
+    } catch (error) {
+      alert('Failed to retrain model. Please try again.');
+      console.error('Training error:', error);
+    } finally {
+      setIsTraining(false);
+    }
   };
 
   const handleExportGoogleMarketing = () => {
@@ -413,7 +480,7 @@ export default function GoogleMarketingPage() {
             </div>
           </div>
 
-          {/* Toolbar: ML Toggle and Export */}
+          {/* Toolbar: ML Toggle, Settings, and Export */}
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <Switch
@@ -433,15 +500,259 @@ export default function GoogleMarketingPage() {
                 )}
               </Label>
             </div>
-            <Button
-              onClick={handleExportGoogleMarketing}
-              variant="default"
-              className="gap-2"
-              data-testid="button-export-report"
-            >
-              <Download className="w-4 h-4" />
-              Export Marketing Report
-            </Button>
+            <div className="flex items-center gap-2">
+              <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+                <DialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="gap-2"
+                    title="ML Settings"
+                  >
+                    <Settings className="w-4 h-4" />
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <Settings className="w-5 h-5" />
+                      ML Model Configuration
+                    </DialogTitle>
+                    <DialogDescription>
+                      Adjust training parameters and classification thresholds. Changes require retraining the model.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-6 py-4">
+                    {/* Training Parameters */}
+                    <div className="space-y-4">
+                      <h3 className="font-semibold text-sm text-muted-foreground">Training Parameters</h3>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="training-days">Training Data Period (days)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="training-days"
+                            value={[mlSettings.trainingDays]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, trainingDays: value[0] })}
+                            min={30}
+                            max={365}
+                            step={30}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.trainingDays}
+                            onChange={(e) => setMLSettings({ ...mlSettings, trainingDays: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          How many days of historical data to use for training (30-365 days)
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Classification Thresholds */}
+                    <div className="space-y-4">
+                      <h3 className="font-semibold text-sm text-muted-foreground">Classification Thresholds</h3>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="new-arrivals-days">New Arrivals Window (days)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="new-arrivals-days"
+                            value={[mlSettings.newArrivalsDays]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, newArrivalsDays: value[0] })}
+                            min={14}
+                            max={120}
+                            step={7}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.newArrivalsDays}
+                            onChange={(e) => setMLSettings({ ...mlSettings, newArrivalsDays: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Products received within this many days are "New Arrivals" (14-120 days)
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="best-seller-threshold">Best Seller Threshold (orders)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="best-seller-threshold"
+                            value={[mlSettings.bestSellerThreshold]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, bestSellerThreshold: value[0] })}
+                            min={20}
+                            max={100}
+                            step={5}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.bestSellerThreshold}
+                            onChange={(e) => setMLSettings({ ...mlSettings, bestSellerThreshold: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Minimum orders to classify as "Best Seller" (20-100 orders)
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="core-high-threshold">Core High Threshold (orders)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="core-high-threshold"
+                            value={[mlSettings.coreHighThreshold]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, coreHighThreshold: value[0] })}
+                            min={20}
+                            max={60}
+                            step={5}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.coreHighThreshold}
+                            onChange={(e) => setMLSettings({ ...mlSettings, coreHighThreshold: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Orders needed for "Core High" classification (20-60 orders)
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="core-medium-threshold">Core Medium Threshold (orders)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="core-medium-threshold"
+                            value={[mlSettings.coreMediumThreshold]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, coreMediumThreshold: value[0] })}
+                            min={5}
+                            max={40}
+                            step={5}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.coreMediumThreshold}
+                            onChange={(e) => setMLSettings({ ...mlSettings, coreMediumThreshold: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Orders needed for "Core Medium" classification (5-40 orders)
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="core-low-threshold">Core Low Threshold (orders)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="core-low-threshold"
+                            value={[mlSettings.coreLowThreshold]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, coreLowThreshold: value[0] })}
+                            min={2}
+                            max={20}
+                            step={1}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.coreLowThreshold}
+                            onChange={(e) => setMLSettings({ ...mlSettings, coreLowThreshold: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Orders needed for "Core Low" classification (2-20 orders)
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="clearance-days">Clearance Threshold (days since last sale)</Label>
+                        <div className="flex items-center gap-4">
+                          <Slider
+                            id="clearance-days"
+                            value={[mlSettings.clearanceDays]}
+                            onValueChange={(value) => setMLSettings({ ...mlSettings, clearanceDays: value[0] })}
+                            min={90}
+                            max={365}
+                            step={30}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={mlSettings.clearanceDays}
+                            onChange={(e) => setMLSettings({ ...mlSettings, clearanceDays: parseInt(e.target.value) })}
+                            className="w-20"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Days without sales before marking as "Clearance" (90-365 days)
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Reset to Defaults */}
+                    <div className="flex items-center justify-between pt-4 border-t">
+                      <Button
+                        variant="ghost"
+                        onClick={() => setMLSettings(defaultMLSettings)}
+                        className="gap-2"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        Reset to Defaults
+                      </Button>
+                    </div>
+                  </div>
+
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setSettingsOpen(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleRetrainModel}
+                      disabled={isTraining}
+                      className="gap-2"
+                    >
+                      {isTraining ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          Training... (~2 min)
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          Apply & Retrain Model
+                        </>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Button
+                onClick={handleExportGoogleMarketing}
+                variant="default"
+                className="gap-2"
+                data-testid="button-export-report"
+              >
+                <Download className="w-4 h-4" />
+                Export Marketing Report
+              </Button>
+            </div>
           </div>
 
           {/* ML Model Info (if using ML) */}

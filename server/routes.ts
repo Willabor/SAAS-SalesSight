@@ -1026,6 +1026,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ML Training endpoint with custom settings
+  app.post("/api/ml/train-segmentation", isAuthenticated, async (req, res) => {
+    try {
+      const mlServiceUrl = process.env.ML_SERVICE_URL;
+
+      if (!mlServiceUrl) {
+        return res.status(503).json({ error: "ML service not configured" });
+      }
+
+      // Get settings from request body or use defaults
+      const settings = {
+        days_back: req.body.trainingDays || 90,
+        new_arrivals_days: req.body.newArrivalsDays || 60,
+        best_seller_threshold: req.body.bestSellerThreshold || 50,
+        core_high_threshold: req.body.coreHighThreshold || 40,
+        core_medium_threshold: req.body.coreMediumThreshold || 20,
+        core_low_threshold: req.body.coreLowThreshold || 6,
+        clearance_days: req.body.clearanceDays || 180,
+      };
+
+      console.log("Training ML model with settings:", settings);
+
+      const response = await fetch(`${mlServiceUrl}/api/ml/train-segmentation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+
+      if (!response.ok) {
+        throw new Error(`ML service training failed with status ${response.status}`);
+      }
+
+      const result = await response.json();
+      res.json(result);
+
+    } catch (error) {
+      console.error("ML training failed:", error);
+      res.status(500).json({ error: "Failed to train ML model" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
