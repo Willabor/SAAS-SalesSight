@@ -267,6 +267,44 @@ export type SalesTransaction = typeof salesTransactions.$inferSelect;
 export type InsertSalesTransaction = z.infer<typeof insertSalesTransactionSchema>;
 export type UploadHistory = typeof uploadHistory.$inferSelect;
 export type InsertUploadHistory = z.infer<typeof insertUploadHistorySchema>;
+// Item Receiving Metrics - Pre-computed receiving pattern analysis
+export const itemReceivingMetrics = pgTable("item_receiving_metrics", {
+  id: serial("id").primaryKey(),
+  styleNumber: text("style_number").notNull().unique(),
+  itemNumber: text("item_number"), // Primary item_number for this style
+
+  // Receiving dates
+  firstReceiveDate: date("first_receive_date"),
+  lastReceiveDate: date("last_receive_date"),
+  creationDate: date("creation_date"), // From item_list
+
+  // Receiving counts
+  totalReceiveCount: integer("total_receive_count").default(0),
+  uniqueReceiveMonths: integer("unique_receive_months").default(0), // Count of distinct months with receives
+  uniqueReceiveYears: integer("unique_receive_years").default(0), // Count of distinct years with receives
+
+  // Patterns
+  avgDaysBetweenReceives: numeric("avg_days_between_receives"), // Average frequency
+  daysSinceFirstReceive: integer("days_since_first_receive"),
+  daysSinceLastReceive: integer("days_since_last_receive"),
+
+  // Classifications
+  isNewItem: boolean("is_new_item").default(false), // last_rcvd within 7 days of creation_date
+  isRestockedItem: boolean("is_restocked_item").default(false), // Multiple receives over time
+  isSeasonalItem: boolean("is_seasonal_item").default(false), // Yearly pattern detected
+  isOneTimeBuy: boolean("is_one_time_buy").default(false), // No receives for 3+ months
+  isCoreItem: boolean("is_core_item").default(false), // Regular restocking pattern
+
+  // Lifecycle stage
+  lifecycleStage: text("lifecycle_stage"), // New/Core/Seasonal/Discontinued/One-Time
+
+  // Metadata
+  lastCalculatedAt: timestamp("last_calculated_at").defaultNow(),
+  calculatedBy: text("calculated_by"), // user_id or 'system'
+});
+
+export const insertItemReceivingMetricsSchema = createInsertSchema(itemReceivingMetrics);
+
 export type ReceivingVoucher = typeof receivingVouchers.$inferSelect;
 export type InsertReceivingVoucher = z.infer<typeof insertReceivingVoucherSchema>;
 export type ReceivingLine = typeof receivingLines.$inferSelect;
@@ -279,3 +317,5 @@ export type MlFeedback = typeof mlFeedback.$inferSelect;
 export type InsertMlFeedback = z.infer<typeof insertMlFeedbackSchema>;
 export type MLSettingsLog = typeof mlSettingsLog.$inferSelect;
 export type InsertMLSettingsLog = z.infer<typeof insertMlSettingsLogSchema>;
+export type ItemReceivingMetrics = typeof itemReceivingMetrics.$inferSelect;
+export type InsertItemReceivingMetrics = z.infer<typeof insertItemReceivingMetricsSchema>;
