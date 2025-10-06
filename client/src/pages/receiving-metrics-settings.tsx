@@ -124,7 +124,7 @@ export default function ReceivingMetricsSettings() {
       return;
     }
     await clearMutation.mutateAsync();
-    calculateMutation.mutate();
+    await handleCalculateClick();
   };
 
   const formatDate = (dateString: string | null) => {
