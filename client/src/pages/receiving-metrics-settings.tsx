@@ -23,60 +23,37 @@ export default function ReceivingMetricsSettings() {
     queryKey: ["/api/receiving-metrics/stats"],
   });
 
-  // Simple fetch without React Query mutation
-  const handleCalculateClick = async () => {
-    console.log("[DEBUG] Starting calculation...");
-    console.log("[DEBUG] Window location:", window.location.href);
-    console.log("[DEBUG] Fetch URL:", "/api/receiving-metrics/calculate");
-
-    setIsCalculating(true);
-
-    try {
-      console.log("[DEBUG] About to fetch...");
-
+  // Calculate all metrics mutation
+  const calculateMutation = useMutation({
+    mutationFn: async () => {
       const res = await fetch("/api/receiving-metrics/calculate", {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
-      }).then(response => {
-        console.log("[DEBUG] Fetch completed, response:", response);
-        return response;
-      }).catch(fetchErr => {
-        console.error("[DEBUG] Fetch promise rejected:", fetchErr);
-        throw fetchErr;
       });
-
-      console.log("[DEBUG] Response status:", res.status);
-
       if (!res.ok) {
-        const errorText = await res.text();
-        console.error("[DEBUG] Error response:", errorText);
-        alert(`Failed: ${res.status} ${errorText}`);
-        setIsCalculating(false);
-        return;
+        const error = await res.text();
+        throw new Error(error || `Request failed with status ${res.status}`);
       }
-
-      const data = await res.json();
-      console.log("[DEBUG] Response data:", data);
-
-      // Refresh stats
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "✓ Calculation Complete",
+        description: `Successfully calculated metrics for ${data.total} styles in ${(data.duration / 1000).toFixed(1)}s`,
+      });
       queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/stats"] });
-
-      alert(`✓ Success! Calculated metrics for ${data.total} styles in ${(data.duration / 1000).toFixed(1)}s`);
       setIsCalculating(false);
-    } catch (err) {
-      console.error("[DEBUG] Fetch error:", err);
-      alert(`Error: ${err}`);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Calculation Failed",
+        description: error.message,
+        variant: "destructive",
+      });
       setIsCalculating(false);
-    }
-  };
-
-  // Calculate all metrics mutation (DISABLED - using simple fetch instead)
-  const calculateMutation = useMutation({
-    mutationFn: async () => {
-      throw new Error("Disabled - use handleCalculateClick instead");
     },
   });
 
@@ -106,17 +83,9 @@ export default function ReceivingMetricsSettings() {
     },
   });
 
-  const handleCalculate = (e?: React.MouseEvent) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-
-    // Use setTimeout to break out of the current execution context
-    setTimeout(() => {
-      handleCalculateClick().catch(err => {
-        console.error("Top-level catch:", err);
-        alert(`Unhandled error: ${err}`);
-      });
-    }, 0);
+  const handleCalculate = () => {
+    setIsCalculating(true);
+    calculateMutation.mutate();
   };
 
   const handleClearAndRebuild = async () => {
@@ -124,7 +93,8 @@ export default function ReceivingMetricsSettings() {
       return;
     }
     await clearMutation.mutateAsync();
-    await handleCalculateClick();
+    setIsCalculating(true);
+    calculateMutation.mutate();
   };
 
   const formatDate = (dateString: string | null) => {
