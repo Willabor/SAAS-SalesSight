@@ -26,15 +26,26 @@ export default function ReceivingMetricsSettings() {
   // Simple fetch without React Query mutation
   const handleCalculateClick = async () => {
     console.log("[DEBUG] Starting calculation...");
+    console.log("[DEBUG] Window location:", window.location.href);
+    console.log("[DEBUG] Fetch URL:", "/api/receiving-metrics/calculate");
+
     setIsCalculating(true);
 
     try {
+      console.log("[DEBUG] About to fetch...");
+
       const res = await fetch("/api/receiving-metrics/calculate", {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
+      }).then(response => {
+        console.log("[DEBUG] Fetch completed, response:", response);
+        return response;
+      }).catch(fetchErr => {
+        console.error("[DEBUG] Fetch promise rejected:", fetchErr);
+        throw fetchErr;
       });
 
       console.log("[DEBUG] Response status:", res.status);
