@@ -16,7 +16,7 @@ interface UploadState {
     skipped: number;
     failed: number;
   } | null;
-  uploadType: 'receiving' | 'item-list' | 'sales';
+  uploadType: 'receiving' | 'item-list' | 'sales' | 'metrics-calculation';
 }
 
 interface UploadResult {
@@ -137,7 +137,7 @@ export function setActiveUpload(promise: Promise<any> | null): void {
  * Start tracking an upload
  */
 export function startUploadTracking(
-  uploadType: 'receiving' | 'item-list' | 'sales',
+  uploadType: 'receiving' | 'item-list' | 'sales' | 'metrics-calculation',
   fileName: string,
   total: number,
   currentStep: 'upload' | 'format' | 'flatten' | 'complete' = 'flatten'
@@ -246,7 +246,7 @@ export function subscribeToUploadState(
  * Execute an upload with state tracking
  */
 export async function executeTrackedUpload<T extends UploadResult>(
-  uploadType: 'receiving' | 'item-list' | 'sales',
+  uploadType: 'receiving' | 'item-list' | 'sales' | 'metrics-calculation',
   fileName: string,
   uploadFn: (
     onProgress: (stats: {

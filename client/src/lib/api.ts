@@ -269,3 +269,108 @@ export async function getUploadHistory(limit?: number): Promise<any[]> {
   const response = await apiRequest('GET', endpoint);
   return response.json();
 }
+
+export async function calculateMetricsWithProgress(
+  onProgress: (progress: { processed: number; total: number; uploaded: number; skipped: number; failed: number }) => void,
+  batchSize: number = 100,
+  checkPauseStop?: () => { isPaused: boolean; isStopped: boolean }
+): Promise<{
+  success: boolean;
+  uploaded: number;
+  skipped: number;
+  failed: number;
+  total: number;
+  errors: string[];
+  stopped?: boolean;
+}> {
+  // First, get all style numbers
+  const styleNumbersResponse = await apiRequest('GET', '/api/receiving-metrics/style-numbers');
+  const { styleNumbers, total } = await styleNumbersResponse.json();
+
+  let totalCalculated = 0;
+  let totalFailed = 0;
+  const allErrors: string[] = [];
+
+  // Process style numbers in batches
+  for (let i = 0; i < styleNumbers.length; i += batchSize) {
+    // Check if calculation should be paused or stopped
+    if (checkPauseStop) {
+      if (checkPauseStop().isStopped) {
+        return {
+          success: false,
+          uploaded: totalCalculated,
+          skipped: 0,
+          failed: totalFailed,
+          total,
+          errors: allErrors.slice(0, 10),
+          stopped: true
+        };
+      }
+
+      // Wait while paused
+      while (checkPauseStop().isPaused && !checkPauseStop().isStopped) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Check again after pause in case it was stopped
+      if (checkPauseStop().isStopped) {
+        return {
+          success: false,
+          uploaded: totalCalculated,
+          skipped: 0,
+          failed: totalFailed,
+          total,
+          errors: allErrors.slice(0, 10),
+          stopped: true
+        };
+      }
+    }
+
+    const batch = styleNumbers.slice(i, i + batchSize);
+    const processed = Math.min(i + batchSize, total);
+
+    try {
+      const response = await apiRequest('POST', '/api/receiving-metrics/calculate-batch', {
+        styleNumbers: batch
+      });
+      const result = await response.json();
+
+      totalCalculated += result.successful || 0;
+      totalFailed += result.failed || 0;
+
+      // Update progress
+      onProgress({
+        processed,
+        total,
+        uploaded: totalCalculated,
+        skipped: 0,
+        failed: totalFailed
+      });
+
+      // Small delay between batches to allow UI updates
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+    } catch (error) {
+      // If batch fails, count all items in batch as failed
+      totalFailed += batch.length;
+      allErrors.push(`Batch ${Math.floor(i / batchSize) + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      onProgress({
+        processed,
+        total,
+        uploaded: totalCalculated,
+        skipped: 0,
+        failed: totalFailed
+      });
+    }
+  }
+
+  return {
+    success: totalFailed === 0,
+    uploaded: totalCalculated,
+    skipped: 0,
+    failed: totalFailed,
+    total,
+    errors: allErrors.slice(0, 10)
+  };
+}

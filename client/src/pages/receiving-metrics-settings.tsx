@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,20 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
+import { calculateMetricsWithProgress } from "@/lib/api";
+import {
+  executeTrackedUpload,
+  loadUploadState,
+  subscribeToUploadState,
+  pauseUpload,
+  resumeUpload,
+  stopUpload,
+  clearUploadState,
+  resetUploadControlFlags,
+  isUploadPaused,
+  isUploadStopped,
+} from "@/lib/uploadStateManager";
 
 interface ReceivingMetricsStats {
   total: number;
@@ -16,46 +30,52 @@ interface ReceivingMetricsStats {
 export default function ReceivingMetricsSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  
+  // Progress tracking state
   const [isCalculating, setIsCalculating] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
+  const [uploadStats, setUploadStats] = useState<{
+    processed: number;
+    total: number;
+    uploaded: number;
+    skipped: number;
+    failed: number;
+  } | null>(null);
 
   // Fetch current stats
   const { data: stats, isLoading } = useQuery<ReceivingMetricsStats>({
     queryKey: ["/api/receiving-metrics/stats"],
   });
 
-  // Calculate all metrics mutation
-  const calculateMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/receiving-metrics/calculate", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-      if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || `Request failed with status ${res.status}`);
+  // Restore and subscribe to upload state for cross-page persistence
+  useEffect(() => {
+    const savedState = loadUploadState();
+    if (savedState && savedState.uploadType === 'metrics-calculation') {
+      setIsCalculating(savedState.isUploading);
+      setIsPaused(savedState.isPaused);
+      if (savedState.stats) {
+        setUploadStats(savedState.stats);
       }
-      return res.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "✓ Calculation Complete",
-        description: `Successfully calculated metrics for ${data.total} styles in ${(data.duration / 1000).toFixed(1)}s`,
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/stats"] });
-      setIsCalculating(false);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Calculation Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-      setIsCalculating(false);
-    },
-  });
+    }
+
+    const unsubscribe = subscribeToUploadState((state) => {
+      if (state && state.uploadType === 'metrics-calculation') {
+        setIsCalculating(state.isUploading);
+        setIsPaused(state.isPaused);
+        if (state.stats) {
+          setUploadStats(state.stats);
+        }
+      } else if (!state) {
+        setIsCalculating(false);
+        setUploadStats(null);
+        setIsPaused(false);
+        setIsStopped(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Clear all metrics mutation
   const clearMutation = useMutation({
@@ -83,9 +103,47 @@ export default function ReceivingMetricsSettings() {
     },
   });
 
-  const handleCalculate = () => {
-    setIsCalculating(true);
-    calculateMutation.mutate();
+  const handleCalculate = async () => {
+    try {
+      // Reset control flags before starting new calculation
+      resetUploadControlFlags();
+      setIsCalculating(true);
+      setIsStopped(false);
+
+      const result = await executeTrackedUpload(
+        'metrics-calculation',
+        'Receiving Metrics Calculation',
+        (onProgress) => calculateMetricsWithProgress(
+          onProgress,
+          100, // batch size
+          () => ({ isPaused: isUploadPaused(), isStopped: isUploadStopped() })
+        ),
+        0, // Will be updated once we know the total
+        'flatten'
+      );
+
+      if (result.stopped) {
+        toast({
+          title: "Calculation Stopped",
+          description: `Processed ${result.uploaded} styles before stopping`,
+        });
+      } else {
+        toast({
+          title: "✓ Calculation Complete",
+          description: `Successfully calculated metrics for ${result.uploaded} styles`,
+        });
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/stats"] });
+      setIsCalculating(false);
+    } catch (error) {
+      toast({
+        title: "Calculation Failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+      setIsCalculating(false);
+    }
   };
 
   const handleClearAndRebuild = async () => {
@@ -93,8 +151,30 @@ export default function ReceivingMetricsSettings() {
       return;
     }
     await clearMutation.mutateAsync();
-    setIsCalculating(true);
-    calculateMutation.mutate();
+    handleCalculate();
+  };
+
+  const handlePause = () => {
+    pauseUpload();
+    setIsPaused(true);
+  };
+
+  const handleResume = () => {
+    resumeUpload();
+    setIsPaused(false);
+  };
+
+  const handleStop = () => {
+    stopUpload();
+    setIsStopped(true);
+  };
+
+  const handleClearProgress = () => {
+    clearUploadState();
+    setIsCalculating(false);
+    setUploadStats(null);
+    setIsPaused(false);
+    setIsStopped(false);
   };
 
   const formatDate = (dateString: string | null) => {
@@ -149,6 +229,22 @@ export default function ReceivingMetricsSettings() {
           Manage and calculate intelligent receiving pattern analysis for all products
         </p>
       </div>
+
+      {/* Progress Tracker - Show when calculating */}
+      {isCalculating && uploadStats && (
+        <UploadProgressAdvanced
+          uploadStats={uploadStats}
+          isPaused={isPaused}
+          isStopped={isStopped}
+          uploadType="item-list"
+          onPause={handlePause}
+          onResume={handleResume}
+          onStop={handleStop}
+          onClear={handleClearProgress}
+          showSkipped={false}
+          isUploading={isCalculating}
+        />
+      )}
 
       {/* Current Status */}
       <Card>
@@ -274,6 +370,7 @@ export default function ReceivingMetricsSettings() {
               onClick={handleCalculate}
               disabled={isCalculating}
               className="flex items-center gap-2"
+              data-testid="button-calculate-metrics"
             >
               {isCalculating ? (
                 <>
@@ -290,9 +387,10 @@ export default function ReceivingMetricsSettings() {
 
             <Button
               onClick={handleClearAndRebuild}
-              disabled={clearMutation.isPending || calculateMutation.isPending}
+              disabled={clearMutation.isPending || isCalculating}
               variant="outline"
               className="flex items-center gap-2"
+              data-testid="button-clear-rebuild"
             >
               <Trash2 className="w-4 h-4" />
               Clear & Rebuild
@@ -300,7 +398,7 @@ export default function ReceivingMetricsSettings() {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            <strong>Calculate All Metrics:</strong> Process all {stats?.total || 0} styles (takes ~5-10 seconds)
+            <strong>Calculate All Metrics:</strong> Process all styles with batch progress tracking (pause/resume/stop supported)
             <br />
             <strong>Clear & Rebuild:</strong> Delete existing metrics and recalculate from scratch
           </p>

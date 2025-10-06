@@ -1201,6 +1201,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Receiving Metrics endpoints
+  
+  // Get all style numbers for batch processing
+  app.get("/api/receiving-metrics/style-numbers", isAuthenticated, async (req, res) => {
+    try {
+      const styleNumbers = await db.execute(sql`
+        SELECT DISTINCT style_number
+        FROM item_list
+        WHERE style_number IS NOT NULL
+        ORDER BY style_number
+      `);
+      
+      res.json({
+        styleNumbers: styleNumbers.rows.map((r: any) => r.style_number),
+        total: styleNumbers.rows.length
+      });
+    } catch (error) {
+      console.error("Error fetching style numbers:", error);
+      res.status(500).json({ error: "Failed to fetch style numbers" });
+    }
+  });
+
+  // Calculate metrics for a batch of styles
+  app.post("/api/receiving-metrics/calculate-batch", isAuthenticated, async (req, res) => {
+    try {
+      const user = (req.user as any);
+      const calculatedBy = user?.claims?.sub || 'unknown';
+      const { styleNumbers } = req.body;
+
+      if (!Array.isArray(styleNumbers) || styleNumbers.length === 0) {
+        return res.status(400).json({ error: "styleNumbers must be a non-empty array" });
+      }
+
+      const metrics: any[] = [];
+      let successful = 0;
+      let failed = 0;
+
+      for (const styleNumber of styleNumbers) {
+        try {
+          const metric = await calculateMetricsForStyle(styleNumber, calculatedBy);
+          if (metric) {
+            metrics.push(metric);
+            successful++;
+          }
+        } catch (err) {
+          console.error(`Failed to calculate metrics for style ${styleNumber}:`, err);
+          failed++;
+        }
+      }
+
+      // Save batch to database
+      if (metrics.length > 0) {
+        await storage.batchUpsertReceivingMetrics(metrics);
+      }
+
+      res.json({
+        success: true,
+        processed: styleNumbers.length,
+        successful,
+        failed,
+        message: `Processed ${styleNumbers.length} styles: ${successful} successful, ${failed} failed`
+      });
+    } catch (error) {
+      console.error("Error calculating batch metrics:", error);
+      res.status(500).json({ error: "Failed to calculate batch metrics" });
+    }
+  });
+
+  // Legacy: Calculate all metrics at once (keeping for backwards compatibility, but not recommended for large datasets)
   app.post("/api/receiving-metrics/calculate", isAuthenticated, async (req, res) => {
     try {
       const user = (req.user as any);
