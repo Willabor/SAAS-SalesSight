@@ -1364,6 +1364,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/receiving-metrics/export", isAuthenticated, async (req, res) => {
+    try {
+      const stats = await storage.getReceivingMetricsStats();
+      const allMetrics = await storage.getAllReceivingMetrics({ limit: 100000, offset: 0 });
+      
+      res.json({
+        stats,
+        metrics: allMetrics.data
+      });
+    } catch (error) {
+      console.error("Error exporting metrics:", error);
+      res.status(500).json({ error: "Failed to export metrics" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
