@@ -221,7 +221,7 @@ async function getReceivingHistoryForStyle(styleNumber: string): Promise<Receivi
     ORDER BY rv.date ASC
   `);
 
-  return result.rows as ReceivingHistoryRecord[];
+  return result.rows as unknown as ReceivingHistoryRecord[];
 }
 
 /**
