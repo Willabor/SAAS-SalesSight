@@ -37,7 +37,7 @@ function Router() {
           <Route path="/receiving-metrics-settings" component={ReceivingMetricsSettings} />
         </>
       )}
-      <Route component={NotFound} />
+      <Route path="/:rest*" component={NotFound} />
     </Switch>
   );
 }
