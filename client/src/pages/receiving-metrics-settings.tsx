@@ -4,10 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles } from "lucide-react";
+import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 import { calculateMetricsWithProgress } from "@/lib/api";
+import { exportReceivingMetricsToExcel } from "@/lib/excelExport";
 import {
   executeTrackedUpload,
   loadUploadState,
@@ -175,6 +176,32 @@ export default function ReceivingMetricsSettings() {
     setUploadStats(null);
     setIsPaused(false);
     setIsStopped(false);
+  };
+
+  const handleExport = async () => {
+    try {
+      const response = await fetch("/api/receiving-metrics/export", {
+        credentials: "include",
+      });
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch export data");
+      }
+      
+      const data = await response.json();
+      const fileName = exportReceivingMetricsToExcel(data.stats, data.metrics);
+      
+      toast({
+        title: "✓ Export Complete",
+        description: `Downloaded ${fileName} with ${data.metrics.length} records`,
+      });
+    } catch (error) {
+      toast({
+        title: "Export Failed",
+        description: error instanceof Error ? error.message : "Failed to export metrics",
+        variant: "destructive",
+      });
+    }
   };
 
   const formatDate = (dateString: string | null) => {
@@ -365,7 +392,7 @@ export default function ReceivingMetricsSettings() {
             </AlertDescription>
           </Alert>
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <Button
               onClick={handleCalculate}
               disabled={isCalculating}
@@ -395,12 +422,25 @@ export default function ReceivingMetricsSettings() {
               <Trash2 className="w-4 h-4" />
               Clear & Rebuild
             </Button>
+
+            <Button
+              onClick={handleExport}
+              disabled={!stats || stats.total === 0}
+              variant="secondary"
+              className="flex items-center gap-2"
+              data-testid="button-export-excel"
+            >
+              <Download className="w-4 h-4" />
+              Export to Excel
+            </Button>
           </div>
 
           <p className="text-sm text-muted-foreground">
             <strong>Calculate All Metrics:</strong> Process all styles with batch progress tracking (pause/resume/stop supported)
             <br />
             <strong>Clear & Rebuild:</strong> Delete existing metrics and recalculate from scratch
+            <br />
+            <strong>Export to Excel:</strong> Download a professional report with summary statistics and detailed metrics for management review
           </p>
         </CardContent>
       </Card>
