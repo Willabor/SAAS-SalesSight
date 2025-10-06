@@ -1371,7 +1371,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json({
         stats,
-        metrics: allMetrics.data
+        metrics: allMetrics.metrics
       });
     } catch (error) {
       console.error("Error exporting metrics:", error);
