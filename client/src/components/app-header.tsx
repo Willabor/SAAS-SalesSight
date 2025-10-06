@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
-import { FileSpreadsheet, Package, Receipt, BarChart3, Truck, Target, LogOut, User, History } from "lucide-react";
+import { FileSpreadsheet, Package, Receipt, BarChart3, Truck, Target, LogOut, User, History, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -90,6 +90,12 @@ export function AppHeader() {
                 <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-receiving-history">
                   <Truck className="w-5 h-5" />
                   <span className="hidden sm:inline">Receiving</span>
+                </button>
+              </Link>
+              <Link href="/receiving-metrics-settings">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-receiving-metrics-settings">
+                  <Settings className="w-5 h-5" />
+                  <span className="hidden sm:inline">Metrics</span>
                 </button>
               </Link>
             </nav>
