@@ -4,10 +4,14 @@ import type { InsertItemReceivingMetrics } from "@shared/schema";
 
 interface ReceivingHistoryRecord {
   style_number: string;
-  item_number: string;
   receive_date: Date;
-  creation_date: Date | null;
-  last_rcvd: Date | null;
+}
+
+interface StyleMetadata {
+  style_number: string;
+  item_number: string;
+  earliest_creation_date: Date | null;
+  latest_last_rcvd: Date | null;
 }
 
 interface CalculatedMetrics extends Omit<InsertItemReceivingMetrics, 'id' | 'lastCalculatedAt'> {
@@ -21,10 +25,16 @@ export async function calculateMetricsForStyle(
   styleNumber: string,
   calculatedBy: string = 'system'
 ): Promise<CalculatedMetrics | null> {
-  // Get all receiving history for this style
+  // Get all receiving history for this style (voucher-level)
   const history = await getReceivingHistoryForStyle(styleNumber);
 
   if (history.length === 0) {
+    return null;
+  }
+
+  // Get style-level metadata separately
+  const metadata = await getStyleMetadata(styleNumber);
+  if (!metadata) {
     return null;
   }
 
@@ -35,7 +45,7 @@ export async function calculateMetricsForStyle(
 
   const firstReceive = sortedHistory[0];
   const lastReceive = sortedHistory[sortedHistory.length - 1];
-  const creationDate = firstReceive.creation_date;
+  const creationDate = metadata.earliest_creation_date;
   const totalReceives = sortedHistory.length;
 
   // Calculate unique months and years
@@ -89,7 +99,7 @@ export async function calculateMetricsForStyle(
 
   return {
     styleNumber,
-    itemNumber: firstReceive.item_number,
+    itemNumber: metadata.item_number,
     firstReceiveDate: new Date(firstReceive.receive_date).toISOString().split('T')[0],
     lastReceiveDate: new Date(lastReceive.receive_date).toISOString().split('T')[0],
     creationDate: creationDate ? new Date(creationDate).toISOString().split('T')[0] : null,
@@ -204,20 +214,41 @@ function detectSeasonalPattern(data: {
 }
 
 /**
+ * Get style-level metadata (earliest creation, latest last_rcvd, representative item_number)
+ */
+async function getStyleMetadata(styleNumber: string): Promise<StyleMetadata | null> {
+  const result = await db.execute(sql`
+    SELECT 
+      style_number,
+      MIN(item_number) as item_number,
+      MIN(creation_date) as earliest_creation_date,
+      MAX(last_rcvd) as latest_last_rcvd
+    FROM item_list
+    WHERE style_number = ${styleNumber}
+    GROUP BY style_number
+  `);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0] as unknown as StyleMetadata;
+}
+
+/**
  * Get receiving history for a specific style from database
+ * Groups by voucher_id to count unique receiving events (one row per voucher)
  */
 async function getReceivingHistoryForStyle(styleNumber: string): Promise<ReceivingHistoryRecord[]> {
   const result = await db.execute(sql`
-    SELECT DISTINCT
+    SELECT
       i.style_number,
-      i.item_number,
-      rv.date as receive_date,
-      i.creation_date,
-      i.last_rcvd
+      rv.date as receive_date
     FROM receiving_lines rl
     JOIN receiving_vouchers rv ON rl.voucher_id = rv.id
     JOIN item_list i ON rl.item_number = i.item_number
     WHERE i.style_number = ${styleNumber}
+    GROUP BY i.style_number, rv.id, rv.date
     ORDER BY rv.date ASC
   `);
 
