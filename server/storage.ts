@@ -6,6 +6,7 @@ import {
   receivingVouchers,
   receivingLines,
   itemReceivingMetrics,
+  receivingMetricsSettings,
   type User,
   type UpsertUser,
   type InsertUser,
@@ -328,6 +329,10 @@ export interface IStorage {
     byLifecycle: Record<string, number>;
     lastCalculated: Date | null;
   }>;
+
+  // Receiving Metrics Settings
+  getReceivingMetricsSettings(): Promise<any | null>;
+  upsertReceivingMetricsSettings(settings: any): Promise<any>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2753,6 +2758,37 @@ export class DatabaseStorage implements IStorage {
       byLifecycle,
       lastCalculated: lastCalc?.lastCalculated || null
     };
+  }
+
+  // Receiving Metrics Settings operations
+  async getReceivingMetricsSettings() {
+    const result = await db
+      .select()
+      .from(receivingMetricsSettings)
+      .where(eq(receivingMetricsSettings.isActive, true))
+      .orderBy(desc(receivingMetricsSettings.createdAt))
+      .limit(1);
+
+    return result[0] || null;
+  }
+
+  async upsertReceivingMetricsSettings(settings: any) {
+    // Mark all existing settings as inactive
+    await db
+      .update(receivingMetricsSettings)
+      .set({ isActive: false });
+
+    // Insert new settings
+    const result = await db
+      .insert(receivingMetricsSettings)
+      .values({
+        ...settings,
+        isActive: true,
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    return result[0];
   }
 }
 

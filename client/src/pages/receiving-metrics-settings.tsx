@@ -4,8 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download } from "lucide-react";
+import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download, X, Settings as SettingsIcon, Save, RotateCcw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 import { calculateMetricsWithProgress } from "@/lib/api";
 import { exportReceivingMetricsToExcel } from "@/lib/excelExport";
@@ -28,10 +31,45 @@ interface ReceivingMetricsStats {
   lastCalculated: string | null;
 }
 
+interface ReceivingMetricsSettings {
+  id?: number;
+  newItemDaysFromCreation: number;
+  newItemMaxReceives: number;
+  coreItemMinMonths: number;
+  coreItemMinReceives: number;
+  coreItemMaxDaysBetween: number;
+  coreItemMaxDaysSinceLast: number; // NEW: Phase 1
+  seasonalItemMinYears: number;
+  seasonalItemConcentrationPct: number;
+  seasonalItemMinDaysBetween: number;
+  seasonalOverridesDiscontinued: boolean; // NEW: Phase 1
+  seasonalDiscontinuedThreshold: number; // NEW: Phase 1
+  oneTimeBuyMaxReceives: number;
+  oneTimeBuyMinDaysSinceLast: number;
+  discontinuedMinDaysSinceLast: number;
+}
+
+const DEFAULT_SETTINGS: ReceivingMetricsSettings = {
+  newItemDaysFromCreation: 30, // Changed from 7 to 30
+  newItemMaxReceives: 2,
+  coreItemMinMonths: 3,
+  coreItemMinReceives: 5,
+  coreItemMaxDaysBetween: 60,
+  coreItemMaxDaysSinceLast: 90, // NEW: Phase 1
+  seasonalItemMinYears: 2,
+  seasonalItemConcentrationPct: 60,
+  seasonalItemMinDaysBetween: 300,
+  seasonalOverridesDiscontinued: true, // NEW: Phase 1
+  seasonalDiscontinuedThreshold: 365, // NEW: Phase 1
+  oneTimeBuyMaxReceives: 2,
+  oneTimeBuyMinDaysSinceLast: 90,
+  discontinuedMinDaysSinceLast: 180,
+};
+
 export default function ReceivingMetricsSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  
+
   // Progress tracking state
   const [isCalculating, setIsCalculating] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -44,10 +82,27 @@ export default function ReceivingMetricsSettings() {
     failed: number;
   } | null>(null);
 
+  // Settings state
+  const [settings, setSettings] = useState<ReceivingMetricsSettings>(DEFAULT_SETTINGS);
+  const [isEditingSettings, setIsEditingSettings] = useState(false);
+
   // Fetch current stats
   const { data: stats, isLoading } = useQuery<ReceivingMetricsStats>({
     queryKey: ["/api/receiving-metrics/stats"],
   });
+
+  // Fetch current settings
+  const { data: savedSettings, isLoading: isLoadingSettings } = useQuery<ReceivingMetricsSettings>({
+    queryKey: ["/api/receiving-metrics/settings"],
+    retry: false,
+  });
+
+  // Initialize settings from server
+  useEffect(() => {
+    if (savedSettings) {
+      setSettings(savedSettings);
+    }
+  }, [savedSettings]);
 
   // Restore and subscribe to upload state for cross-page persistence
   useEffect(() => {
@@ -98,6 +153,35 @@ export default function ReceivingMetricsSettings() {
     onError: (error: Error) => {
       toast({
         title: "Clear Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Save settings mutation
+  const saveSettingsMutation = useMutation({
+    mutationFn: async (newSettings: ReceivingMetricsSettings) => {
+      const res = await fetch("/api/receiving-metrics/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(newSettings),
+      });
+      if (!res.ok) throw new Error("Failed to save settings");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "✓ Settings Saved",
+        description: "Business logic rules have been updated",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/receiving-metrics/settings"] });
+      setIsEditingSettings(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Save Failed",
         description: error.message,
         variant: "destructive",
       });
@@ -155,6 +239,13 @@ export default function ReceivingMetricsSettings() {
     handleCalculate();
   };
 
+  const handleClearOnly = async () => {
+    if (!confirm("This will permanently delete all calculated metrics. You can recalculate them later. Continue?")) {
+      return;
+    }
+    clearMutation.mutate();
+  };
+
   const handlePause = () => {
     pauseUpload();
     setIsPaused(true);
@@ -183,14 +274,14 @@ export default function ReceivingMetricsSettings() {
       const response = await fetch("/api/receiving-metrics/export", {
         credentials: "include",
       });
-      
+
       if (!response.ok) {
         throw new Error("Failed to fetch export data");
       }
-      
+
       const data = await response.json();
       const fileName = exportReceivingMetricsToExcel(data.stats, data.metrics);
-      
+
       toast({
         title: "✓ Export Complete",
         description: `Downloaded ${fileName} with ${data.metrics.length} records`,
@@ -202,6 +293,36 @@ export default function ReceivingMetricsSettings() {
         variant: "destructive",
       });
     }
+  };
+
+  const handleSaveSettings = () => {
+    // Extract only the rule values, excluding metadata fields
+    const settingsToSave = {
+      newItemDaysFromCreation: settings.newItemDaysFromCreation,
+      newItemMaxReceives: settings.newItemMaxReceives,
+      coreItemMinMonths: settings.coreItemMinMonths,
+      coreItemMinReceives: settings.coreItemMinReceives,
+      coreItemMaxDaysBetween: settings.coreItemMaxDaysBetween,
+      coreItemMaxDaysSinceLast: settings.coreItemMaxDaysSinceLast, // NEW
+      seasonalItemMinYears: settings.seasonalItemMinYears,
+      seasonalItemConcentrationPct: settings.seasonalItemConcentrationPct,
+      seasonalItemMinDaysBetween: settings.seasonalItemMinDaysBetween,
+      seasonalOverridesDiscontinued: settings.seasonalOverridesDiscontinued, // NEW
+      seasonalDiscontinuedThreshold: settings.seasonalDiscontinuedThreshold, // NEW
+      oneTimeBuyMaxReceives: settings.oneTimeBuyMaxReceives,
+      oneTimeBuyMinDaysSinceLast: settings.oneTimeBuyMinDaysSinceLast,
+      discontinuedMinDaysSinceLast: settings.discontinuedMinDaysSinceLast,
+    };
+    saveSettingsMutation.mutate(settingsToSave);
+  };
+
+  const handleResetSettings = () => {
+    setSettings(savedSettings || DEFAULT_SETTINGS);
+    setIsEditingSettings(false);
+  };
+
+  const handleSettingChange = (field: keyof ReceivingMetricsSettings, value: number) => {
+    setSettings(prev => ({ ...prev, [field]: value }));
   };
 
   const formatDate = (dateString: string | null) => {
@@ -327,54 +448,287 @@ export default function ReceivingMetricsSettings() {
         </CardContent>
       </Card>
 
-      {/* Business Rules Info */}
+      {/* Business Rules Info - Editable */}
       <Card>
         <CardHeader>
-          <CardTitle>Business Logic Rules</CardTitle>
-          <CardDescription>How items are classified into lifecycle stages</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Business Logic Rules</CardTitle>
+              <CardDescription>How items are classified into lifecycle stages</CardDescription>
+            </div>
+            {!isEditingSettings ? (
+              <Button
+                onClick={() => setIsEditingSettings(true)}
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-2"
+              >
+                <SettingsIcon className="w-4 h-4" />
+                Edit Rules
+              </Button>
+            ) : (
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleResetSettings}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveSettings}
+                  disabled={saveSettingsMutation.isPending}
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <Save className="w-4 h-4" />
+                  Save Rules
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* New Item Rules */}
             <div className="p-4 border rounded-lg">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-3">
                 <Badge className="bg-green-100 text-green-800">New Item</Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                • Last receive within 7 days of creation<br />
-                • ≤ 2 total receives
-              </p>
+              {isEditingSettings ? (
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="newItemDaysFromCreation" className="text-xs">Days from creation</Label>
+                    <Input
+                      id="newItemDaysFromCreation"
+                      type="number"
+                      min="1"
+                      value={settings.newItemDaysFromCreation}
+                      onChange={(e) => handleSettingChange('newItemDaysFromCreation', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="newItemMaxReceives" className="text-xs">Max receives</Label>
+                    <Input
+                      id="newItemMaxReceives"
+                      type="number"
+                      min="1"
+                      value={settings.newItemMaxReceives}
+                      onChange={(e) => handleSettingChange('newItemMaxReceives', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  • Last receive within {settings.newItemDaysFromCreation} days of creation<br />
+                  • ≤ {settings.newItemMaxReceives} total receives
+                </p>
+              )}
             </div>
+
+            {/* Core Item Rules */}
             <div className="p-4 border rounded-lg">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-3">
                 <Badge className="bg-blue-100 text-blue-800">Core Item</Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                • ≥ 3 different months with receives<br />
-                • ≥ 5 total receives<br />
-                • Average ≤ 60 days between receives
-              </p>
+              {isEditingSettings ? (
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="coreItemMinMonths" className="text-xs">Min months with receives</Label>
+                    <Input
+                      id="coreItemMinMonths"
+                      type="number"
+                      min="1"
+                      value={settings.coreItemMinMonths}
+                      onChange={(e) => handleSettingChange('coreItemMinMonths', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="coreItemMinReceives" className="text-xs">Min total receives</Label>
+                    <Input
+                      id="coreItemMinReceives"
+                      type="number"
+                      min="1"
+                      value={settings.coreItemMinReceives}
+                      onChange={(e) => handleSettingChange('coreItemMinReceives', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="coreItemMaxDaysBetween" className="text-xs">Max days between receives</Label>
+                    <Input
+                      id="coreItemMaxDaysBetween"
+                      type="number"
+                      min="1"
+                      value={settings.coreItemMaxDaysBetween}
+                      onChange={(e) => handleSettingChange('coreItemMaxDaysBetween', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="coreItemMaxDaysSinceLast" className="text-xs font-semibold text-blue-600">🆕 Max days since last receive</Label>
+                    <Input
+                      id="coreItemMaxDaysSinceLast"
+                      type="number"
+                      min="1"
+                      value={settings.coreItemMaxDaysSinceLast}
+                      onChange={(e) => handleSettingChange('coreItemMaxDaysSinceLast', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Prevents zombie Core items</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  • ≥ {settings.coreItemMinMonths} different months with receives<br />
+                  • ≥ {settings.coreItemMinReceives} total receives<br />
+                  • Average ≤ {settings.coreItemMaxDaysBetween} days between receives<br />
+                  • ≤ {settings.coreItemMaxDaysSinceLast} days since last receive
+                </p>
+              )}
             </div>
+
+            {/* Seasonal Item Rules */}
             <div className="p-4 border rounded-lg">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-3">
                 <Badge className="bg-purple-100 text-purple-800">Seasonal</Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                • ≥ 2 years of receives<br />
-                • 60% in same month(s) each year<br />
-                • Average ≥ 300 days between receives
-              </p>
+              {isEditingSettings ? (
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="seasonalItemMinYears" className="text-xs">Min years of receives</Label>
+                    <Input
+                      id="seasonalItemMinYears"
+                      type="number"
+                      min="1"
+                      value={settings.seasonalItemMinYears}
+                      onChange={(e) => handleSettingChange('seasonalItemMinYears', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="seasonalItemConcentrationPct" className="text-xs">Concentration % in same month(s)</Label>
+                    <Input
+                      id="seasonalItemConcentrationPct"
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={settings.seasonalItemConcentrationPct}
+                      onChange={(e) => handleSettingChange('seasonalItemConcentrationPct', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="seasonalItemMinDaysBetween" className="text-xs">Min days between receives</Label>
+                    <Input
+                      id="seasonalItemMinDaysBetween"
+                      type="number"
+                      min="1"
+                      value={settings.seasonalItemMinDaysBetween}
+                      onChange={(e) => handleSettingChange('seasonalItemMinDaysBetween', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="space-y-2 pt-2 border-t">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <Label htmlFor="seasonalOverridesDiscontinued" className="text-xs font-semibold text-purple-600">🆕 Seasonal overrides Discontinued</Label>
+                        <p className="text-xs text-muted-foreground">Prevents seasonal items from being marked discontinued</p>
+                      </div>
+                      <Switch
+                        id="seasonalOverridesDiscontinued"
+                        checked={settings.seasonalOverridesDiscontinued}
+                        onCheckedChange={(checked) => handleSettingChange('seasonalOverridesDiscontinued', checked ? 1 : 0)}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label htmlFor="seasonalDiscontinuedThreshold" className="text-xs font-semibold text-purple-600">🆕 Seasonal discontinued threshold (days)</Label>
+                    <Input
+                      id="seasonalDiscontinuedThreshold"
+                      type="number"
+                      min="1"
+                      value={settings.seasonalDiscontinuedThreshold}
+                      onChange={(e) => handleSettingChange('seasonalDiscontinuedThreshold', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Days before seasonal item = truly discontinued</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  • ≥ {settings.seasonalItemMinYears} years of receives<br />
+                  • {settings.seasonalItemConcentrationPct}% in same month(s) each year<br />
+                  • Average ≥ {settings.seasonalItemMinDaysBetween} days between receives<br />
+                  • Override discontinued: {settings.seasonalOverridesDiscontinued ? 'ON' : 'OFF'} ({settings.seasonalDiscontinuedThreshold}d threshold)
+                </p>
+              )}
             </div>
+
+            {/* One-Time Buy Rules */}
             <div className="p-4 border rounded-lg">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-3">
                 <Badge className="bg-gray-100 text-gray-800">One-Time Buy</Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                • ≤ 2 total receives<br />
-                • ≥ 90 days since last receive<br />
-                • Not classified as Core
-              </p>
+              {isEditingSettings ? (
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="oneTimeBuyMaxReceives" className="text-xs">Max total receives</Label>
+                    <Input
+                      id="oneTimeBuyMaxReceives"
+                      type="number"
+                      min="1"
+                      value={settings.oneTimeBuyMaxReceives}
+                      onChange={(e) => handleSettingChange('oneTimeBuyMaxReceives', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="oneTimeBuyMinDaysSinceLast" className="text-xs">Min days since last receive</Label>
+                    <Input
+                      id="oneTimeBuyMinDaysSinceLast"
+                      type="number"
+                      min="1"
+                      value={settings.oneTimeBuyMinDaysSinceLast}
+                      onChange={(e) => handleSettingChange('oneTimeBuyMinDaysSinceLast', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="discontinuedMinDaysSinceLast" className="text-xs">Discontinued threshold (days)</Label>
+                    <Input
+                      id="discontinuedMinDaysSinceLast"
+                      type="number"
+                      min="1"
+                      value={settings.discontinuedMinDaysSinceLast}
+                      onChange={(e) => handleSettingChange('discontinuedMinDaysSinceLast', parseInt(e.target.value))}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  • ≤ {settings.oneTimeBuyMaxReceives} total receives<br />
+                  • ≥ {settings.oneTimeBuyMinDaysSinceLast} days since last receive<br />
+                  • Not classified as Core<br />
+                  <span className="text-xs italic">({settings.discontinuedMinDaysSinceLast}+ days = Discontinued)</span>
+                </p>
+              )}
             </div>
           </div>
+
+          {isEditingSettings && (
+            <Alert className="mt-4">
+              <AlertDescription>
+                <strong>Note:</strong> After changing rules, click "Clear & Rebuild" or "Calculate All Metrics" to apply the new rules to existing data.
+              </AlertDescription>
+            </Alert>
+          )}
         </CardContent>
       </Card>
 
@@ -424,6 +778,17 @@ export default function ReceivingMetricsSettings() {
             </Button>
 
             <Button
+              onClick={handleClearOnly}
+              disabled={clearMutation.isPending || isCalculating || !stats || stats.total === 0}
+              variant="destructive"
+              className="flex items-center gap-2"
+              data-testid="button-clear-metrics"
+            >
+              <X className="w-4 h-4" />
+              Clear Metrics
+            </Button>
+
+            <Button
               onClick={handleExport}
               disabled={!stats || stats.total === 0}
               variant="secondary"
@@ -439,6 +804,8 @@ export default function ReceivingMetricsSettings() {
             <strong>Calculate All Metrics:</strong> Process all styles with batch progress tracking (pause/resume/stop supported)
             <br />
             <strong>Clear & Rebuild:</strong> Delete existing metrics and recalculate from scratch
+            <br />
+            <strong>Clear Metrics:</strong> Permanently delete all metrics without recalculating (reset to zero)
             <br />
             <strong>Export to Excel:</strong> Download a professional report with summary statistics and detailed metrics for management review
           </p>

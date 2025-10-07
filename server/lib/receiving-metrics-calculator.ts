@@ -18,12 +18,47 @@ interface CalculatedMetrics extends Omit<InsertItemReceivingMetrics, 'id' | 'las
   styleNumber: string;
 }
 
+interface BusinessRuleSettings {
+  newItemDaysFromCreation?: number;
+  newItemMaxReceives?: number;
+  coreItemMinMonths?: number;
+  coreItemMinReceives?: number;
+  coreItemMaxDaysBetween?: number;
+  coreItemMaxDaysSinceLast?: number; // NEW Phase 1: Prevent zombie Core items
+  seasonalItemMinYears?: number;
+  seasonalItemConcentrationPct?: number;
+  seasonalItemMinDaysBetween?: number;
+  seasonalOverridesDiscontinued?: boolean; // NEW Phase 1: Seasonal override toggle
+  seasonalDiscontinuedThreshold?: number; // NEW Phase 1: Days threshold for seasonal override
+  oneTimeBuyMaxReceives?: number;
+  oneTimeBuyMinDaysSinceLast?: number;
+  discontinuedMinDaysSinceLast?: number;
+}
+
+const DEFAULT_SETTINGS: BusinessRuleSettings = {
+  newItemDaysFromCreation: 30, // Changed from 7 to 30 (Phase 1)
+  newItemMaxReceives: 2,
+  coreItemMinMonths: 3,
+  coreItemMinReceives: 5,
+  coreItemMaxDaysBetween: 60,
+  coreItemMaxDaysSinceLast: 90, // NEW Phase 1: Prevent zombie Core items
+  seasonalItemMinYears: 2,
+  seasonalItemConcentrationPct: 60,
+  seasonalItemMinDaysBetween: 300,
+  seasonalOverridesDiscontinued: true, // NEW Phase 1: Seasonal override enabled by default
+  seasonalDiscontinuedThreshold: 365, // NEW Phase 1: 365 days threshold
+  oneTimeBuyMaxReceives: 2,
+  oneTimeBuyMinDaysSinceLast: 90,
+  discontinuedMinDaysSinceLast: 180,
+};
+
 /**
  * Calculate receiving metrics for a single style
  */
 export async function calculateMetricsForStyle(
   styleNumber: string,
-  calculatedBy: string = 'system'
+  calculatedBy: string = 'system',
+  settings: BusinessRuleSettings = DEFAULT_SETTINGS
 ): Promise<CalculatedMetrics | null> {
   // Get all receiving history for this style (voucher-level)
   const history = await getReceivingHistoryForStyle(styleNumber);
@@ -95,7 +130,7 @@ export async function calculateMetricsForStyle(
     lastReceiveDate: new Date(lastReceive.receive_date),
     creationDate: creationDate ? new Date(creationDate) : null,
     receiveDates: sortedHistory.map(h => new Date(h.receive_date))
-  });
+  }, settings);
 
   return {
     styleNumber,
@@ -128,7 +163,7 @@ function applyBusinessRules(data: {
   lastReceiveDate: Date;
   creationDate: Date | null;
   receiveDates: Date[];
-}) {
+}, settings: BusinessRuleSettings = DEFAULT_SETTINGS) {
   const {
     totalReceives,
     uniqueMonths,
@@ -139,37 +174,60 @@ function applyBusinessRules(data: {
     lastReceiveDate
   } = data;
 
+  // Merge with defaults to ensure all settings are present
+  const config = { ...DEFAULT_SETTINGS, ...settings };
+
   // Rule 1: New Item Detection
   const isNewItem = creationDate
-    ? Math.abs(lastReceiveDate.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24) <= 7 && totalReceives <= 2
+    ? Math.abs(lastReceiveDate.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24) <= config.newItemDaysFromCreation!
+      && totalReceives <= config.newItemMaxReceives!
     : false;
 
   // Rule 2: Restock Detection
   const isRestockedItem = creationDate
-    ? Math.abs(lastReceiveDate.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24) > 7 && totalReceives >= 2
+    ? Math.abs(lastReceiveDate.getTime() - creationDate.getTime()) / (1000 * 60 * 60 * 24) > config.newItemDaysFromCreation!
+      && totalReceives >= 2
     : totalReceives >= 2;
 
-  // Rule 3: Core Item Detection
-  const isCoreItem = uniqueMonths >= 3 && totalReceives >= 5 && (avgDaysBetween || 999) <= 60;
+  // Rule 3: Core Item Detection (with recency check - Phase 1)
+  const isCoreItem = uniqueMonths >= config.coreItemMinMonths!
+    && totalReceives >= config.coreItemMinReceives!
+    && (avgDaysBetween || 999) <= config.coreItemMaxDaysBetween!
+    && daysSinceLast <= (config.coreItemMaxDaysSinceLast || 90); // Prevent zombie Core items
 
   // Rule 4: Seasonal Item Detection
-  const isSeasonalItem = detectSeasonalPattern(data);
+  const isSeasonalItem = detectSeasonalPattern(data, config);
 
   // Rule 5: One-Time Buy Detection
-  const isOneTimeBuy = totalReceives <= 2 && daysSinceLast >= 90 && !isCoreItem;
+  const isOneTimeBuy = totalReceives <= config.oneTimeBuyMaxReceives!
+    && daysSinceLast >= config.oneTimeBuyMinDaysSinceLast!
+    && !isCoreItem;
 
-  // Rule 6: Determine Lifecycle Stage (Priority order)
+  // Rule 6: Determine Lifecycle Stage (Updated precedence with Seasonal override - Phase 1)
   let lifecycleStage: string;
+
+  // Check if seasonal override applies first
+  const seasonalOverrideApplies =
+    config.seasonalOverridesDiscontinued &&
+    isSeasonalItem &&
+    daysSinceLast < (config.seasonalDiscontinuedThreshold || 365);
+
   if (isNewItem) {
     lifecycleStage = 'New';
-  } else if (isSeasonalItem) {
+  } else if (seasonalOverrideApplies) {
+    // Seasonal override takes precedence over Discontinued
     lifecycleStage = 'Seasonal';
+  } else if (daysSinceLast >= config.discontinuedMinDaysSinceLast! && !isCoreItem) {
+    // Item is discontinued if not received recently and not Core
+    lifecycleStage = 'Discontinued';
   } else if (isCoreItem) {
     lifecycleStage = 'Core';
-  } else if (isOneTimeBuy && daysSinceLast >= 180) {
-    lifecycleStage = 'Discontinued';
-  } else {
+  } else if (isSeasonalItem) {
+    lifecycleStage = 'Seasonal';
+  } else if (isOneTimeBuy) {
     lifecycleStage = 'One-Time';
+  } else {
+    lifecycleStage = 'Unclassified';
   }
 
   return {
@@ -189,14 +247,15 @@ function detectSeasonalPattern(data: {
   uniqueYears: number;
   avgDaysBetween: number | null;
   receiveDates: Date[];
-}): boolean {
+}, settings: BusinessRuleSettings = DEFAULT_SETTINGS): boolean {
   const { uniqueYears, avgDaysBetween, receiveDates } = data;
+  const config = { ...DEFAULT_SETTINGS, ...settings };
 
-  // Need at least 2 years of data
-  if (uniqueYears < 2) return false;
+  // Need at least configured years of data
+  if (uniqueYears < config.seasonalItemMinYears!) return false;
 
   // Average gap should be large (around yearly)
-  if (!avgDaysBetween || avgDaysBetween < 300) return false;
+  if (!avgDaysBetween || avgDaysBetween < config.seasonalItemMinDaysBetween!) return false;
 
   // Group receives by month
   const monthCounts: Record<number, number> = {};
@@ -209,8 +268,8 @@ function detectSeasonalPattern(data: {
   const maxCount = Math.max(...Object.values(monthCounts));
   const totalReceives = receiveDates.length;
 
-  // At least 60% of receives in same month(s) = seasonal
-  return maxCount / totalReceives >= 0.6;
+  // Use configured concentration percentage
+  return maxCount / totalReceives >= (config.seasonalItemConcentrationPct! / 100);
 }
 
 /**
@@ -291,12 +350,13 @@ export async function getAllStyleNumbers(): Promise<string[]> {
  */
 export async function calculateMetricsForStyles(
   styleNumbers: string[],
-  calculatedBy: string = 'system'
+  calculatedBy: string = 'system',
+  settings: BusinessRuleSettings = DEFAULT_SETTINGS
 ): Promise<CalculatedMetrics[]> {
   const metrics: CalculatedMetrics[] = [];
 
   for (const styleNumber of styleNumbers) {
-    const metric = await calculateMetricsForStyle(styleNumber, calculatedBy);
+    const metric = await calculateMetricsForStyle(styleNumber, calculatedBy, settings);
     if (metric) {
       metrics.push(metric);
     }
@@ -308,12 +368,12 @@ export async function calculateMetricsForStyles(
 /**
  * Calculate metrics for ALL styles
  */
-export async function calculateAllMetrics(calculatedBy: string = 'system'): Promise<{
+export async function calculateAllMetrics(calculatedBy: string = 'system', settings: BusinessRuleSettings = DEFAULT_SETTINGS): Promise<{
   total: number;
   metrics: CalculatedMetrics[];
 }> {
   const allStyles = await getAllStyleNumbers();
-  const metrics = await calculateMetricsForStyles(allStyles, calculatedBy);
+  const metrics = await calculateMetricsForStyles(allStyles, calculatedBy, settings);
 
   return {
     total: metrics.length,

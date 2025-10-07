@@ -303,7 +303,47 @@ export const itemReceivingMetrics = pgTable("item_receiving_metrics", {
   calculatedBy: text("calculated_by"), // user_id or 'system'
 });
 
+// Receiving Metrics Settings - Business logic configuration
+export const receivingMetricsSettings = pgTable("receiving_metrics_settings", {
+  id: serial("id").primaryKey(),
+
+  // New Item Rules
+  newItemDaysFromCreation: integer("new_item_days_from_creation").default(30), // Changed from 7 to 30
+  newItemMaxReceives: integer("new_item_max_receives").default(2),
+
+  // Core Item Rules
+  coreItemMinMonths: integer("core_item_min_months").default(3),
+  coreItemMinReceives: integer("core_item_min_receives").default(5),
+  coreItemMaxDaysBetween: integer("core_item_max_days_between").default(60),
+  coreItemMaxDaysSinceLast: integer("core_item_max_days_since_last").default(90), // NEW: Prevent zombie Core items
+
+  // Seasonal Item Rules
+  seasonalItemMinYears: integer("seasonal_item_min_years").default(2),
+  seasonalItemConcentrationPct: integer("seasonal_item_concentration_pct").default(60), // percentage
+  seasonalItemMinDaysBetween: integer("seasonal_item_min_days_between").default(300),
+  seasonalOverridesDiscontinued: boolean("seasonal_overrides_discontinued").default(true), // NEW: Seasonal override
+  seasonalDiscontinuedThreshold: integer("seasonal_discontinued_threshold").default(365), // NEW: Days before seasonal = discontinued
+
+  // One-Time Buy Rules
+  oneTimeBuyMaxReceives: integer("one_time_buy_max_receives").default(2),
+  oneTimeBuyMinDaysSinceLast: integer("one_time_buy_min_days_since_last").default(90),
+
+  // Discontinued Rules
+  discontinuedMinDaysSinceLast: integer("discontinued_min_days_since_last").default(180),
+
+  // Metadata
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  createdBy: text("created_by"),
+});
+
 export const insertItemReceivingMetricsSchema = createInsertSchema(itemReceivingMetrics);
+export const insertReceivingMetricsSettingsSchema = createInsertSchema(receivingMetricsSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
 
 export type ReceivingVoucher = typeof receivingVouchers.$inferSelect;
 export type InsertReceivingVoucher = z.infer<typeof insertReceivingVoucherSchema>;
@@ -319,3 +359,5 @@ export type MLSettingsLog = typeof mlSettingsLog.$inferSelect;
 export type InsertMLSettingsLog = z.infer<typeof insertMlSettingsLogSchema>;
 export type ItemReceivingMetrics = typeof itemReceivingMetrics.$inferSelect;
 export type InsertItemReceivingMetrics = z.infer<typeof insertItemReceivingMetricsSchema>;
+export type ReceivingMetricsSettings = typeof receivingMetricsSettings.$inferSelect;
+export type InsertReceivingMetricsSettings = z.infer<typeof insertReceivingMetricsSettingsSchema>;

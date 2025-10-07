@@ -1233,13 +1233,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "styleNumbers must be a non-empty array" });
       }
 
+      // Fetch current settings
+      const dbSettings = await storage.getReceivingMetricsSettings();
+
+      // Convert null values to undefined for calculator
+      const settings = dbSettings ? {
+        newItemDaysFromCreation: dbSettings.newItemDaysFromCreation ?? undefined,
+        newItemMaxReceives: dbSettings.newItemMaxReceives ?? undefined,
+        coreItemMinMonths: dbSettings.coreItemMinMonths ?? undefined,
+        coreItemMinReceives: dbSettings.coreItemMinReceives ?? undefined,
+        coreItemMaxDaysBetween: dbSettings.coreItemMaxDaysBetween ?? undefined,
+        coreItemMaxDaysSinceLast: dbSettings.coreItemMaxDaysSinceLast ?? undefined,
+        seasonalItemMinYears: dbSettings.seasonalItemMinYears ?? undefined,
+        seasonalItemConcentrationPct: dbSettings.seasonalItemConcentrationPct ?? undefined,
+        seasonalItemMinDaysBetween: dbSettings.seasonalItemMinDaysBetween ?? undefined,
+        seasonalOverridesDiscontinued: dbSettings.seasonalOverridesDiscontinued ?? undefined,
+        seasonalDiscontinuedThreshold: dbSettings.seasonalDiscontinuedThreshold ?? undefined,
+        oneTimeBuyMaxReceives: dbSettings.oneTimeBuyMaxReceives ?? undefined,
+        oneTimeBuyMinDaysSinceLast: dbSettings.oneTimeBuyMinDaysSinceLast ?? undefined,
+        discontinuedMinDaysSinceLast: dbSettings.discontinuedMinDaysSinceLast ?? undefined,
+      } : undefined;
+
       const metrics: any[] = [];
       let successful = 0;
       let failed = 0;
 
       for (const styleNumber of styleNumbers) {
         try {
-          const metric = await calculateMetricsForStyle(styleNumber, calculatedBy);
+          const metric = await calculateMetricsForStyle(styleNumber, calculatedBy, settings);
           if (metric) {
             metrics.push(metric);
             successful++;
@@ -1300,7 +1321,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = (req.user as any);
       const calculatedBy = user?.claims?.sub || 'unknown';
 
-      const metrics = await calculateMetricsForStyle(styleNumber, calculatedBy);
+      // Fetch current settings
+      const dbSettings = await storage.getReceivingMetricsSettings();
+
+      // Convert null values to undefined for calculator
+      const settings = dbSettings ? {
+        newItemDaysFromCreation: dbSettings.newItemDaysFromCreation ?? undefined,
+        newItemMaxReceives: dbSettings.newItemMaxReceives ?? undefined,
+        coreItemMinMonths: dbSettings.coreItemMinMonths ?? undefined,
+        coreItemMinReceives: dbSettings.coreItemMinReceives ?? undefined,
+        coreItemMaxDaysBetween: dbSettings.coreItemMaxDaysBetween ?? undefined,
+        coreItemMaxDaysSinceLast: dbSettings.coreItemMaxDaysSinceLast ?? undefined,
+        seasonalItemMinYears: dbSettings.seasonalItemMinYears ?? undefined,
+        seasonalItemConcentrationPct: dbSettings.seasonalItemConcentrationPct ?? undefined,
+        seasonalItemMinDaysBetween: dbSettings.seasonalItemMinDaysBetween ?? undefined,
+        seasonalOverridesDiscontinued: dbSettings.seasonalOverridesDiscontinued ?? undefined,
+        seasonalDiscontinuedThreshold: dbSettings.seasonalDiscontinuedThreshold ?? undefined,
+        oneTimeBuyMaxReceives: dbSettings.oneTimeBuyMaxReceives ?? undefined,
+        oneTimeBuyMinDaysSinceLast: dbSettings.oneTimeBuyMinDaysSinceLast ?? undefined,
+        discontinuedMinDaysSinceLast: dbSettings.discontinuedMinDaysSinceLast ?? undefined,
+      } : undefined;
+
+      const metrics = await calculateMetricsForStyle(styleNumber, calculatedBy, settings);
 
       if (!metrics) {
         return res.status(404).json({ error: "No receiving history found for this style" });
@@ -1338,6 +1380,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // IMPORTANT: Specific routes must come BEFORE parameterized routes
+  // Otherwise /export and /settings get matched as :styleNumber
+  app.get("/api/receiving-metrics/export", isAuthenticated, async (req, res) => {
+    try {
+      const stats = await storage.getReceivingMetricsStats();
+      const allMetrics = await storage.getAllReceivingMetrics({ limit: 100000, offset: 0 });
+
+      res.json({
+        stats,
+        metrics: allMetrics.metrics
+      });
+    } catch (error) {
+      console.error("Error exporting metrics:", error);
+      res.status(500).json({ error: "Failed to export metrics" });
+    }
+  });
+
+  // Receiving Metrics Settings endpoints (must be before :styleNumber)
+  app.get("/api/receiving-metrics/settings", isAuthenticated, async (req, res) => {
+    try {
+      const settings = await storage.getReceivingMetricsSettings();
+      if (!settings) {
+        // Return default settings if none exist
+        return res.json({
+          newItemDaysFromCreation: 7,
+          newItemMaxReceives: 2,
+          coreItemMinMonths: 3,
+          coreItemMinReceives: 5,
+          coreItemMaxDaysBetween: 60,
+          seasonalItemMinYears: 2,
+          seasonalItemConcentrationPct: 60,
+          seasonalItemMinDaysBetween: 300,
+          oneTimeBuyMaxReceives: 2,
+          oneTimeBuyMinDaysSinceLast: 90,
+          discontinuedMinDaysSinceLast: 180,
+        });
+      }
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching settings:", error);
+      res.status(500).json({ error: "Failed to fetch settings" });
+    }
+  });
+
+  app.post("/api/receiving-metrics/settings", isAuthenticated, async (req, res) => {
+    try {
+      const settings = req.body;
+      const user = (req.user as any);
+      const createdBy = user?.claims?.sub || 'unknown';
+
+      const savedSettings = await storage.upsertReceivingMetricsSettings({
+        ...settings,
+        createdBy,
+      });
+
+      res.json(savedSettings);
+    } catch (error) {
+      console.error("Error saving settings:", error);
+      res.status(500).json({ error: "Failed to save settings" });
+    }
+  });
+
   app.get("/api/receiving-metrics/:styleNumber", isAuthenticated, async (req, res) => {
     try {
       const { styleNumber } = req.params;
@@ -1361,21 +1465,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting metrics:", error);
       res.status(500).json({ error: "Failed to delete metrics" });
-    }
-  });
-
-  app.get("/api/receiving-metrics/export", isAuthenticated, async (req, res) => {
-    try {
-      const stats = await storage.getReceivingMetricsStats();
-      const allMetrics = await storage.getAllReceivingMetrics({ limit: 100000, offset: 0 });
-      
-      res.json({
-        stats,
-        metrics: allMetrics.metrics
-      });
-    } catch (error) {
-      console.error("Error exporting metrics:", error);
-      res.status(500).json({ error: "Failed to export metrics" });
     }
   });
 
