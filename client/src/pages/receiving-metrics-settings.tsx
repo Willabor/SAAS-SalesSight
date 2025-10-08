@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download, X, Settings as SettingsIcon, Save, RotateCcw, AlertTriangle, BarChart3 } from "lucide-react";
+import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download, X, Settings as SettingsIcon, Save, RotateCcw, AlertTriangle, BarChart3, ArrowLeft } from "lucide-react";
 import { Link } from "wouter";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
@@ -448,6 +448,14 @@ export default function ReceivingMetricsSettings() {
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
       <div>
+        <div className="flex items-center gap-3 mb-2">
+          <Link href="/">
+            <Button variant="ghost" size="sm" data-testid="button-back-dashboard">
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Dashboard
+            </Button>
+          </Link>
+        </div>
         <h1 className="text-3xl font-bold">Receiving Metrics Settings</h1>
         <p className="text-muted-foreground mt-2">
           Multi-dimensional lifecycle analysis combining receiving patterns, sales velocity, and inventory levels
