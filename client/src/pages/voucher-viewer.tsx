@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import * as XLSX from "xlsx";
 import {
   Table,
   TableBody,
@@ -397,6 +398,90 @@ export default function VoucherViewerPage() {
     }
   };
 
+  const handleExportLines = async (type: 'all' | 'filtered') => {
+    try {
+      let dataToExport: Array<{
+        voucherNumber: string | null;
+        date: string | null;
+        store: string | null;
+        vendor: string | null;
+        type: string;
+        itemNumber: string | null;
+        itemName: string | null;
+        qty: number;
+        cost: string;
+        lineTotal: string;
+      }> = [];
+
+      if (type === 'all') {
+        // Fetch all line items from export endpoint
+        const response = await fetch('/api/receiving/export-lines');
+        if (!response.ok) throw new Error("Failed to fetch line items");
+        dataToExport = await response.json();
+      } else {
+        // Fetch filtered line items from export endpoint
+        const searchParams = new URLSearchParams();
+        if (filterStore && filterStore !== 'all') searchParams.append('store', filterStore);
+        if (filterVendor && filterVendor !== 'all') searchParams.append('vendor', filterVendor);
+        if (filterType && filterType !== 'all') searchParams.append('type', filterType);
+        if (debouncedSearch) searchParams.append('search', debouncedSearch);
+
+        const response = await fetch(`/api/receiving/export-lines?${searchParams}`);
+        if (!response.ok) throw new Error("Failed to export line items");
+        dataToExport = await response.json();
+      }
+
+      // Prepare data for Excel export
+      const excelData = dataToExport.map(line => ({
+        'Voucher #': line.voucherNumber || '',
+        'Date': line.date ? formatDate(line.date) : '',
+        'Store': line.store || '',
+        'Vendor': line.vendor || '',
+        'Type': line.type || '',
+        'Item Number': line.itemNumber || '',
+        'Item Name': line.itemName || '',
+        'Qty': line.qty,
+        'Cost': formatCurrency(line.cost),
+        'Line Total': formatCurrency(line.lineTotal),
+      }));
+
+      // Create workbook and worksheet
+      const ws = XLSX.utils.json_to_sheet(excelData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Line Items');
+
+      // Auto-size columns
+      const maxWidth = 50;
+      const wscols = [
+        { wch: 15 }, // Voucher #
+        { wch: 12 }, // Date
+        { wch: 10 }, // Store
+        { wch: 20 }, // Vendor
+        { wch: 10 }, // Type
+        { wch: 15 }, // Item Number
+        { wch: maxWidth }, // Item Name
+        { wch: 8 },  // Qty
+        { wch: 12 }, // Cost
+        { wch: 12 }, // Line Total
+      ];
+      ws['!cols'] = wscols;
+
+      // Generate Excel file and download
+      XLSX.writeFile(wb, `receiving_line_items_${type}_${new Date().toISOString().split('T')[0]}.xlsx`);
+
+      toast({
+        title: "Export successful",
+        description: `Downloaded ${dataToExport.length} line items as Excel`,
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: "Failed to export line items. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const getSortIcon = (columnKey: keyof ReceivingVoucher) => {
     if (sortConfig.key !== columnKey) return <ArrowUpDown className="w-3 h-3 ml-1" />;
     return sortConfig.direction === 'asc'
@@ -508,7 +593,7 @@ export default function VoucherViewerPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuLabel>Export Options</DropdownMenuLabel>
+                    <DropdownMenuLabel>Export Vouchers (CSV)</DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     <DropdownMenuCheckboxItem
                       checked={false}
@@ -525,7 +610,27 @@ export default function VoucherViewerPage() {
                       data-testid="button-export-filtered"
                     >
                       <Download className="w-4 h-4 mr-2" />
-                      Export Filtered ({voucherData?.total || 0})
+                      Export Filtered Vouchers ({voucherData?.total || 0})
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>Export Line Items (Excel)</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuCheckboxItem
+                      checked={false}
+                      onCheckedChange={() => handleExportLines('all')}
+                      data-testid="button-export-lines-all"
+                    >
+                      <FileText className="w-4 h-4 mr-2" />
+                      Export All Line Items ({stats?.totalLines || 0})
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={false}
+                      onCheckedChange={() => handleExportLines('filtered')}
+                      disabled={filterStore === 'all' && filterVendor === 'all' && filterType === 'all' && !debouncedSearch}
+                      data-testid="button-export-lines-filtered"
+                    >
+                      <FileText className="w-4 h-4 mr-2" />
+                      Export Filtered Line Items
                     </DropdownMenuCheckboxItem>
                   </DropdownMenuContent>
                 </DropdownMenu>

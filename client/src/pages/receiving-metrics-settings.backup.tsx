@@ -4,8 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download, X, Settings as SettingsIcon, Save, RotateCcw, AlertTriangle, BarChart3 } from "lucide-react";
-import { Link } from "wouter";
+import { Calculator, RefreshCw, Trash2, TrendingUp, Package, Calendar, Archive, Sparkles, Download, X, Settings as SettingsIcon, Save, RotateCcw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,60 +38,32 @@ interface ReceivingMetricsSettings {
   coreItemMinMonths: number;
   coreItemMinReceives: number;
   coreItemMaxDaysBetween: number;
-  coreItemMaxDaysSinceLast: number; // Phase 1
-  coreItemMinSalesMonths: number; // Phase 2
-  coreItemMaxDaysSinceLastSold: number; // Phase 2
-  coreItemMinInventoryOrRecentSales: boolean; // Phase 2
+  coreItemMaxDaysSinceLast: number; // NEW: Phase 1
   seasonalItemMinYears: number;
   seasonalItemConcentrationPct: number;
   seasonalItemMinDaysBetween: number;
-  seasonalOverridesDiscontinued: boolean; // Phase 1
-  seasonalDiscontinuedThreshold: number; // Phase 1
-  seasonalItemSalesConcentrationPct: number; // Phase 2
-  seasonalItemMaxDaysSinceActivity: number; // Phase 2
+  seasonalOverridesDiscontinued: boolean; // NEW: Phase 1
+  seasonalDiscontinuedThreshold: number; // NEW: Phase 1
   oneTimeBuyMaxReceives: number;
   oneTimeBuyMinDaysSinceLast: number;
-  oneTimeBuyMinDaysSinceFirst: number; // Phase 2
-  oneTimeBuyMaxDaysSinceSold: number; // Phase 2
   discontinuedMinDaysSinceLast: number;
-  discontinuedMinDaysSinceSold: number; // Phase 2
-  discontinuedMinDaysSinceReceived: number; // Phase 2
-  discontinuedRequiresZeroInventory: boolean; // Phase 2
-  clearanceMinInventory: number; // Phase 2
-  clearanceMaxRecentSales: number; // Phase 2
-  clearanceMinDaysSinceReceived: number; // Phase 2
-  clearanceMinDaysOfSupply: number; // Phase 2
 }
 
 const DEFAULT_SETTINGS: ReceivingMetricsSettings = {
-  newItemDaysFromCreation: 30,
+  newItemDaysFromCreation: 30, // Changed from 7 to 30
   newItemMaxReceives: 2,
   coreItemMinMonths: 3,
   coreItemMinReceives: 5,
   coreItemMaxDaysBetween: 60,
-  coreItemMaxDaysSinceLast: 90,
-  coreItemMinSalesMonths: 6,
-  coreItemMaxDaysSinceLastSold: 90,
-  coreItemMinInventoryOrRecentSales: true,
+  coreItemMaxDaysSinceLast: 90, // NEW: Phase 1
   seasonalItemMinYears: 2,
   seasonalItemConcentrationPct: 60,
   seasonalItemMinDaysBetween: 300,
-  seasonalOverridesDiscontinued: true,
-  seasonalDiscontinuedThreshold: 365,
-  seasonalItemSalesConcentrationPct: 15,
-  seasonalItemMaxDaysSinceActivity: 365,
+  seasonalOverridesDiscontinued: true, // NEW: Phase 1
+  seasonalDiscontinuedThreshold: 365, // NEW: Phase 1
   oneTimeBuyMaxReceives: 2,
   oneTimeBuyMinDaysSinceLast: 90,
-  oneTimeBuyMinDaysSinceFirst: 90,
-  oneTimeBuyMaxDaysSinceSold: 90,
   discontinuedMinDaysSinceLast: 180,
-  discontinuedMinDaysSinceSold: 180,
-  discontinuedMinDaysSinceReceived: 180,
-  discontinuedRequiresZeroInventory: true,
-  clearanceMinInventory: 10,
-  clearanceMaxRecentSales: 3,
-  clearanceMinDaysSinceReceived: 180,
-  clearanceMinDaysOfSupply: 180,
 };
 
 export default function ReceivingMetricsSettings() {
@@ -242,39 +213,9 @@ export default function ReceivingMetricsSettings() {
           description: `Processed ${result.uploaded} styles before stopping`,
         });
       } else {
-        // Show detailed summary
-        const noHistory = result.noReceivingHistory || 0;
-        const errors = result.sqlErrors || 0;
-        const total = result.total || 0;
-        const successful = result.uploaded || 0;
-
         toast({
           title: "✓ Calculation Complete",
-          description: (
-            <div className="text-sm space-y-1">
-              <div className="font-semibold">Summary:</div>
-              <div>• Total Styles: {total}</div>
-              <div>• Successfully Calculated: {successful}</div>
-              {noHistory > 0 && <div>• Skipped (No Receiving History): {noHistory}</div>}
-              {errors > 0 && <div className="text-red-500">• Errors: {errors}</div>}
-              {result.failedItems && result.failedItems.length > 0 && (
-                <div className="mt-2">
-                  <div className="font-semibold">Export to Excel to see detailed failure reasons</div>
-                </div>
-              )}
-            </div>
-          ),
-          duration: 10000, // Show for 10 seconds
-        });
-
-        // Log detailed summary to console for debugging
-        console.log('📊 Calculation Summary:', {
-          total,
-          successful,
-          failed: result.failed,
-          noReceivingHistory: noHistory,
-          sqlErrors: errors,
-          failedItems: result.failedItems
+          description: `Successfully calculated metrics for ${result.uploaded} styles`,
         });
       }
 
@@ -339,12 +280,11 @@ export default function ReceivingMetricsSettings() {
       }
 
       const data = await response.json();
-      const fileName = exportReceivingMetricsToExcel(data.stats, data.metrics, data.failedItems, data.inventory);
+      const fileName = exportReceivingMetricsToExcel(data.stats, data.metrics);
 
-      const failedCount = data.failedItems?.length || 0;
       toast({
         title: "✓ Export Complete",
-        description: `Downloaded ${fileName} with ${data.metrics.length} successful and ${failedCount} failed/skipped items (includes inventory by location)`,
+        description: `Downloaded ${fileName} with ${data.metrics.length} records`,
       });
     } catch (error) {
       toast({
@@ -363,29 +303,15 @@ export default function ReceivingMetricsSettings() {
       coreItemMinMonths: settings.coreItemMinMonths,
       coreItemMinReceives: settings.coreItemMinReceives,
       coreItemMaxDaysBetween: settings.coreItemMaxDaysBetween,
-      coreItemMaxDaysSinceLast: settings.coreItemMaxDaysSinceLast,
-      coreItemMinSalesMonths: settings.coreItemMinSalesMonths,
-      coreItemMaxDaysSinceLastSold: settings.coreItemMaxDaysSinceLastSold,
-      coreItemMinInventoryOrRecentSales: settings.coreItemMinInventoryOrRecentSales,
+      coreItemMaxDaysSinceLast: settings.coreItemMaxDaysSinceLast, // NEW
       seasonalItemMinYears: settings.seasonalItemMinYears,
       seasonalItemConcentrationPct: settings.seasonalItemConcentrationPct,
       seasonalItemMinDaysBetween: settings.seasonalItemMinDaysBetween,
-      seasonalOverridesDiscontinued: settings.seasonalOverridesDiscontinued,
-      seasonalDiscontinuedThreshold: settings.seasonalDiscontinuedThreshold,
-      seasonalItemSalesConcentrationPct: settings.seasonalItemSalesConcentrationPct,
-      seasonalItemMaxDaysSinceActivity: settings.seasonalItemMaxDaysSinceActivity,
+      seasonalOverridesDiscontinued: settings.seasonalOverridesDiscontinued, // NEW
+      seasonalDiscontinuedThreshold: settings.seasonalDiscontinuedThreshold, // NEW
       oneTimeBuyMaxReceives: settings.oneTimeBuyMaxReceives,
       oneTimeBuyMinDaysSinceLast: settings.oneTimeBuyMinDaysSinceLast,
-      oneTimeBuyMinDaysSinceFirst: settings.oneTimeBuyMinDaysSinceFirst,
-      oneTimeBuyMaxDaysSinceSold: settings.oneTimeBuyMaxDaysSinceSold,
       discontinuedMinDaysSinceLast: settings.discontinuedMinDaysSinceLast,
-      discontinuedMinDaysSinceSold: settings.discontinuedMinDaysSinceSold,
-      discontinuedMinDaysSinceReceived: settings.discontinuedMinDaysSinceReceived,
-      discontinuedRequiresZeroInventory: settings.discontinuedRequiresZeroInventory,
-      clearanceMinInventory: settings.clearanceMinInventory,
-      clearanceMaxRecentSales: settings.clearanceMaxRecentSales,
-      clearanceMinDaysSinceReceived: settings.clearanceMinDaysSinceReceived,
-      clearanceMinDaysOfSupply: settings.clearanceMinDaysOfSupply,
     };
     saveSettingsMutation.mutate(settingsToSave);
   };
@@ -395,7 +321,7 @@ export default function ReceivingMetricsSettings() {
     setIsEditingSettings(false);
   };
 
-  const handleSettingChange = (field: keyof ReceivingMetricsSettings, value: number | boolean) => {
+  const handleSettingChange = (field: keyof ReceivingMetricsSettings, value: number) => {
     setSettings(prev => ({ ...prev, [field]: value }));
   };
 
@@ -419,7 +345,6 @@ export default function ReceivingMetricsSettings() {
     New: "bg-green-100 text-green-800 border-green-200",
     Core: "bg-blue-100 text-blue-800 border-blue-200",
     Seasonal: "bg-purple-100 text-purple-800 border-purple-200",
-    Clearance: "bg-orange-100 text-orange-800 border-orange-200",
     "One-Time": "bg-gray-100 text-gray-800 border-gray-200",
     Discontinued: "bg-red-100 text-red-800 border-red-200",
   };
@@ -428,7 +353,6 @@ export default function ReceivingMetricsSettings() {
     New: Sparkles,
     Core: TrendingUp,
     Seasonal: Calendar,
-    Clearance: AlertTriangle,
     "One-Time": Package,
     Discontinued: Archive,
   };
@@ -450,7 +374,7 @@ export default function ReceivingMetricsSettings() {
       <div>
         <h1 className="text-3xl font-bold">Receiving Metrics Settings</h1>
         <p className="text-muted-foreground mt-2">
-          Multi-dimensional lifecycle analysis combining receiving patterns, sales velocity, and inventory levels
+          Manage and calculate intelligent receiving pattern analysis for all products
         </p>
       </div>
 
@@ -502,7 +426,7 @@ export default function ReceivingMetricsSettings() {
           {stats && stats.byLifecycle && Object.keys(stats.byLifecycle).length > 0 && (
             <div>
               <h3 className="text-sm font-semibold mb-3">By Lifecycle Stage</h3>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {Object.entries(stats.byLifecycle).map(([lifecycle, count]) => {
                   const Icon = lifecycleIcons[lifecycle] || Package;
                   return (
@@ -647,7 +571,7 @@ export default function ReceivingMetricsSettings() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="coreItemMaxDaysSinceLast" className="text-xs">Max days since last receive</Label>
+                    <Label htmlFor="coreItemMaxDaysSinceLast" className="text-xs font-semibold text-blue-600">🆕 Max days since last receive</Label>
                     <Input
                       id="coreItemMaxDaysSinceLast"
                       type="number"
@@ -656,57 +580,15 @@ export default function ReceivingMetricsSettings() {
                       onChange={(e) => handleSettingChange('coreItemMaxDaysSinceLast', parseInt(e.target.value))}
                       className="mt-1"
                     />
-                  </div>
-                  <div className="pt-2 border-t">
-                    <p className="text-xs font-semibold text-blue-600 mb-2">📊 Sales-Based Validation</p>
-                    <div className="space-y-3">
-                      <div>
-                        <Label htmlFor="coreItemMinSalesMonths" className="text-xs">Min sales months (last year)</Label>
-                        <Input
-                          id="coreItemMinSalesMonths"
-                          type="number"
-                          min="1"
-                          value={settings.coreItemMinSalesMonths}
-                          onChange={(e) => handleSettingChange('coreItemMinSalesMonths', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="coreItemMaxDaysSinceLastSold" className="text-xs">Max days since last sold</Label>
-                        <Input
-                          id="coreItemMaxDaysSinceLastSold"
-                          type="number"
-                          min="1"
-                          value={settings.coreItemMaxDaysSinceLastSold}
-                          onChange={(e) => handleSettingChange('coreItemMaxDaysSinceLastSold', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label htmlFor="coreItemMinInventoryOrRecentSales" className="text-xs">Require inventory OR recent sales</Label>
-                          <p className="text-xs text-muted-foreground">Must have stock or selling activity</p>
-                        </div>
-                        <Switch
-                          id="coreItemMinInventoryOrRecentSales"
-                          checked={settings.coreItemMinInventoryOrRecentSales}
-                          onCheckedChange={(checked) => handleSettingChange('coreItemMinInventoryOrRecentSales', checked)}
-                        />
-                      </div>
-                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Prevents zombie Core items</p>
                   </div>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  <strong>Receiving Pattern:</strong><br />
-                  • ≥ {settings.coreItemMinMonths} months with receives<br />
+                  • ≥ {settings.coreItemMinMonths} different months with receives<br />
                   • ≥ {settings.coreItemMinReceives} total receives<br />
-                  • Avg ≤ {settings.coreItemMaxDaysBetween} days between<br />
-                  • ≤ {settings.coreItemMaxDaysSinceLast} days since last<br />
-                  <strong className="text-blue-600">Sales Validation:</strong><br />
-                  • ≥ {settings.coreItemMinSalesMonths} sales months<br />
-                  • ≤ {settings.coreItemMaxDaysSinceLastSold} days since sold<br />
-                  • Inventory/Sales: {settings.coreItemMinInventoryOrRecentSales ? 'Required' : 'Not required'}
+                  • Average ≤ {settings.coreItemMaxDaysBetween} days between receives<br />
+                  • ≤ {settings.coreItemMaxDaysSinceLast} days since last receive
                 </p>
               )}
             </div>
@@ -730,7 +612,7 @@ export default function ReceivingMetricsSettings() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="seasonalItemConcentrationPct" className="text-xs">Receiving concentration % in same month(s)</Label>
+                    <Label htmlFor="seasonalItemConcentrationPct" className="text-xs">Concentration % in same month(s)</Label>
                     <Input
                       id="seasonalItemConcentrationPct"
                       type="number"
@@ -752,51 +634,21 @@ export default function ReceivingMetricsSettings() {
                       className="mt-1"
                     />
                   </div>
-                  <div className="pt-2 border-t">
-                    <p className="text-xs font-semibold text-purple-600 mb-2">📊 Sales Pattern Validation</p>
-                    <div className="space-y-3">
-                      <div>
-                        <Label htmlFor="seasonalItemSalesConcentrationPct" className="text-xs">Sales concentration % in same month(s)</Label>
-                        <Input
-                          id="seasonalItemSalesConcentrationPct"
-                          type="number"
-                          min="1"
-                          max="100"
-                          value={settings.seasonalItemSalesConcentrationPct}
-                          onChange={(e) => handleSettingChange('seasonalItemSalesConcentrationPct', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Minimum % of sales in peak months</p>
-                      </div>
-                      <div>
-                        <Label htmlFor="seasonalItemMaxDaysSinceActivity" className="text-xs">Max days since last activity</Label>
-                        <Input
-                          id="seasonalItemMaxDaysSinceActivity"
-                          type="number"
-                          min="1"
-                          value={settings.seasonalItemMaxDaysSinceActivity}
-                          onChange={(e) => handleSettingChange('seasonalItemMaxDaysSinceActivity', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Days since receive or sale</p>
-                      </div>
-                    </div>
-                  </div>
                   <div className="space-y-2 pt-2 border-t">
                     <div className="flex items-center justify-between">
                       <div>
-                        <Label htmlFor="seasonalOverridesDiscontinued" className="text-xs">Seasonal overrides Discontinued</Label>
-                        <p className="text-xs text-muted-foreground">Prevents seasonal from being marked discontinued</p>
+                        <Label htmlFor="seasonalOverridesDiscontinued" className="text-xs font-semibold text-purple-600">🆕 Seasonal overrides Discontinued</Label>
+                        <p className="text-xs text-muted-foreground">Prevents seasonal items from being marked discontinued</p>
                       </div>
                       <Switch
                         id="seasonalOverridesDiscontinued"
                         checked={settings.seasonalOverridesDiscontinued}
-                        onCheckedChange={(checked) => handleSettingChange('seasonalOverridesDiscontinued', checked)}
+                        onCheckedChange={(checked) => handleSettingChange('seasonalOverridesDiscontinued', checked ? 1 : 0)}
                       />
                     </div>
                   </div>
                   <div>
-                    <Label htmlFor="seasonalDiscontinuedThreshold" className="text-xs">Seasonal discontinued threshold (days)</Label>
+                    <Label htmlFor="seasonalDiscontinuedThreshold" className="text-xs font-semibold text-purple-600">🆕 Seasonal discontinued threshold (days)</Label>
                     <Input
                       id="seasonalDiscontinuedThreshold"
                       type="number"
@@ -810,14 +662,10 @@ export default function ReceivingMetricsSettings() {
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  <strong>Receiving Pattern:</strong><br />
                   • ≥ {settings.seasonalItemMinYears} years of receives<br />
-                  • {settings.seasonalItemConcentrationPct}% receives in same months<br />
-                  • Avg ≥ {settings.seasonalItemMinDaysBetween} days between<br />
-                  <strong className="text-purple-600">Sales Pattern:</strong><br />
-                  • {settings.seasonalItemSalesConcentrationPct}% sales in peak months<br />
-                  • ≤ {settings.seasonalItemMaxDaysSinceActivity} days since activity<br />
-                  • Override discontinued: {settings.seasonalOverridesDiscontinued ? 'ON' : 'OFF'} ({settings.seasonalDiscontinuedThreshold}d)
+                  • {settings.seasonalItemConcentrationPct}% in same month(s) each year<br />
+                  • Average ≥ {settings.seasonalItemMinDaysBetween} days between receives<br />
+                  • Override discontinued: {settings.seasonalOverridesDiscontinued ? 'ON' : 'OFF'} ({settings.seasonalDiscontinuedThreshold}d threshold)
                 </p>
               )}
             </div>
@@ -851,121 +699,8 @@ export default function ReceivingMetricsSettings() {
                       className="mt-1"
                     />
                   </div>
-                  <div className="pt-2 border-t">
-                    <p className="text-xs font-semibold text-gray-600 mb-2">📊 Activity Validation</p>
-                    <div className="space-y-3">
-                      <div>
-                        <Label htmlFor="oneTimeBuyMinDaysSinceFirst" className="text-xs">Min days since first receive</Label>
-                        <Input
-                          id="oneTimeBuyMinDaysSinceFirst"
-                          type="number"
-                          min="1"
-                          value={settings.oneTimeBuyMinDaysSinceFirst}
-                          onChange={(e) => handleSettingChange('oneTimeBuyMinDaysSinceFirst', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Prevents new items from being classified as one-time</p>
-                      </div>
-                      <div>
-                        <Label htmlFor="oneTimeBuyMaxDaysSinceSold" className="text-xs">Max days since sold</Label>
-                        <Input
-                          id="oneTimeBuyMaxDaysSinceSold"
-                          type="number"
-                          min="1"
-                          value={settings.oneTimeBuyMaxDaysSinceSold}
-                          onChange={(e) => handleSettingChange('oneTimeBuyMaxDaysSinceSold', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Must have recent sales activity</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  • ≤ {settings.oneTimeBuyMaxReceives} total receives<br />
-                  • ≥ {settings.oneTimeBuyMinDaysSinceLast} days since last receive<br />
-                  • ≥ {settings.oneTimeBuyMinDaysSinceFirst} days since first receive<br />
-                  • ≤ {settings.oneTimeBuyMaxDaysSinceSold} days since sold<br />
-                  • Not classified as Core
-                </p>
-              )}
-            </div>
-
-            {/* Clearance Rules - NEW */}
-            <div className="p-4 border rounded-lg bg-orange-50">
-              <div className="flex items-center gap-2 mb-3">
-                <Badge className="bg-orange-100 text-orange-800">Clearance 🆕</Badge>
-              </div>
-              {isEditingSettings ? (
-                <div className="space-y-3">
-                  <p className="text-xs text-orange-700 font-medium mb-2">High inventory + low sales = clearance candidate</p>
                   <div>
-                    <Label htmlFor="clearanceMinInventory" className="text-xs">Min inventory quantity</Label>
-                    <Input
-                      id="clearanceMinInventory"
-                      type="number"
-                      min="1"
-                      value={settings.clearanceMinInventory}
-                      onChange={(e) => handleSettingChange('clearanceMinInventory', parseInt(e.target.value))}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="clearanceMaxRecentSales" className="text-xs">Max sales (last 90 days)</Label>
-                    <Input
-                      id="clearanceMaxRecentSales"
-                      type="number"
-                      min="0"
-                      value={settings.clearanceMaxRecentSales}
-                      onChange={(e) => handleSettingChange('clearanceMaxRecentSales', parseInt(e.target.value))}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="clearanceMinDaysSinceReceived" className="text-xs">Min days since last received</Label>
-                    <Input
-                      id="clearanceMinDaysSinceReceived"
-                      type="number"
-                      min="1"
-                      value={settings.clearanceMinDaysSinceReceived}
-                      onChange={(e) => handleSettingChange('clearanceMinDaysSinceReceived', parseInt(e.target.value))}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="clearanceMinDaysOfSupply" className="text-xs">Min days of supply</Label>
-                    <Input
-                      id="clearanceMinDaysOfSupply"
-                      type="number"
-                      min="1"
-                      value={settings.clearanceMinDaysOfSupply}
-                      onChange={(e) => handleSettingChange('clearanceMinDaysOfSupply', parseInt(e.target.value))}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">(inventory / sales_90d) * 90</p>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  • ≥ {settings.clearanceMinInventory} units in stock<br />
-                  • ≤ {settings.clearanceMaxRecentSales} sales (last 90 days)<br />
-                  • ≥ {settings.clearanceMinDaysSinceReceived} days since received<br />
-                  • ≥ {settings.clearanceMinDaysOfSupply} days of supply<br />
-                  <span className="text-xs italic text-orange-700">Excess inventory with low velocity</span>
-                </p>
-              )}
-            </div>
-
-            {/* Discontinued Rules */}
-            <div className="p-4 border rounded-lg">
-              <div className="flex items-center gap-2 mb-3">
-                <Badge className="bg-red-100 text-red-800">Discontinued</Badge>
-              </div>
-              {isEditingSettings ? (
-                <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="discontinuedMinDaysSinceLast" className="text-xs">Min days since last receive</Label>
+                    <Label htmlFor="discontinuedMinDaysSinceLast" className="text-xs">Discontinued threshold (days)</Label>
                     <Input
                       id="discontinuedMinDaysSinceLast"
                       type="number"
@@ -975,51 +710,13 @@ export default function ReceivingMetricsSettings() {
                       className="mt-1"
                     />
                   </div>
-                  <div className="pt-2 border-t">
-                    <p className="text-xs font-semibold text-red-600 mb-2">📊 Sales & Inventory Validation</p>
-                    <div className="space-y-3">
-                      <div>
-                        <Label htmlFor="discontinuedMinDaysSinceSold" className="text-xs">Min days since last sold</Label>
-                        <Input
-                          id="discontinuedMinDaysSinceSold"
-                          type="number"
-                          min="1"
-                          value={settings.discontinuedMinDaysSinceSold}
-                          onChange={(e) => handleSettingChange('discontinuedMinDaysSinceSold', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="discontinuedMinDaysSinceReceived" className="text-xs">Min days since last received (validation)</Label>
-                        <Input
-                          id="discontinuedMinDaysSinceReceived"
-                          type="number"
-                          min="1"
-                          value={settings.discontinuedMinDaysSinceReceived}
-                          onChange={(e) => handleSettingChange('discontinuedMinDaysSinceReceived', parseInt(e.target.value))}
-                          className="mt-1"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label htmlFor="discontinuedRequiresZeroInventory" className="text-xs">Require zero inventory</Label>
-                          <p className="text-xs text-muted-foreground">Must have no stock remaining</p>
-                        </div>
-                        <Switch
-                          id="discontinuedRequiresZeroInventory"
-                          checked={settings.discontinuedRequiresZeroInventory}
-                          onCheckedChange={(checked) => handleSettingChange('discontinuedRequiresZeroInventory', checked)}
-                        />
-                      </div>
-                    </div>
-                  </div>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  • ≥ {settings.discontinuedMinDaysSinceLast} days since last receive<br />
-                  • ≥ {settings.discontinuedMinDaysSinceSold} days since sold<br />
-                  • ≥ {settings.discontinuedMinDaysSinceReceived} days since received<br />
-                  • Zero inventory: {settings.discontinuedRequiresZeroInventory ? 'Required' : 'Not required'}
+                  • ≤ {settings.oneTimeBuyMaxReceives} total receives<br />
+                  • ≥ {settings.oneTimeBuyMinDaysSinceLast} days since last receive<br />
+                  • Not classified as Core<br />
+                  <span className="text-xs italic">({settings.discontinuedMinDaysSinceLast}+ days = Discontinued)</span>
                 </p>
               )}
             </div>
@@ -1028,7 +725,7 @@ export default function ReceivingMetricsSettings() {
           {isEditingSettings && (
             <Alert className="mt-4">
               <AlertDescription>
-                <strong>Note:</strong> After changing rules, click "Clear & Rebuild" or "Calculate All Metrics" to apply the new rules using the multi-dimensional calculator (sales + inventory + receiving analysis).
+                <strong>Note:</strong> After changing rules, click "Clear & Rebuild" or "Calculate All Metrics" to apply the new rules to existing data.
               </AlertDescription>
             </Alert>
           )}
@@ -1044,8 +741,6 @@ export default function ReceivingMetricsSettings() {
         <CardContent className="space-y-4">
           <Alert>
             <AlertDescription>
-              <strong>Multi-Dimensional Analysis Enabled:</strong> Calculations now combine receiving patterns, sales data, and inventory levels for accurate lifecycle classification.
-              <br />
               <strong>Note:</strong> Metrics are automatically updated when you upload new receiving history.
               Manual calculation is only needed for initial setup or troubleshooting.
             </AlertDescription>
@@ -1103,18 +798,6 @@ export default function ReceivingMetricsSettings() {
               <Download className="w-4 h-4" />
               Export to Excel
             </Button>
-
-            <Link href="/receiving-metrics/dashboard">
-              <Button
-                disabled={!stats || stats.total === 0}
-                variant="default"
-                className="flex items-center gap-2"
-                data-testid="button-view-dashboard"
-              >
-                <BarChart3 className="w-4 h-4" />
-                View Analytics Dashboard
-              </Button>
-            </Link>
           </div>
 
           <p className="text-sm text-muted-foreground">
@@ -1125,8 +808,6 @@ export default function ReceivingMetricsSettings() {
             <strong>Clear Metrics:</strong> Permanently delete all metrics without recalculating (reset to zero)
             <br />
             <strong>Export to Excel:</strong> Download a professional report with summary statistics and detailed metrics for management review
-            <br />
-            <strong>View Analytics Dashboard:</strong> Interactive dashboard with charts, trends, top products, clearance priority, and inventory health metrics
           </p>
         </CardContent>
       </Card>

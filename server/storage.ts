@@ -132,6 +132,18 @@ export interface IStorage {
     types: string[];
   }>;
   getAllReceivingVouchersForExport(store?: string, vendor?: string, type?: string, search?: string): Promise<ReceivingVoucher[]>;
+  getAllReceivingLinesForExport(store?: string, vendor?: string, type?: string, search?: string): Promise<Array<{
+    voucherNumber: string | null;
+    date: string | null;
+    store: string | null;
+    vendor: string | null;
+    type: string;
+    itemNumber: string | null;
+    itemName: string | null;
+    qty: number;
+    cost: string;
+    lineTotal: string;
+  }>>;
   getVoucherByIdWithLines(id: number): Promise<(ReceivingVoucher & { lines: ReceivingLine[] }) | null>;
   getReceivingStats(): Promise<{
     totalVouchers: number;
@@ -333,6 +345,9 @@ export interface IStorage {
   // Receiving Metrics Settings
   getReceivingMetricsSettings(): Promise<any | null>;
   upsertReceivingMetricsSettings(settings: any): Promise<any>;
+
+  // Multi-Dimensional Metrics (Phase 2)
+  calculateMetricsMultidimensional(styleNumbers: string[], calculatedBy: string, settings?: any): Promise<any>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1244,6 +1259,72 @@ export class DatabaseStorage implements IStorage {
       return await db.select().from(receivingVouchers).where(whereClause).orderBy(desc(receivingVouchers.date));
     } else {
       return await db.select().from(receivingVouchers).orderBy(desc(receivingVouchers.date));
+    }
+  }
+
+  async getAllReceivingLinesForExport(
+    store?: string,
+    vendor?: string,
+    type?: string,
+    search?: string
+  ): Promise<Array<{
+    voucherNumber: string | null;
+    date: string | null;
+    store: string | null;
+    vendor: string | null;
+    type: string;
+    itemNumber: string | null;
+    itemName: string | null;
+    qty: number;
+    cost: string;
+    lineTotal: string;
+  }>> {
+    const filters = [];
+
+    if (store) {
+      filters.push(eq(receivingVouchers.store, store));
+    }
+
+    if (vendor) {
+      filters.push(eq(receivingVouchers.vendor, vendor));
+    }
+
+    if (type) {
+      filters.push(eq(receivingVouchers.type, type));
+    }
+
+    if (search) {
+      filters.push(or(
+        ilike(receivingVouchers.voucherNumber, `%${search}%`),
+        ilike(receivingVouchers.vendor, `%${search}%`),
+        ilike(receivingVouchers.store, `%${search}%`)
+      ));
+    }
+
+    const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
+    // Join receiving_lines with receiving_vouchers to get all line items with voucher details
+    const query = db
+      .select({
+        voucherNumber: receivingVouchers.voucherNumber,
+        date: receivingVouchers.date,
+        store: receivingVouchers.store,
+        vendor: receivingVouchers.vendor,
+        type: receivingVouchers.type,
+        itemNumber: receivingLines.itemNumber,
+        itemName: receivingLines.itemName,
+        qty: receivingLines.qty,
+        cost: receivingLines.cost,
+        lineTotal: sql<string>`(receiving_lines.qty * receiving_lines.cost)::numeric::text`.as('lineTotal'),
+      })
+      .from(receivingLines)
+      .innerJoin(receivingVouchers, eq(receivingLines.voucherId, receivingVouchers.id))
+      .orderBy(desc(receivingVouchers.date), receivingVouchers.voucherNumber);
+
+    if (whereClause) {
+      return await query.where(whereClause);
+    } else {
+      return await query;
     }
   }
 
@@ -2708,6 +2789,12 @@ export class DatabaseStorage implements IStorage {
             isOneTimeBuy: sql`EXCLUDED.is_one_time_buy`,
             isCoreItem: sql`EXCLUDED.is_core_item`,
             lifecycleStage: sql`EXCLUDED.lifecycle_stage`,
+            // Multi-dimensional metrics (Phase 2)
+            totalSalesCount: sql`EXCLUDED.total_sales_count`,
+            salesMonthsLastYear: sql`EXCLUDED.sales_months_last_year`,
+            salesLast90days: sql`EXCLUDED.sales_last_90days`,
+            daysOfSupply: sql`EXCLUDED.days_of_supply`,
+            hasSeasonalSalesPattern: sql`EXCLUDED.has_seasonal_sales_pattern`,
             lastCalculatedAt: sql`NOW()`,
             calculatedBy: sql`EXCLUDED.calculated_by`
           }
@@ -2789,6 +2876,12 @@ export class DatabaseStorage implements IStorage {
       .returning();
 
     return result[0];
+  }
+
+  // Multi-Dimensional Metrics (Phase 2)
+  async calculateMetricsMultidimensional(styleNumbers: string[], calculatedBy: string, settings?: any): Promise<any> {
+    const { calculateMetricsForStylesMultidim } = await import("./lib/receiving-metrics-calculator-multidim");
+    return await calculateMetricsForStylesMultidim(styleNumbers, calculatedBy, settings);
   }
 }
 

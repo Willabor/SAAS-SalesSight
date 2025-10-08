@@ -273,7 +273,8 @@ export async function getUploadHistory(limit?: number): Promise<any[]> {
 export async function calculateMetricsWithProgress(
   onProgress: (progress: { processed: number; total: number; uploaded: number; skipped: number; failed: number }) => void,
   batchSize: number = 100,
-  checkPauseStop?: () => { isPaused: boolean; isStopped: boolean }
+  checkPauseStop?: () => { isPaused: boolean; isStopped: boolean },
+  useMultidimensional: boolean = true // NEW: Use multi-dimensional calculator by default
 ): Promise<{
   success: boolean;
   uploaded: number;
@@ -282,6 +283,9 @@ export async function calculateMetricsWithProgress(
   total: number;
   errors: string[];
   stopped?: boolean;
+  noReceivingHistory?: number;
+  sqlErrors?: number;
+  failedItems?: Array<{ styleNumber: string; reason: string; category: string; error?: string }>;
 }> {
   // First, get all style numbers
   const styleNumbersResponse = await apiRequest('GET', '/api/receiving-metrics/style-numbers');
@@ -289,7 +293,10 @@ export async function calculateMetricsWithProgress(
 
   let totalCalculated = 0;
   let totalFailed = 0;
+  let noReceivingHistory = 0;
+  let sqlErrors = 0;
   const allErrors: string[] = [];
+  const allFailedItems: Array<{ styleNumber: string; reason: string; category: string; error?: string }> = [];
 
   // Process style numbers in batches
   for (let i = 0; i < styleNumbers.length; i += batchSize) {
@@ -303,7 +310,10 @@ export async function calculateMetricsWithProgress(
           failed: totalFailed,
           total,
           errors: allErrors.slice(0, 10),
-          stopped: true
+          stopped: true,
+          noReceivingHistory,
+          sqlErrors,
+          failedItems: allFailedItems
         };
       }
 
@@ -321,7 +331,10 @@ export async function calculateMetricsWithProgress(
           failed: totalFailed,
           total,
           errors: allErrors.slice(0, 10),
-          stopped: true
+          stopped: true,
+          noReceivingHistory,
+          sqlErrors,
+          failedItems: allFailedItems
         };
       }
     }
@@ -330,13 +343,25 @@ export async function calculateMetricsWithProgress(
     const processed = Math.min(i + batchSize, total);
 
     try {
-      const response = await apiRequest('POST', '/api/receiving-metrics/calculate-batch', {
+      // Add mode parameter to URL if using multi-dimensional
+      const endpoint = useMultidimensional
+        ? '/api/receiving-metrics/calculate-batch?mode=multidimensional'
+        : '/api/receiving-metrics/calculate-batch';
+
+      const response = await apiRequest('POST', endpoint, {
         styleNumbers: batch
       });
       const result = await response.json();
 
       totalCalculated += result.successful || 0;
       totalFailed += result.failed || 0;
+      noReceivingHistory += result.noReceivingHistory || 0;
+      sqlErrors += result.errors || 0;
+
+      // Collect failed items
+      if (result.failedItems && Array.isArray(result.failedItems)) {
+        allFailedItems.push(...result.failedItems);
+      }
 
       // Update progress
       onProgress({
@@ -371,6 +396,9 @@ export async function calculateMetricsWithProgress(
     skipped: 0,
     failed: totalFailed,
     total,
-    errors: allErrors.slice(0, 10)
+    errors: allErrors.slice(0, 10),
+    noReceivingHistory,
+    sqlErrors,
+    failedItems: allFailedItems
   };
 }

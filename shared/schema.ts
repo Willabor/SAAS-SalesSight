@@ -296,7 +296,14 @@ export const itemReceivingMetrics = pgTable("item_receiving_metrics", {
   isCoreItem: boolean("is_core_item").default(false), // Regular restocking pattern
 
   // Lifecycle stage
-  lifecycleStage: text("lifecycle_stage"), // New/Core/Seasonal/Discontinued/One-Time
+  lifecycleStage: text("lifecycle_stage"), // New/Core/Seasonal/Clearance/Discontinued/One-Time
+
+  // Multi-dimensional metrics (Phase 2)
+  totalSalesCount: integer("total_sales_count").default(0),
+  salesMonthsLastYear: integer("sales_months_last_year").default(0),
+  salesLast90days: integer("sales_last_90days").default(0),
+  daysOfSupply: numeric("days_of_supply"),
+  hasSeasonalSalesPattern: boolean("has_seasonal_sales_pattern").default(false),
 
   // Metadata
   lastCalculatedAt: timestamp("last_calculated_at").defaultNow(),
@@ -310,26 +317,44 @@ export const receivingMetricsSettings = pgTable("receiving_metrics_settings", {
   // New Item Rules
   newItemDaysFromCreation: integer("new_item_days_from_creation").default(30), // Changed from 7 to 30
   newItemMaxReceives: integer("new_item_max_receives").default(2),
+  newItemMustHaveSold: boolean("new_item_must_have_sold").default(false), // Phase 2
 
   // Core Item Rules
   coreItemMinMonths: integer("core_item_min_months").default(3),
   coreItemMinReceives: integer("core_item_min_receives").default(5),
   coreItemMaxDaysBetween: integer("core_item_max_days_between").default(60),
-  coreItemMaxDaysSinceLast: integer("core_item_max_days_since_last").default(90), // NEW: Prevent zombie Core items
+  coreItemMaxDaysSinceLast: integer("core_item_max_days_since_last").default(90), // Phase 1: Prevent zombie Core items
+  coreItemMinSalesMonths: integer("core_item_min_sales_months").default(6), // Phase 2
+  coreItemMaxDaysSinceLastSold: integer("core_item_max_days_since_last_sold").default(90), // Phase 2
+  coreItemMaxDaysSinceLastReceived: integer("core_item_max_days_since_last_received").default(90), // Phase 2
+  coreItemMinInventoryOrRecentSales: boolean("core_item_min_inventory_or_recent_sales").default(true), // Phase 2
 
   // Seasonal Item Rules
   seasonalItemMinYears: integer("seasonal_item_min_years").default(2),
   seasonalItemConcentrationPct: integer("seasonal_item_concentration_pct").default(60), // percentage
   seasonalItemMinDaysBetween: integer("seasonal_item_min_days_between").default(300),
-  seasonalOverridesDiscontinued: boolean("seasonal_overrides_discontinued").default(true), // NEW: Seasonal override
-  seasonalDiscontinuedThreshold: integer("seasonal_discontinued_threshold").default(365), // NEW: Days before seasonal = discontinued
+  seasonalOverridesDiscontinued: boolean("seasonal_overrides_discontinued").default(true), // Phase 1: Seasonal override
+  seasonalDiscontinuedThreshold: integer("seasonal_discontinued_threshold").default(365), // Phase 1: Days before seasonal = discontinued
+  seasonalItemSalesConcentrationPct: integer("seasonal_item_sales_concentration_pct").default(15), // Phase 2
+  seasonalItemMaxDaysSinceActivity: integer("seasonal_item_max_days_since_activity").default(365), // Phase 2
 
   // One-Time Buy Rules
   oneTimeBuyMaxReceives: integer("one_time_buy_max_receives").default(2),
   oneTimeBuyMinDaysSinceLast: integer("one_time_buy_min_days_since_last").default(90),
+  oneTimeBuyMinDaysSinceFirst: integer("one_time_buy_min_days_since_first").default(90), // Phase 2
+  oneTimeBuyMaxDaysSinceSold: integer("one_time_buy_max_days_since_sold").default(90), // Phase 2
 
   // Discontinued Rules
   discontinuedMinDaysSinceLast: integer("discontinued_min_days_since_last").default(180),
+  discontinuedMinDaysSinceSold: integer("discontinued_min_days_since_sold").default(180), // Phase 2
+  discontinuedMinDaysSinceReceived: integer("discontinued_min_days_since_received").default(180), // Phase 2
+  discontinuedRequiresZeroInventory: boolean("discontinued_requires_zero_inventory").default(true), // Phase 2
+
+  // Clearance Rules (Phase 2 - NEW CATEGORY)
+  clearanceMinInventory: integer("clearance_min_inventory").default(10),
+  clearanceMaxRecentSales: integer("clearance_max_recent_sales").default(3),
+  clearanceMinDaysSinceReceived: integer("clearance_min_days_since_received").default(180),
+  clearanceMinDaysOfSupply: integer("clearance_min_days_of_supply").default(180),
 
   // Metadata
   isActive: boolean("is_active").default(true),

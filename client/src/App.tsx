@@ -15,6 +15,7 @@ import VoucherViewerPage from "@/pages/voucher-viewer";
 import GoogleMarketingPage from "@/pages/google-marketing";
 import MLSettingsLogPage from "@/pages/ml-settings-log";
 import ReceivingMetricsSettings from "@/pages/receiving-metrics-settings";
+import ReceivingDashboard from "@/pages/receiving-dashboard";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -35,6 +36,7 @@ function Router() {
           <Route path="/receiving" component={ReceivingHistoryPage} />
           <Route path="/receiving/viewer" component={VoucherViewerPage} />
           <Route path="/receiving-metrics-settings" component={ReceivingMetricsSettings} />
+          <Route path="/receiving-metrics/dashboard" component={ReceivingDashboard} />
         </>
       )}
       <Route path="/:rest*" component={NotFound} />

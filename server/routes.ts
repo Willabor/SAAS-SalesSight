@@ -613,6 +613,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export receiving line items with filters
+  app.get("/api/receiving/export-lines", isAuthenticated, async (req, res) => {
+    try {
+      const store = req.query.store ? String(req.query.store) : undefined;
+      const vendor = req.query.vendor ? String(req.query.vendor) : undefined;
+      const type = req.query.type ? String(req.query.type) : undefined;
+      const search = req.query.search ? String(req.query.search) : undefined;
+
+      const lines = await storage.getAllReceivingLinesForExport(store, vendor, type, search);
+      res.json(lines);
+    } catch (error) {
+      console.error("Error exporting line items:", error);
+      res.status(500).json({ error: "Failed to export line items" });
+    }
+  });
+
   // Get voucher by ID with line items
   app.get("/api/receiving/vouchers/:id", isAuthenticated, async (req, res) => {
     try {
@@ -1228,6 +1244,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = (req.user as any);
       const calculatedBy = user?.claims?.sub || 'unknown';
       const { styleNumbers } = req.body;
+      const mode = req.query.mode as string; // 'multidimensional' or default (receiving-only)
 
       if (!Array.isArray(styleNumbers) || styleNumbers.length === 0) {
         return res.status(400).json({ error: "styleNumbers must be a non-empty array" });
@@ -1238,6 +1255,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Convert null values to undefined for calculator
       const settings = dbSettings ? {
+        // Existing receiving-only settings
         newItemDaysFromCreation: dbSettings.newItemDaysFromCreation ?? undefined,
         newItemMaxReceives: dbSettings.newItemMaxReceives ?? undefined,
         coreItemMinMonths: dbSettings.coreItemMinMonths ?? undefined,
@@ -1252,36 +1270,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
         oneTimeBuyMaxReceives: dbSettings.oneTimeBuyMaxReceives ?? undefined,
         oneTimeBuyMinDaysSinceLast: dbSettings.oneTimeBuyMinDaysSinceLast ?? undefined,
         discontinuedMinDaysSinceLast: dbSettings.discontinuedMinDaysSinceLast ?? undefined,
+        // Multi-dimensional settings (Phase 2)
+        newItemMustHaveSold: dbSettings.newItemMustHaveSold ?? undefined,
+        coreItemMinSalesMonths: dbSettings.coreItemMinSalesMonths ?? undefined,
+        coreItemMaxDaysSinceLastSold: dbSettings.coreItemMaxDaysSinceLastSold ?? undefined,
+        coreItemMaxDaysSinceLastReceived: dbSettings.coreItemMaxDaysSinceLastReceived ?? undefined,
+        coreItemMinInventoryOrRecentSales: dbSettings.coreItemMinInventoryOrRecentSales ?? undefined,
+        seasonalItemSalesConcentrationPct: dbSettings.seasonalItemSalesConcentrationPct ?? undefined,
+        seasonalItemMaxDaysSinceActivity: dbSettings.seasonalItemMaxDaysSinceActivity ?? undefined,
+        discontinuedMinDaysSinceSold: dbSettings.discontinuedMinDaysSinceSold ?? undefined,
+        discontinuedMinDaysSinceReceived: dbSettings.discontinuedMinDaysSinceReceived ?? undefined,
+        discontinuedRequiresZeroInventory: dbSettings.discontinuedRequiresZeroInventory ?? undefined,
+        clearanceMinInventory: dbSettings.clearanceMinInventory ?? undefined,
+        clearanceMaxRecentSales: dbSettings.clearanceMaxRecentSales ?? undefined,
+        clearanceMinDaysSinceReceived: dbSettings.clearanceMinDaysSinceReceived ?? undefined,
+        clearanceMinDaysOfSupply: dbSettings.clearanceMinDaysOfSupply ?? undefined,
+        oneTimeBuyMinDaysSinceFirst: dbSettings.oneTimeBuyMinDaysSinceFirst ?? undefined,
+        oneTimeBuyMaxDaysSinceSold: dbSettings.oneTimeBuyMaxDaysSinceSold ?? undefined,
       } : undefined;
 
-      const metrics: any[] = [];
-      let successful = 0;
-      let failed = 0;
+      let result: any;
 
-      for (const styleNumber of styleNumbers) {
+      // Use multi-dimensional calculator if mode=multidimensional
+      if (mode === 'multidimensional') {
+        console.log('Using MULTI-DIMENSIONAL calculator for', styleNumbers.length, 'styles');
         try {
-          const metric = await calculateMetricsForStyle(styleNumber, calculatedBy, settings);
-          if (metric) {
-            metrics.push(metric);
-            successful++;
-          }
+          result = await storage.calculateMetricsMultidimensional(styleNumbers, calculatedBy, settings);
         } catch (err) {
-          console.error(`Failed to calculate metrics for style ${styleNumber}:`, err);
-          failed++;
+          console.error('Multi-dimensional calculation failed:', err);
+          return res.status(500).json({ error: "Multi-dimensional calculation failed" });
         }
+      } else {
+        // Use original receiving-only calculator (backward compatible)
+        console.log('Using RECEIVING-ONLY calculator for', styleNumbers.length, 'styles');
+        const metrics: any[] = [];
+        const failed: any[] = [];
+        let noReceivingHistoryCount = 0;
+        let errorCount = 0;
+
+        for (const styleNumber of styleNumbers) {
+          try {
+            const metric = await calculateMetricsForStyle(styleNumber, calculatedBy, settings);
+            if (metric) {
+              metrics.push(metric);
+            } else {
+              noReceivingHistoryCount++;
+              failed.push({
+                styleNumber,
+                reason: 'No receiving history found for this style',
+                category: 'NO_RECEIVING_HISTORY'
+              });
+            }
+          } catch (err) {
+            errorCount++;
+            const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+            failed.push({
+              styleNumber,
+              reason: errorMessage,
+              category: 'SQL_ERROR',
+              error: errorMessage
+            });
+            console.error(`Failed to calculate metrics for style ${styleNumber}:`, err);
+          }
+        }
+
+        result = {
+          metrics,
+          failed,
+          summary: {
+            total: styleNumbers.length,
+            successful: metrics.length,
+            failed: failed.length,
+            noReceivingHistory: noReceivingHistoryCount,
+            errors: errorCount
+          }
+        };
       }
 
       // Save batch to database
-      if (metrics.length > 0) {
-        await storage.batchUpsertReceivingMetrics(metrics);
+      if (result.metrics.length > 0) {
+        await storage.batchUpsertReceivingMetrics(result.metrics);
       }
 
       res.json({
         success: true,
-        processed: styleNumbers.length,
-        successful,
-        failed,
-        message: `Processed ${styleNumbers.length} styles: ${successful} successful, ${failed} failed`
+        processed: result.summary.total,
+        successful: result.summary.successful,
+        failed: result.summary.failed,
+        noReceivingHistory: result.summary.noReceivingHistory,
+        errors: result.summary.errors,
+        failedItems: result.failed,
+        message: `Processed ${result.summary.total} styles: ${result.summary.successful} successful, ${result.summary.failed} failed (${result.summary.noReceivingHistory} no history, ${result.summary.errors} errors)`
       });
     } catch (error) {
       console.error("Error calculating batch metrics:", error);
@@ -1387,13 +1466,336 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const stats = await storage.getReceivingMetricsStats();
       const allMetrics = await storage.getAllReceivingMetrics({ limit: 100000, offset: 0 });
 
+      // Get all unique style numbers from item_list
+      const allStylesResult = await db.execute(sql`
+        SELECT DISTINCT style_number
+        FROM item_list
+        WHERE style_number IS NOT NULL
+        ORDER BY style_number
+      `);
+      const allStyleNumbers = allStylesResult.rows.map((r: any) => r.style_number);
+
+      // Get style numbers that have metrics
+      const metricsStyleNumbers = new Set(allMetrics.metrics.map((m: any) => m.styleNumber));
+
+      // Find styles without metrics (failed/skipped)
+      const failedStyles = allStyleNumbers
+        .filter(styleNumber => !metricsStyleNumbers.has(styleNumber))
+        .map(styleNumber => ({
+          styleNumber,
+          reason: 'No receiving history or calculation failed',
+          category: 'NO_METRICS'
+        }));
+
+      // Get inventory by style number (aggregate all items for each style)
+      const inventoryResult = await db.execute(sql`
+        SELECT
+          style_number,
+          SUM(COALESCE(hq_qty, 0)) as hq_total,
+          SUM(COALESCE(gm_qty, 0)) as gm_total,
+          SUM(COALESCE(hm_qty, 0)) as hm_total,
+          SUM(COALESCE(lm_qty, 0)) as lm_total,
+          SUM(COALESCE(nm_qty, 0)) as nm_total,
+          SUM(COALESCE(avail_qty, 0)) as total_qty
+        FROM item_list
+        WHERE style_number IS NOT NULL
+        GROUP BY style_number
+      `);
+
+      // Create a map for quick lookup
+      const inventoryMap = new Map();
+      inventoryResult.rows.forEach((row: any) => {
+        inventoryMap.set(row.style_number, {
+          hq: parseInt(row.hq_total) || 0,
+          gm: parseInt(row.gm_total) || 0,
+          hm: parseInt(row.hm_total) || 0,
+          lm: parseInt(row.lm_total) || 0,
+          nm: parseInt(row.nm_total) || 0,
+          total: parseInt(row.total_qty) || 0
+        });
+      });
+
       res.json({
         stats,
-        metrics: allMetrics.metrics
+        metrics: allMetrics.metrics,
+        failedItems: failedStyles,
+        inventory: inventoryMap
       });
     } catch (error) {
       console.error("Error exporting metrics:", error);
       res.status(500).json({ error: "Failed to export metrics" });
+    }
+  });
+
+  // Dashboard data endpoint
+  app.get("/api/receiving-metrics/dashboard", isAuthenticated, async (req, res) => {
+    try {
+      // Parse filter parameters from query string
+      const {
+        search = '',
+        stores = 'all',
+        lifecycle = 'all',
+        dateFrom,
+        dateTo,
+        limit = '100'
+      } = req.query;
+
+      const storeList = stores === 'all' ? [] : (stores as string).split(',');
+      const searchTerm = (search as string).toLowerCase();
+      const itemLimit = Math.min(parseInt(limit as string) || 100, 500); // Cap at 500
+
+      console.log('[Dashboard] Query params:', { search, stores, lifecycle, limit: itemLimit });
+
+      const stats = await storage.getReceivingMetricsStats();
+      const allMetrics = await storage.getAllReceivingMetrics({ limit: 10000, offset: 0 });
+
+      // Get inventory totals by location
+      const inventoryByLocation = await db.execute(sql`
+        SELECT
+          SUM(COALESCE(hq_qty, 0)) as hq_total,
+          SUM(COALESCE(gm_qty, 0)) as gm_total,
+          SUM(COALESCE(hm_qty, 0)) as hm_total,
+          SUM(COALESCE(lm_qty, 0)) as lm_total,
+          SUM(COALESCE(nm_qty, 0)) as nm_total,
+          SUM(COALESCE(mm_qty, 0)) as mm_total,
+          SUM(COALESCE(pm_qty, 0)) as pm_total,
+          SUM(COALESCE(avail_qty, 0)) as total_qty
+        FROM item_list
+      `);
+
+      // Get total sales count
+      const totalSales = await db.execute(sql`
+        SELECT COUNT(*) as total_transactions
+        FROM sales_transactions
+      `);
+
+      // Get sales by month (last 12 months)
+      const salesByMonth = await db.execute(sql`
+        SELECT
+          TO_CHAR(date, 'Mon') as month,
+          TO_CHAR(date, 'YYYY-MM') as month_key,
+          COUNT(*) as transactions,
+          SUM(CAST(price AS DECIMAL)) as revenue
+        FROM sales_transactions
+        WHERE date >= CURRENT_DATE - INTERVAL '12 months'
+        GROUP BY TO_CHAR(date, 'Mon'), TO_CHAR(date, 'YYYY-MM'), EXTRACT(MONTH FROM date)
+        ORDER BY TO_CHAR(date, 'YYYY-MM')
+      `);
+
+      // Top products by sales with filtering
+      const topProducts = await db.execute(
+        searchTerm
+          ? sql`
+              SELECT
+                s.sku,
+                i.item_name,
+                COUNT(*) as units_sold,
+                SUM(CAST(s.price AS DECIMAL)) as revenue,
+                SUM(COALESCE(i.avail_qty, 0)) as current_stock,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory
+              FROM sales_transactions s
+              LEFT JOIN item_list i ON s.sku = i.item_number
+              WHERE s.date >= CURRENT_DATE - INTERVAL '90 days'
+                AND (LOWER(s.sku) LIKE ${`%${searchTerm}%`} OR LOWER(i.item_name) LIKE ${`%${searchTerm}%`})
+              GROUP BY s.sku, i.item_name
+              ORDER BY revenue DESC
+              LIMIT ${itemLimit}
+            `
+          : sql`
+              SELECT
+                s.sku,
+                i.item_name,
+                COUNT(*) as units_sold,
+                SUM(CAST(s.price AS DECIMAL)) as revenue,
+                SUM(COALESCE(i.avail_qty, 0)) as current_stock,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory
+              FROM sales_transactions s
+              LEFT JOIN item_list i ON s.sku = i.item_number
+              WHERE s.date >= CURRENT_DATE - INTERVAL '90 days'
+              GROUP BY s.sku, i.item_name
+              ORDER BY revenue DESC
+              LIMIT ${itemLimit}
+            `
+      );
+
+      // Clearance priority items (from metrics) - enrich with inventory data
+      let clearanceMetrics = allMetrics.metrics
+        .filter((m: any) => m.lifecycleStage === 'Clearance');
+
+      // Apply search filter
+      if (searchTerm) {
+        clearanceMetrics = clearanceMetrics.filter((m: any) =>
+          m.styleNumber.toLowerCase().includes(searchTerm)
+        );
+      }
+
+      clearanceMetrics = clearanceMetrics
+        .sort((a: any, b: any) => {
+          const aDays = a.daysOfSupply ? parseFloat(a.daysOfSupply) : 0;
+          const bDays = b.daysOfSupply ? parseFloat(b.daysOfSupply) : 0;
+          return bDays - aDays;
+        })
+        .slice(0, Math.min(itemLimit, 100));
+
+      // Enrich clearance items with store-level inventory
+      const clearanceItems = await Promise.all(
+        clearanceMetrics.map(async (metric: any) => {
+          const inventoryData = await db.execute(sql`
+            SELECT
+              SUM(COALESCE(hq_qty, 0)) as hq_inventory,
+              SUM(COALESCE(gm_qty, 0)) as gm_inventory,
+              SUM(COALESCE(hm_qty, 0)) as hm_inventory,
+              SUM(COALESCE(lm_qty, 0)) as lm_inventory,
+              SUM(COALESCE(nm_qty, 0)) as nm_inventory,
+              SUM(COALESCE(mm_qty, 0)) as mm_inventory,
+              SUM(COALESCE(pm_qty, 0)) as pm_inventory
+            FROM item_list
+            WHERE style_number = ${metric.styleNumber}
+          `);
+          return {
+            ...metric,
+            hqInventory: parseInt(inventoryData.rows[0]?.hq_inventory || '0'),
+            gmInventory: parseInt(inventoryData.rows[0]?.gm_inventory || '0'),
+            hmInventory: parseInt(inventoryData.rows[0]?.hm_inventory || '0'),
+            lmInventory: parseInt(inventoryData.rows[0]?.lm_inventory || '0'),
+            nmInventory: parseInt(inventoryData.rows[0]?.nm_inventory || '0'),
+            mmInventory: parseInt(inventoryData.rows[0]?.mm_inventory || '0'),
+            pmInventory: parseInt(inventoryData.rows[0]?.pm_inventory || '0')
+          };
+        })
+      );
+
+      // Inventory health items (styles with inventory) with filtering
+      const inventoryHealth = await db.execute(
+        searchTerm && lifecycle !== 'all'
+          ? sql`
+              SELECT
+                i.style_number,
+                SUM(COALESCE(i.avail_qty, 0)) as total_inventory,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory,
+                m.days_since_last_receive,
+                m.sales_last_90days,
+                m.lifecycle_stage,
+                m.days_of_supply
+              FROM item_list i
+              LEFT JOIN item_receiving_metrics m ON i.style_number = m.style_number
+              WHERE i.style_number IS NOT NULL
+                AND COALESCE(i.avail_qty, 0) > 0
+                AND LOWER(i.style_number) LIKE ${`%${searchTerm}%`}
+                AND m.lifecycle_stage = ${lifecycle}
+              GROUP BY i.style_number, m.days_since_last_receive, m.sales_last_90days, m.lifecycle_stage, m.days_of_supply
+              ORDER BY total_inventory DESC
+              LIMIT ${itemLimit}
+            `
+          : searchTerm
+          ? sql`
+              SELECT
+                i.style_number,
+                SUM(COALESCE(i.avail_qty, 0)) as total_inventory,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory,
+                m.days_since_last_receive,
+                m.sales_last_90days,
+                m.lifecycle_stage,
+                m.days_of_supply
+              FROM item_list i
+              LEFT JOIN item_receiving_metrics m ON i.style_number = m.style_number
+              WHERE i.style_number IS NOT NULL
+                AND COALESCE(i.avail_qty, 0) > 0
+                AND LOWER(i.style_number) LIKE ${`%${searchTerm}%`}
+              GROUP BY i.style_number, m.days_since_last_receive, m.sales_last_90days, m.lifecycle_stage, m.days_of_supply
+              ORDER BY total_inventory DESC
+              LIMIT ${itemLimit}
+            `
+          : lifecycle !== 'all'
+          ? sql`
+              SELECT
+                i.style_number,
+                SUM(COALESCE(i.avail_qty, 0)) as total_inventory,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory,
+                m.days_since_last_receive,
+                m.sales_last_90days,
+                m.lifecycle_stage,
+                m.days_of_supply
+              FROM item_list i
+              LEFT JOIN item_receiving_metrics m ON i.style_number = m.style_number
+              WHERE i.style_number IS NOT NULL
+                AND COALESCE(i.avail_qty, 0) > 0
+                AND m.lifecycle_stage = ${lifecycle}
+              GROUP BY i.style_number, m.days_since_last_receive, m.sales_last_90days, m.lifecycle_stage, m.days_of_supply
+              ORDER BY total_inventory DESC
+              LIMIT ${itemLimit}
+            `
+          : sql`
+              SELECT
+                i.style_number,
+                SUM(COALESCE(i.avail_qty, 0)) as total_inventory,
+                SUM(COALESCE(i.hq_qty, 0)) as hq_inventory,
+                SUM(COALESCE(i.gm_qty, 0)) as gm_inventory,
+                SUM(COALESCE(i.hm_qty, 0)) as hm_inventory,
+                SUM(COALESCE(i.lm_qty, 0)) as lm_inventory,
+                SUM(COALESCE(i.nm_qty, 0)) as nm_inventory,
+                SUM(COALESCE(i.mm_qty, 0)) as mm_inventory,
+                SUM(COALESCE(i.pm_qty, 0)) as pm_inventory,
+                m.days_since_last_receive,
+                m.sales_last_90days,
+                m.lifecycle_stage,
+                m.days_of_supply
+              FROM item_list i
+              LEFT JOIN item_receiving_metrics m ON i.style_number = m.style_number
+              WHERE i.style_number IS NOT NULL AND COALESCE(i.avail_qty, 0) > 0
+              GROUP BY i.style_number, m.days_since_last_receive, m.sales_last_90days, m.lifecycle_stage, m.days_of_supply
+              ORDER BY total_inventory DESC
+              LIMIT ${itemLimit}
+            `
+      );
+
+      res.json({
+        stats,
+        inventoryByLocation: inventoryByLocation.rows[0],
+        totalTransactions: parseInt(totalSales.rows[0]?.total_transactions || '0'),
+        salesByMonth: salesByMonth.rows,
+        topProducts: topProducts.rows,
+        clearanceItems,
+        inventoryHealth: inventoryHealth.rows,
+        lifecycleDistribution: stats?.byLifecycle || {}
+      });
+    } catch (error) {
+      console.error("[Dashboard] Error fetching dashboard data:", error);
+      console.error("[Dashboard] Error stack:", (error as Error).stack);
+      res.status(500).json({
+        error: "Failed to fetch dashboard data",
+        message: (error as Error).message
+      });
     }
   });
 
@@ -1402,19 +1804,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const settings = await storage.getReceivingMetricsSettings();
       if (!settings) {
-        // Return default settings if none exist
+        // Return default settings if none exist (with all multi-dimensional fields)
         return res.json({
-          newItemDaysFromCreation: 7,
+          newItemDaysFromCreation: 30,
           newItemMaxReceives: 2,
           coreItemMinMonths: 3,
           coreItemMinReceives: 5,
           coreItemMaxDaysBetween: 60,
+          coreItemMaxDaysSinceLast: 90,
+          coreItemMinSalesMonths: 6,
+          coreItemMaxDaysSinceLastSold: 90,
+          coreItemMinInventoryOrRecentSales: true,
           seasonalItemMinYears: 2,
           seasonalItemConcentrationPct: 60,
           seasonalItemMinDaysBetween: 300,
+          seasonalOverridesDiscontinued: true,
+          seasonalDiscontinuedThreshold: 365,
+          seasonalItemSalesConcentrationPct: 15,
+          seasonalItemMaxDaysSinceActivity: 365,
           oneTimeBuyMaxReceives: 2,
           oneTimeBuyMinDaysSinceLast: 90,
+          oneTimeBuyMinDaysSinceFirst: 90,
+          oneTimeBuyMaxDaysSinceSold: 90,
           discontinuedMinDaysSinceLast: 180,
+          discontinuedMinDaysSinceSold: 180,
+          discontinuedMinDaysSinceReceived: 180,
+          discontinuedRequiresZeroInventory: true,
+          clearanceMinInventory: 10,
+          clearanceMaxRecentSales: 3,
+          clearanceMinDaysSinceReceived: 180,
+          clearanceMinDaysOfSupply: 180,
         });
       }
       res.json(settings);
