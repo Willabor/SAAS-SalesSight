@@ -500,7 +500,7 @@ export default function SalesTransactionsPage() {
               </div>
 
               {/* Filters Row - Second Row */}
-              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
                 {/* Date Range Filter */}
                 <DateRangeFilter
                   defaultPreset={pendingPreset}
@@ -512,50 +512,54 @@ export default function SalesTransactionsPage() {
                     setPendingDateFrom(from);
                     setPendingDateTo(to);
                   }}
-                  hideLabels={true}
                   className="flex-shrink-0"
                 />
 
                 {/* Store Multi-Select */}
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className="w-full sm:w-[180px] h-10 justify-between" data-testid="select-stores">
-                      <span className="truncate">
-                        {pendingStores.length === 0
-                          ? "All Stores"
-                          : pendingStores.length === 1
-                          ? pendingStores[0]
-                          : `${pendingStores.length} stores`}
-                      </span>
-                      <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[200px] p-0">
-                    <div className="max-h-[300px] overflow-y-auto p-2 space-y-1">
-                      {storeOptions.map((store) => (
-                        <div key={store.value} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-accent rounded-sm cursor-pointer">
-                          <Checkbox
-                            id={`store-${store.value}`}
-                            checked={pendingStores.includes(store.value)}
-                            onCheckedChange={(checked) => {
-                              if (checked) {
-                                setPendingStores([...pendingStores, store.value]);
-                              } else {
-                                setPendingStores(pendingStores.filter(s => s !== store.value));
-                              }
-                            }}
-                          />
-                          <label
-                            htmlFor={`store-${store.value}`}
-                            className="flex-1 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
-                          >
-                            {store.label}
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  </PopoverContent>
-                </Popover>
+                <div className="flex flex-col">
+                  <label className="text-sm font-medium mb-1" htmlFor="store-filter">
+                    Store
+                  </label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button id="store-filter" variant="outline" className="w-full sm:w-[180px] h-10 justify-between" data-testid="select-stores">
+                        <span className="truncate">
+                          {pendingStores.length === 0
+                            ? "All Stores"
+                            : pendingStores.length === 1
+                            ? pendingStores[0]
+                            : `${pendingStores.length} stores`}
+                        </span>
+                        <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[200px] p-0">
+                      <div className="max-h-[300px] overflow-y-auto p-2 space-y-1">
+                        {storeOptions.map((store) => (
+                          <div key={store.value} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-accent rounded-sm cursor-pointer">
+                            <Checkbox
+                              id={`store-${store.value}`}
+                              checked={pendingStores.includes(store.value)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setPendingStores([...pendingStores, store.value]);
+                                } else {
+                                  setPendingStores(pendingStores.filter(s => s !== store.value));
+                                }
+                              }}
+                            />
+                            <label
+                              htmlFor={`store-${store.value}`}
+                              className="flex-1 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                            >
+                              {store.label}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </div>
 
                 {/* Apply Filter Button - Always visible */}
                 <Button
