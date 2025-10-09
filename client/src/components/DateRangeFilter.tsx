@@ -51,6 +51,7 @@ export interface DateRangeFilterProps {
   maxDate?: string; // optional clamp; default today
   onChange?: (v: { preset: Preset; from: string; to: string }) => void;
   className?: string;
+  hideLabels?: boolean; // optional flag to hide labels
 }
 
 // ---------- Utilities ----------
@@ -242,14 +243,16 @@ export default function DateRangeFilter(props: DateRangeFilterProps) {
   };
 
   return (
-    <div className={"flex items-end gap-3 " + (props.className ?? "")}>
+    <div className={"flex items-center gap-3 " + (props.className ?? "")}>
       <div className="flex flex-col">
-        <label className="text-sm font-medium mb-1" htmlFor="preset">
-          Date
-        </label>
+        {!props.hideLabels && (
+          <label className="text-sm font-medium mb-1" htmlFor="preset">
+            Date
+          </label>
+        )}
         <select
           id="preset"
-          className="border rounded-lg px-3 py-2 min-w-[260px] bg-background"
+          className="border rounded-lg px-3 py-2 min-w-[180px] h-10 bg-background"
           value={preset}
           onChange={(e) => setPreset(e.target.value as Preset)}
         >
@@ -262,13 +265,15 @@ export default function DateRangeFilter(props: DateRangeFilterProps) {
       </div>
 
       <div className="flex flex-col">
-        <label className="text-sm font-medium mb-1" htmlFor="from">
-          From
-        </label>
+        {!props.hideLabels && (
+          <label className="text-sm font-medium mb-1" htmlFor="from">
+            From
+          </label>
+        )}
         <input
           id="from"
           type="date"
-          className="border rounded-lg px-3 py-2 bg-background cursor-pointer"
+          className="border rounded-lg px-3 py-2 h-10 bg-background cursor-pointer"
           value={from}
           onChange={(e) => setFrom(e.target.value)}
           onFocus={handleDateInputFocus}
@@ -279,13 +284,15 @@ export default function DateRangeFilter(props: DateRangeFilterProps) {
       </div>
 
       <div className="flex flex-col">
-        <label className="text-sm font-medium mb-1" htmlFor="to">
-          To
-        </label>
+        {!props.hideLabels && (
+          <label className="text-sm font-medium mb-1" htmlFor="to">
+            To
+          </label>
+        )}
         <input
           id="to"
           type="date"
-          className="border rounded-lg px-3 py-2 bg-background cursor-pointer"
+          className="border rounded-lg px-3 py-2 h-10 bg-background cursor-pointer"
           value={to}
           onChange={(e) => setTo(e.target.value)}
           onFocus={handleDateInputFocus}

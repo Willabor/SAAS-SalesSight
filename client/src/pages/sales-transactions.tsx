@@ -512,13 +512,14 @@ export default function SalesTransactionsPage() {
                     setPendingDateFrom(from);
                     setPendingDateTo(to);
                   }}
+                  hideLabels={true}
                   className="flex-shrink-0"
                 />
 
                 {/* Store Multi-Select */}
                 <Popover>
                   <PopoverTrigger asChild>
-                    <Button variant="outline" className="w-full sm:w-40 h-10 justify-between" data-testid="select-stores">
+                    <Button variant="outline" className="w-full sm:w-[180px] h-10 justify-between" data-testid="select-stores">
                       <span className="truncate">
                         {pendingStores.length === 0
                           ? "All Stores"
@@ -560,7 +561,7 @@ export default function SalesTransactionsPage() {
                 <Button
                   onClick={applyFilters}
                   disabled={!hasPendingChanges}
-                  className="w-full sm:w-auto h-10 flex items-center justify-center gap-2"
+                  className="w-full sm:w-auto h-10 flex items-center justify-center gap-2 px-4"
                   data-testid="button-apply-filters"
                 >
                   <Filter className="w-4 h-4" />
