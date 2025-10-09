@@ -482,23 +482,25 @@ export default function SalesTransactionsPage() {
                 )}
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-                <div className="relative flex-1 min-w-0">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                  <Input
-                    placeholder="Search by SKU, item name, store, or receipt number..."
-                    value={pendingSearch}
-                    onChange={(e) => setPendingSearch(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        applyFilters();
-                      }
-                    }}
-                    className="pl-10 h-10"
-                    data-testid="input-search"
-                  />
-                </div>
+              {/* Search Bar - First Row */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                <Input
+                  placeholder="Search by SKU, item name, store, or receipt number..."
+                  value={pendingSearch}
+                  onChange={(e) => setPendingSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      applyFilters();
+                    }
+                  }}
+                  className="pl-10 h-10"
+                  data-testid="input-search"
+                />
+              </div>
 
+              {/* Filters Row - Second Row */}
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
                 {/* Date Range Filter */}
                 <DateRangeFilter
                   defaultPreset={pendingPreset}
