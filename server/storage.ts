@@ -27,7 +27,7 @@ import {
   type InsertMLSettingsLog
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, asc, sql, count, sum, ilike, or, and, gte } from "drizzle-orm";
+import { eq, desc, asc, sql, count, sum, ilike, or, and, gte, lte, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // User operations for Replit Auth
@@ -75,7 +75,7 @@ export interface IStorage {
     price: string | null;
     sheet: string | null;
   }>): Promise<Set<string>>;
-  getAllSalesTransactions(limit?: number, offset?: number, search?: string, year?: number, month?: number): Promise<{
+  getAllSalesTransactions(limit?: number, offset?: number, search?: string, dateFrom?: string, dateTo?: string, stores?: string[], sortBy?: string, sortDirection?: 'asc' | 'desc'): Promise<{
     transactions: SalesTransaction[];
     total: number;
   }>;
@@ -96,6 +96,13 @@ export interface IStorage {
     byCategory: Array<{ category: string; totalSales: number; totalRevenue: string; transactionCount: number; avgPrice: string }>;
     inventoryAge: Array<{ ageGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
     recentInventory: Array<{ recencyGroup: string; totalSales: number; totalRevenue: string; itemCount: number }>;
+  }>;
+  getSalesTransactionInsights(dateFrom?: string, dateTo?: string, search?: string, stores?: string[]): Promise<{
+    totalRevenue: string;
+    totalReceipts: number;
+    avgReceiptValue: string;
+    revenueByStore: Array<{ store: string; totalRevenue: string; transactionCount: number }>;
+    avgTransactionValueByStore: Array<{ store: string; avgTransactionValue: string; transactionCount: number }>;
   }>;
   
   // Upload History operations
@@ -708,7 +715,7 @@ export class DatabaseStorage implements IStorage {
     return allExisting;
   }
 
-  async getAllSalesTransactions(limit = 50, offset = 0, search?: string, year?: number, month?: number): Promise<{
+  async getAllSalesTransactions(limit = 50, offset = 0, search?: string, dateFrom?: string, dateTo?: string, stores?: string[], sortBy?: string, sortDirection: 'asc' | 'desc' = 'desc'): Promise<{
     transactions: SalesTransaction[];
     total: number;
   }> {
@@ -716,7 +723,7 @@ export class DatabaseStorage implements IStorage {
     let total: number;
 
     const filters = [];
-    
+
     // Search filter
     if (search) {
       filters.push(
@@ -728,37 +735,40 @@ export class DatabaseStorage implements IStorage {
         )
       );
     }
-    
-    // Year filter using date range for index efficiency
-    if (year) {
-      filters.push(sql`${salesTransactions.date} >= make_date(${year}, 1, 1)`);
-      filters.push(sql`${salesTransactions.date} < make_date(${year + 1}, 1, 1)`);
+
+    // Date range filter
+    if (dateFrom) {
+      filters.push(gte(salesTransactions.date, dateFrom));
     }
-    
-    // Month filter using date range (1-12)
-    if (month && year) {
-      const nextMonth = month === 12 ? 1 : month + 1;
-      const nextYear = month === 12 ? year + 1 : year;
-      filters.push(sql`${salesTransactions.date} >= make_date(${year}, ${month}, 1)`);
-      filters.push(sql`${salesTransactions.date} < make_date(${nextYear}, ${nextMonth}, 1)`);
+    if (dateTo) {
+      filters.push(lte(salesTransactions.date, dateTo));
     }
 
-    const whereClause = filters.length > 0 ? sql`${sql.join(filters, sql` AND `)}` : undefined;
-    
+    // Store filter - use IN clause for multiple stores
+    if (stores && stores.length > 0) {
+      filters.push(inArray(salesTransactions.store, stores));
+    }
+
+    // Determine sort column and direction
+    const sortColumn = sortBy && sortBy in salesTransactions ? salesTransactions[sortBy as keyof typeof salesTransactions] : salesTransactions.date;
+    const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
+    const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
     if (whereClause) {
       const [transactionsResult, [countResult]] = await Promise.all([
-        db.select().from(salesTransactions).where(whereClause).orderBy(desc(salesTransactions.date)).limit(limit).offset(offset),
+        db.select().from(salesTransactions).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset),
         db.select({ count: count() }).from(salesTransactions).where(whereClause)
       ]);
-      
+
       transactions = transactionsResult;
       total = countResult.count;
     } else {
       const [transactionsResult, [countResult]] = await Promise.all([
-        db.select().from(salesTransactions).orderBy(desc(salesTransactions.date)).limit(limit).offset(offset),
+        db.select().from(salesTransactions).orderBy(orderByClause).limit(limit).offset(offset),
         db.select({ count: count() }).from(salesTransactions)
       ]);
-      
+
       transactions = transactionsResult;
       total = countResult.count;
     }
@@ -986,6 +996,96 @@ export class DatabaseStorage implements IStorage {
         totalRevenue: r.totalRevenue || '0',
         itemCount: r.itemCount,
       })),
+    };
+  }
+
+  async getSalesTransactionInsights(dateFrom?: string, dateTo?: string, search?: string, stores?: string[]): Promise<{
+    totalRevenue: string;
+    totalReceipts: number;
+    avgReceiptValue: string;
+    revenueByStore: Array<{ store: string; totalRevenue: string; transactionCount: number }>;
+    avgTransactionValueByStore: Array<{ store: string; avgTransactionValue: string; transactionCount: number }>;
+  }> {
+    // Build WHERE clause based on filters
+    const conditions = [];
+
+    // Date range filter
+    if (dateFrom) {
+      conditions.push(gte(salesTransactions.date, dateFrom));
+    }
+    if (dateTo) {
+      conditions.push(lte(salesTransactions.date, dateTo));
+    }
+
+    if (search) {
+      const searchPattern = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(salesTransactions.sku, searchPattern),
+          ilike(salesTransactions.itemName, searchPattern),
+          ilike(salesTransactions.store, searchPattern),
+          ilike(salesTransactions.receiptNumber, searchPattern)
+        )!
+      );
+    }
+
+    // Store filter - use IN clause for multiple stores
+    if (stores && stores.length > 0) {
+      conditions.push(inArray(salesTransactions.store, stores));
+    }
+
+    // Company-wide totals with filters (includes ALL transactions, even with NULL stores)
+    // NOTE: Receipt numbers are NOT unique across stores! Same receipt # can exist in multiple stores.
+    // We need to count unique (receipt_number, store) pairs, not just unique receipt_numbers.
+    const totalsQuery = db
+      .select({
+        totalRevenue: sum(salesTransactions.price),
+        totalReceipts: sql<number>`COUNT(DISTINCT (${salesTransactions.receiptNumber} || '|' || COALESCE(${salesTransactions.store}, 'NULL')))`,
+      })
+      .from(salesTransactions);
+
+    const [companyTotals] = conditions.length > 0
+      ? await totalsQuery.where(and(...conditions))
+      : await totalsQuery;
+
+    const totalRevenue = parseFloat(companyTotals.totalRevenue || '0');
+    const totalReceipts = companyTotals.totalReceipts || 0;
+    const avgReceiptValue = totalReceipts > 0 ? (totalRevenue / totalReceipts).toFixed(2) : '0.00';
+
+    // Revenue by store with filters
+    const revenueQuery = db
+      .select({
+        store: salesTransactions.store,
+        totalRevenue: sum(salesTransactions.price),
+        transactionCount: sql<number>`COUNT(DISTINCT ${salesTransactions.receiptNumber})`,
+      })
+      .from(salesTransactions)
+      .groupBy(salesTransactions.store)
+      .orderBy(desc(sum(salesTransactions.price)));
+
+    const revenueByStore = conditions.length > 0
+      ? await revenueQuery.where(and(...conditions))
+      : await revenueQuery;
+
+    // Average transaction value by store (totalRevenue / transactionCount)
+    const avgTransactionValueByStore = revenueByStore.map(s => ({
+      store: s.store || 'Unknown',
+      avgTransactionValue: s.transactionCount > 0
+        ? (parseFloat(s.totalRevenue || '0') / s.transactionCount).toFixed(2)
+        : '0.00',
+      transactionCount: s.transactionCount,
+    }));
+
+    return {
+      totalRevenue: totalRevenue.toFixed(2),
+      totalReceipts: totalReceipts,
+      avgReceiptValue: avgReceiptValue,
+      revenueByStore: revenueByStore.map(s => ({
+        store: s.store || 'Unknown',
+        totalRevenue: s.totalRevenue || '0',
+        transactionCount: s.transactionCount,
+      })),
+      avgTransactionValueByStore,
     };
   }
 

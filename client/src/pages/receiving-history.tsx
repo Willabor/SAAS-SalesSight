@@ -28,6 +28,15 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload,
@@ -85,6 +94,9 @@ export default function ReceivingHistoryPage() {
   } | null>(null);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isStopped, setIsStopped] = useState<boolean>(false);
+  const [showAnomalyDialog, setShowAnomalyDialog] = useState<boolean>(false);
+  const [excludedVoucherNumbers, setExcludedVoucherNumbers] = useState<Set<string>>(new Set());
+  const [anomalyReviewed, setAnomalyReviewed] = useState<boolean>(false);
   const { toast } = useToast();
 
   const { data: stats } = useQuery<{
@@ -206,6 +218,17 @@ export default function ReceivingHistoryPage() {
       setFlattenStats(result.stats);
       setCurrentStep("flatten");
       setProcessingProgress(100);
+
+      // Show anomaly dialog if anomalies detected
+      if (result.stats.anomalousVouchersCount > 0) {
+        setShowAnomalyDialog(true);
+        setAnomalyReviewed(false);
+        // Initialize excluded vouchers - all anomalies are INCLUDED by default (checkboxes checked)
+        setExcludedVoucherNumbers(new Set());
+      } else {
+        setAnomalyReviewed(true); // No anomalies, so no review needed
+      }
+
       toast({
         title: "Flatten Complete",
         description: `Processed ${result.stats.totalVouchers} vouchers with ${result.stats.totalLines} line items.`,
@@ -225,6 +248,33 @@ export default function ReceivingHistoryPage() {
     // Prevent double-click and concurrent uploads
     if (isUploading) return;
 
+    // If there are anomalies and user hasn't reviewed them yet, block upload
+    if (flattenStats?.anomalousVouchersCount > 0 && !anomalyReviewed) {
+      toast({
+        title: "Review Required",
+        description: "Please review the anomalous vouchers before uploading.",
+        variant: "destructive",
+      });
+      setShowAnomalyDialog(true);
+      return;
+    }
+
+    // Filter out excluded vouchers
+    const vouchersToUpload = flattenedData.filter(
+      voucher => !excludedVoucherNumbers.has(voucher.voucherNumber)
+    );
+
+    const excludedCount = flattenedData.length - vouchersToUpload.length;
+
+    if (vouchersToUpload.length === 0) {
+      toast({
+        title: "No Vouchers to Upload",
+        description: "All vouchers have been excluded. Please review your selections.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     // Reset control flags
     resetUploadControlFlags();
     setIsPaused(false);
@@ -232,7 +282,7 @@ export default function ReceivingHistoryPage() {
 
     setIsUploading(true);
     setUploadProgress(0);
-    setUploadStats({ processed: 0, total: flattenedData.length, uploaded: 0, skipped: 0, failed: 0 });
+    setUploadStats({ processed: 0, total: vouchersToUpload.length, uploaded: 0, skipped: excludedCount, failed: 0 });
 
     try {
       // Use executeTrackedUpload to persist state across navigation
@@ -240,10 +290,15 @@ export default function ReceivingHistoryPage() {
         'receiving',
         selectedFile.name,
         (onProgress) => uploadReceivingWithProgress(
-          flattenedData,
+          vouchersToUpload,
           (progress) => {
-            setUploadStats(progress);
-            onProgress(progress);
+            // Add excluded count to skipped
+            const adjustedProgress = {
+              ...progress,
+              skipped: progress.skipped + excludedCount
+            };
+            setUploadStats(adjustedProgress);
+            onProgress(adjustedProgress);
             // Update upload progress percentage based on processed items
             const percentage = Math.round((progress.processed / progress.total) * 100);
             setUploadProgress(percentage);
@@ -257,7 +312,7 @@ export default function ReceivingHistoryPage() {
           50, // batch size
           () => ({ isPaused: isUploadPaused(), isStopped: isUploadStopped() })
         ),
-        flattenedData.length,
+        vouchersToUpload.length,
         'flatten'
       );
 
@@ -275,10 +330,10 @@ export default function ReceivingHistoryPage() {
       // Update response state
       setUploadResponse({
         success: result.success,
-        message: `Upload complete. ${result.uploaded} vouchers and ${result.lines || 0} line items uploaded successfully.`,
+        message: `Upload complete. ${result.uploaded} vouchers and ${result.lines || 0} line items uploaded successfully.${excludedCount > 0 ? ` ${excludedCount} anomalous voucher(s) excluded.` : ''}`,
         uploaded: result.uploaded,
         lines: result.lines || 0,
-        skipped: result.skipped || 0,
+        skipped: (result.skipped || 0) + excludedCount,
         failed: result.failed,
         errors: result.errors,
         duplicateVouchers: result.duplicateVouchers || []
@@ -370,6 +425,39 @@ export default function ReceivingHistoryPage() {
     setUploadProgress(0);
     setIsPaused(false);
     setIsStopped(false);
+    setShowAnomalyDialog(false);
+    setExcludedVoucherNumbers(new Set());
+    setAnomalyReviewed(false);
+  };
+
+  const toggleVoucherExclusion = (voucherNumber: string) => {
+    setExcludedVoucherNumbers(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(voucherNumber)) {
+        newSet.delete(voucherNumber); // Re-include (check the box)
+      } else {
+        newSet.add(voucherNumber); // Exclude (uncheck the box)
+      }
+      return newSet;
+    });
+  };
+
+  const handleConfirmAnomalyReview = () => {
+    setAnomalyReviewed(true);
+    setShowAnomalyDialog(false);
+
+    const excludedCount = excludedVoucherNumbers.size;
+    if (excludedCount > 0) {
+      toast({
+        title: "Anomalies Reviewed",
+        description: `${excludedCount} voucher(s) will be skipped during upload.`,
+      });
+    } else {
+      toast({
+        title: "Anomalies Reviewed",
+        description: "All anomalous vouchers will be uploaded.",
+      });
+    }
   };
 
   return (
@@ -585,6 +673,53 @@ export default function ReceivingHistoryPage() {
                   </Alert>
                 )}
 
+                {flattenStats.anomalousVouchersCount > 0 && !anomalyReviewed && (
+                  <Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950">
+                    <AlertCircle className="h-4 w-4 text-orange-600" />
+                    <AlertTitle className="text-orange-800 dark:text-orange-200">
+                      ⚠️ Action Required: Review Anomalous Vouchers
+                    </AlertTitle>
+                    <AlertDescription className="text-orange-700 dark:text-orange-300">
+                      <p className="mb-3">
+                        {flattenStats.anomalousVouchersCount} voucher(s) exceed normal thresholds ($10,000+).
+                        These may be dropshipping placeholders or bulk orders.
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowAnomalyDialog(true)}
+                        className="border-orange-600 text-orange-700 hover:bg-orange-100"
+                      >
+                        <AlertCircle className="w-4 h-4 mr-2" />
+                        Review Anomalies ({flattenStats.anomalousVouchersCount})
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {flattenStats.anomalousVouchersCount > 0 && anomalyReviewed && (
+                  <Alert className="border-green-500 bg-green-50 dark:bg-green-950">
+                    <Check className="h-4 w-4 text-green-600" />
+                    <AlertTitle className="text-green-800 dark:text-green-200">
+                      Anomalies Reviewed
+                    </AlertTitle>
+                    <AlertDescription className="text-green-700 dark:text-green-300 space-y-2">
+                      <p>
+                        {flattenStats.anomalousVouchersCount - excludedVoucherNumbers.size} voucher(s) will be uploaded.
+                        {excludedVoucherNumbers.size > 0 && ` ${excludedVoucherNumbers.size} voucher(s) will be skipped.`}
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowAnomalyDialog(true)}
+                        className="text-xs"
+                      >
+                        Review Again
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
                 <div className="flex justify-between items-center gap-2">
                   <Button variant="outline" onClick={resetWorkflow} data-testid="button-reset">
                     Start Over
@@ -732,6 +867,107 @@ export default function ReceivingHistoryPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Anomaly Review Dialog */}
+        <Dialog open={showAnomalyDialog} onOpenChange={setShowAnomalyDialog}>
+          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-orange-600">⚠️ Review Anomalous Vouchers</DialogTitle>
+              <DialogDescription>
+                {flattenStats?.anomalousVouchersCount} voucher(s) exceed normal thresholds.
+                Review each voucher and decide whether to upload or skip it.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              {/* Instructions */}
+              <Alert className="border-orange-300 bg-orange-50 dark:bg-orange-950">
+                <AlertCircle className="h-4 w-4 text-orange-600" />
+                <AlertDescription className="text-sm">
+                  <p className="font-medium mb-2">How to review:</p>
+                  <ul className="list-disc list-inside space-y-1 text-xs">
+                    <li><strong>Checked (✓)</strong> = Voucher will be <strong>uploaded</strong> to database</li>
+                    <li><strong>Unchecked (☐)</strong> = Voucher will be <strong>skipped</strong> (not uploaded)</li>
+                    <li>All vouchers are checked by default</li>
+                    <li>Skipped vouchers will count towards the "Skipped" metric</li>
+                  </ul>
+                </AlertDescription>
+              </Alert>
+
+              {/* Voucher Table */}
+              <div className="border rounded-md overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-orange-100 dark:bg-orange-900 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Upload?</th>
+                      <th className="px-3 py-2 text-left font-medium">Voucher #</th>
+                      <th className="px-3 py-2 text-left font-medium">Vendor</th>
+                      <th className="px-3 py-2 text-left font-medium">Store</th>
+                      <th className="px-3 py-2 text-left font-medium">Date</th>
+                      <th className="px-3 py-2 text-right font-medium">Total</th>
+                      <th className="px-3 py-2 text-right font-medium">Qty</th>
+                      <th className="px-3 py-2 text-right font-medium">Lines</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white dark:bg-gray-950">
+                    {flattenStats?.anomalousVouchers?.map((voucher: any, idx: number) => {
+                      const isExcluded = excludedVoucherNumbers.has(voucher.voucherNumber);
+                      return (
+                        <tr
+                          key={idx}
+                          className={`border-t border-orange-200 dark:border-orange-800 ${
+                            isExcluded ? 'opacity-50 bg-gray-100 dark:bg-gray-900' : ''
+                          }`}
+                        >
+                          <td className="px-3 py-2">
+                            <Checkbox
+                              checked={!isExcluded}
+                              onCheckedChange={() => toggleVoucherExclusion(voucher.voucherNumber)}
+                              aria-label={`Upload voucher ${voucher.voucherNumber}`}
+                            />
+                          </td>
+                          <td className="px-3 py-2 font-mono">{voucher.voucherNumber}</td>
+                          <td className="px-3 py-2">{voucher.vendor}</td>
+                          <td className="px-3 py-2">{voucher.store}</td>
+                          <td className="px-3 py-2 text-xs">{voucher.date}</td>
+                          <td className="px-3 py-2 text-right font-semibold text-orange-600">
+                            ${voucher.correctedTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-3 py-2 text-right">{voucher.totalQty.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right">{voucher.lineCount}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Summary */}
+              <div className="flex items-center justify-between px-2 py-2 bg-muted rounded-md">
+                <span className="text-sm font-medium">
+                  To Upload: {flattenStats?.anomalousVouchersCount - excludedVoucherNumbers.size}
+                </span>
+                <span className="text-sm font-medium text-yellow-600">
+                  To Skip: {excludedVoucherNumbers.size}
+                </span>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setShowAnomalyDialog(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmAnomalyReview}
+              >
+                Confirm & Continue
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

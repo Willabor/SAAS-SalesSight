@@ -208,7 +208,7 @@ export interface ReceivingLine {
   itemNumber: string;
   itemName: string;
   qty: number;
-  cost: number;
+  cost: number; // ⚠️ This is the LINE TOTAL (qty × unit_price), NOT the unit price!
 }
 
 /**
@@ -332,6 +332,17 @@ export async function formatReceivingFile(file: File, onProgress?: (status: stri
  * - Handle negative quantities (reversals)
  * - Calculate corrected totals
  */
+export interface AnomalousVoucher {
+  voucherNumber: string;
+  vendor: string;
+  store: string;
+  date: string;
+  correctedTotal: number;
+  totalQty: number;
+  lineCount: number;
+  reason: string; // Why it was flagged as anomalous
+}
+
 export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?: (status: string, percentage?: number) => void): Promise<{
   vouchers: ReceivingVoucher[];
   stats: {
@@ -341,6 +352,8 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     uniqueVendors: number;
     uniqueStores: number;
     qbMismatchCount: number;
+    anomalousVouchersCount: number;
+    anomalousVouchers: AnomalousVoucher[];
   };
 }> {
   try {
@@ -412,11 +425,13 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     // Calculate corrected totals and handle reversals
     allVouchers.forEach(voucher => {
       // Calculate CORRECT total for this voucher
+      // Note: item.cost is already the LINE TOTAL (qty × unit_price), not unit price
+      // So we just sum the costs directly without multiplying by qty again
       const correctVoucherTotal = voucher.lines.reduce((sum, item) => {
         const absoluteCost = Math.abs(Number(item.cost));
-        return sum + (Number(item.qty) * absoluteCost);
+        return sum + absoluteCost; // Fixed: Don't multiply by qty - cost is already extended price
       }, 0);
-      
+
       voucher.correctedTotal = correctVoucherTotal;
       
       // Update transaction type for negative quantities (reversals)
@@ -436,17 +451,61 @@ export async function flattenReceivingData(workbook: XLSX.WorkBook, onProgress?:
     const totalLines = allVouchers.reduce((sum, v) => sum + v.lines.length, 0);
     const totalCost = allVouchers.reduce((sum, v) => sum + v.correctedTotal, 0);
     const qbMismatchCount = allVouchers.filter(v => Math.abs(v.qbTotal - v.correctedTotal) > 0.01).length;
-    
+
+    // ANOMALY DETECTION - Detect potential dropshipping or data errors
+    const ANOMALY_THRESHOLD = 10000; // Primary threshold: $10,000
+    const anomalousVouchers: AnomalousVoucher[] = [];
+
+    allVouchers.forEach(voucher => {
+      const reasons: string[] = [];
+
+      // Primary: High dollar amount (likely dropshipping placeholder)
+      if (voucher.correctedTotal > ANOMALY_THRESHOLD) {
+        reasons.push(`Total exceeds $${ANOMALY_THRESHOLD.toLocaleString()} threshold`);
+      }
+
+      // Secondary indicators (not standalone flags, but strengthen the case)
+      if (voucher.correctedTotal > ANOMALY_THRESHOLD) {
+        if (voucher.totalQty > 5000) {
+          reasons.push(`Unusually high quantity: ${voucher.totalQty} items`);
+        }
+        if (voucher.lines.length > 150) {
+          reasons.push(`Unusually high line count: ${voucher.lines.length} lines`);
+        }
+      }
+
+      // If any reasons flagged, add to anomalous list
+      if (reasons.length > 0) {
+        anomalousVouchers.push({
+          voucherNumber: voucher.voucherNumber,
+          vendor: voucher.vendor,
+          store: voucher.store,
+          date: voucher.date,
+          correctedTotal: voucher.correctedTotal,
+          totalQty: voucher.totalQty,
+          lineCount: voucher.lines.length,
+          reason: reasons.join('; ')
+        });
+      }
+    });
+
     const stats = {
       totalVouchers: allVouchers.length,
       totalLines,
       totalCost,
       uniqueVendors,
       uniqueStores,
-      qbMismatchCount
+      qbMismatchCount,
+      anomalousVouchersCount: anomalousVouchers.length,
+      anomalousVouchers
     };
-    
-    onProgress?.(`Completed! Processed ${allVouchers.length} vouchers.`, 100);
+
+    if (anomalousVouchers.length > 0) {
+      onProgress?.(`Completed! Processed ${allVouchers.length} vouchers. ⚠️ ${anomalousVouchers.length} anomaly detected.`, 100);
+    } else {
+      onProgress?.(`Completed! Processed ${allVouchers.length} vouchers.`, 100);
+    }
+
     return { vouchers: allVouchers, stats };
   } catch (error) {
     console.error('Flattening error:', error);

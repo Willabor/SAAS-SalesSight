@@ -1,31 +1,30 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
 } from "@/components/ui/table";
-import { 
-  Card, 
-  CardContent, 
-  CardDescription, 
-  CardHeader, 
-  CardTitle 
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { 
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -35,18 +34,31 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  Search, 
-  Trash2, 
-  DatabaseZap, 
+import {
+  Search,
+  Trash2,
+  DatabaseZap,
   Receipt,
   ChevronLeft,
   ChevronRight,
   Filter,
-  X
+  X,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  HelpCircle,
+  ChevronDown
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import DateRangeFilter, { type Preset, resolveRange } from "@/components/DateRangeFilter";
 import type { SalesTransaction } from "@shared/schema";
 
 interface SalesTransactionResponse {
@@ -54,55 +66,114 @@ interface SalesTransactionResponse {
   total: number;
 }
 
+interface SalesInsights {
+  totalRevenue: string;
+  totalReceipts: number;
+  avgReceiptValue: string;
+  revenueByStore: Array<{ store: string; totalRevenue: string; transactionCount: number }>;
+  avgTransactionValueByStore: Array<{ store: string; avgTransactionValue: string; transactionCount: number }>;
+}
+
 export default function SalesTransactionsPage() {
+  // Initialize dates with "All" preset values
+  const initialRange = resolveRange("All", { minDate: "2018-01-01" });
+
   const [currentPage, setCurrentPage] = useState(1);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [selectedYear, setSelectedYear] = useState<string>("all");
-  const [selectedMonth, setSelectedMonth] = useState<string>("all");
+
+  // Pending filter values (what user is typing/selecting)
+  const [pendingSearch, setPendingSearch] = useState("");
+  const [pendingPreset, setPendingPreset] = useState<Preset>("All");
+  const [pendingDateFrom, setPendingDateFrom] = useState<string | undefined>(initialRange.from);
+  const [pendingDateTo, setPendingDateTo] = useState<string | undefined>(initialRange.to);
+  const [pendingStores, setPendingStores] = useState<string[]>([]);
+
+  // Applied filter values (what's actually used in queries)
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [appliedPreset, setAppliedPreset] = useState<Preset>("All");
+  const [appliedDateFrom, setAppliedDateFrom] = useState<string | undefined>(initialRange.from);
+  const [appliedDateTo, setAppliedDateTo] = useState<string | undefined>(initialRange.to);
+  const [appliedStores, setAppliedStores] = useState<string[]>([]);
+
   const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
   const [deleteTransactionId, setDeleteTransactionId] = useState<number | null>(null);
-  
+  const [sortConfig, setSortConfig] = useState<{ key: keyof SalesTransaction | null; direction: 'asc' | 'desc' }>({
+    key: null,
+    direction: 'desc'
+  });
+  const [showAuditInfoDialog, setShowAuditInfoDialog] = useState(false);
+
   const transactionsPerPage = 50;
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // Debounce search term
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchTerm);
-      setCurrentPage(1);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchTerm]);
-
-  // Reset to page 1 when filters change
+  // Reset to page 1 when applied filters or sort changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedYear, selectedMonth]);
+  }, [appliedDateFrom, appliedDateTo, appliedStores, appliedSearch, sortConfig.key, sortConfig.direction]);
+
+  // Apply filters handler
+  const applyFilters = () => {
+    setAppliedSearch(pendingSearch);
+    setAppliedPreset(pendingPreset);
+    setAppliedDateFrom(pendingDateFrom);
+    setAppliedDateTo(pendingDateTo);
+    setAppliedStores(pendingStores);
+  };
 
   // Fetch sales transactions data
   const { data: transactionData, isLoading, error } = useQuery<SalesTransactionResponse>({
-    queryKey: ["/api/sales-transactions", currentPage, debouncedSearch, selectedYear, selectedMonth],
+    queryKey: ["/api/sales-transactions", currentPage, appliedSearch, appliedDateFrom, appliedDateTo, appliedStores, sortConfig.key, sortConfig.direction],
     queryFn: async () => {
       const offset = (currentPage - 1) * transactionsPerPage;
       const searchParams = new URLSearchParams({
         limit: transactionsPerPage.toString(),
         offset: offset.toString(),
       });
-      
-      if (debouncedSearch) {
-        searchParams.append("search", debouncedSearch);
+
+      if (appliedSearch) {
+        searchParams.append("search", appliedSearch);
       }
-      if (selectedYear && selectedYear !== "all") {
-        searchParams.append("year", selectedYear);
+      if (appliedDateFrom) {
+        searchParams.append("dateFrom", appliedDateFrom);
       }
-      if (selectedMonth && selectedMonth !== "all") {
-        searchParams.append("month", selectedMonth);
+      if (appliedDateTo) {
+        searchParams.append("dateTo", appliedDateTo);
       }
-      
+      if (appliedStores.length > 0) {
+        searchParams.append("stores", appliedStores.join(","));
+      }
+      if (sortConfig.key) {
+        searchParams.append("sortBy", sortConfig.key);
+        searchParams.append("sortDirection", sortConfig.direction);
+      }
+
       const response = await fetch(`/api/sales-transactions?${searchParams}`);
       if (!response.ok) throw new Error("Failed to fetch sales transactions");
+      return response.json();
+    },
+  });
+
+  // Fetch sales insights (respects same filters as table)
+  const { data: insightsData } = useQuery<SalesInsights>({
+    queryKey: ["/api/sales-transactions/insights", appliedSearch, appliedDateFrom, appliedDateTo, appliedStores],
+    queryFn: async () => {
+      const searchParams = new URLSearchParams();
+
+      if (appliedSearch) {
+        searchParams.append("search", appliedSearch);
+      }
+      if (appliedDateFrom) {
+        searchParams.append("dateFrom", appliedDateFrom);
+      }
+      if (appliedDateTo) {
+        searchParams.append("dateTo", appliedDateTo);
+      }
+      if (appliedStores.length > 0) {
+        searchParams.append("stores", appliedStores.join(","));
+      }
+
+      const response = await fetch(`/api/sales-transactions/insights?${searchParams}`);
+      if (!response.ok) throw new Error("Failed to fetch insights");
       return response.json();
     },
   });
@@ -175,33 +246,62 @@ export default function SalesTransactionsPage() {
 
   const formatDate = (date: string | null) => {
     if (!date) return "N/A";
-    return new Date(date).toLocaleDateString();
+    // Use UTC to avoid timezone conversion (display date as stored in database)
+    const d = new Date(date);
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: 'UTC'
+    }).format(d);
   };
 
   const clearFilters = () => {
-    setSelectedYear("all");
-    setSelectedMonth("all");
-    setSearchTerm("");
+    const initialRange = resolveRange("All", { minDate: "2018-01-01" });
+    setPendingSearch("");
+    setPendingPreset("All");
+    setPendingDateFrom(initialRange.from);
+    setPendingDateTo(initialRange.to);
+    setPendingStores([]);
+    setAppliedSearch("");
+    setAppliedPreset("All");
+    setAppliedDateFrom(initialRange.from);
+    setAppliedDateTo(initialRange.to);
+    setAppliedStores([]);
   };
 
-  const hasActiveFilters = (selectedYear !== "all") || (selectedMonth !== "all") || !!debouncedSearch;
+  const handleSort = (key: keyof SalesTransaction) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
 
-  // Generate year options (2020-2025 for now)
-  const yearOptions = Array.from({ length: 6 }, (_, i) => (2025 - i).toString());
-  
-  const monthOptions = [
-    { value: "1", label: "January" },
-    { value: "2", label: "February" },
-    { value: "3", label: "March" },
-    { value: "4", label: "April" },
-    { value: "5", label: "May" },
-    { value: "6", label: "June" },
-    { value: "7", label: "July" },
-    { value: "8", label: "August" },
-    { value: "9", label: "September" },
-    { value: "10", label: "October" },
-    { value: "11", label: "November" },
-    { value: "12", label: "December" },
+  const getSortIcon = (columnKey: keyof SalesTransaction) => {
+    if (sortConfig.key !== columnKey) return <ArrowUpDown className="w-3 h-3 ml-1" />;
+    return sortConfig.direction === 'asc'
+      ? <ArrowUp className="w-3 h-3 ml-1" />
+      : <ArrowDown className="w-3 h-3 ml-1" />;
+  };
+
+  const hasActiveFilters = !!appliedDateFrom || !!appliedDateTo || appliedStores.length > 0 || !!appliedSearch;
+
+  // Check if there are pending filter changes
+  const hasPendingChanges =
+    pendingSearch !== appliedSearch ||
+    pendingPreset !== appliedPreset ||
+    pendingDateFrom !== appliedDateFrom ||
+    pendingDateTo !== appliedDateTo ||
+    JSON.stringify(pendingStores) !== JSON.stringify(appliedStores);
+
+  const storeOptions = [
+    { value: "HQ", label: "HQ" },
+    { value: "GM", label: "GM" },
+    { value: "MM", label: "MM" },
+    { value: "HM", label: "HM" },
+    { value: "NM", label: "NM" },
+    { value: "LM", label: "LM" },
+    { value: "PM", label: "PM" },
   ];
 
   return (
@@ -234,6 +334,127 @@ export default function SalesTransactionsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Insights Section */}
+            {insightsData && (
+              <div className="space-y-4">
+                {/* Company-Wide Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Card className="border-primary/20 bg-primary/5">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Total Sales (Company-Wide)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-primary">
+                        {formatCurrency(insightsData.totalRevenue)}
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        From {insightsData.totalReceipts.toLocaleString()} unique receipts
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-primary/20 bg-primary/5">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Average Receipt Value (Company-Wide)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-primary">
+                        ${parseFloat(insightsData.avgReceiptValue).toFixed(2)}
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Average value per receipt
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* By Store Breakdown */}
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-muted-foreground">Store Performance Breakdown</h3>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAuditInfoDialog(true)}
+                    className="h-8 w-8 p-0"
+                    title="Important audit information"
+                  >
+                    <HelpCircle className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+                  </Button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Revenue by Store */}
+                  <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Revenue by Store
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {insightsData.revenueByStore.map((item) => (
+                        <div key={item.store} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="font-mono text-xs">
+                              {item.store}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              ({item.transactionCount} receipts)
+                            </span>
+                          </div>
+                          <span className="font-semibold text-sm">
+                            {formatCurrency(item.totalRevenue)}
+                          </span>
+                        </div>
+                      ))}
+                      {insightsData.revenueByStore.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-4">
+                          No revenue data for selected filters
+                        </p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Average Transaction Value by Store */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                      Average Transaction Value by Store
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {insightsData.avgTransactionValueByStore.map((item) => (
+                        <div key={item.store} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="font-mono text-xs">
+                              {item.store}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              ({item.transactionCount} receipts)
+                            </span>
+                          </div>
+                          <span className="font-semibold text-sm">
+                            ${parseFloat(item.avgTransactionValue).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                      {insightsData.avgTransactionValueByStore.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-4">
+                          No transaction data for selected filters
+                        </p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+            )}
+
             {/* Filters */}
             <div className="flex flex-col gap-4">
               <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
@@ -261,46 +482,88 @@ export default function SalesTransactionsPage() {
                 )}
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-3">
-                <div className="relative flex-1">
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                <div className="relative flex-1 min-w-0">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
                   <Input
                     placeholder="Search by SKU, item name, store, or receipt number..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10"
+                    value={pendingSearch}
+                    onChange={(e) => setPendingSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyFilters();
+                      }
+                    }}
+                    className="pl-10 h-10"
                     data-testid="input-search"
                   />
                 </div>
-                <Select value={selectedYear} onValueChange={(value) => {
-                  setSelectedYear(value);
-                  if (value === "all") setSelectedMonth("all");
-                }}>
-                  <SelectTrigger className="w-full sm:w-36" data-testid="select-year">
-                    <SelectValue placeholder="Year" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Years</SelectItem>
-                    {yearOptions.map((year) => (
-                      <SelectItem key={year} value={year}>
-                        {year}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select value={selectedMonth} onValueChange={setSelectedMonth} disabled={selectedYear === "all"}>
-                  <SelectTrigger className="w-full sm:w-36" data-testid="select-month">
-                    <SelectValue placeholder="Month" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Months</SelectItem>
-                    {monthOptions.map((month) => (
-                      <SelectItem key={month.value} value={month.value}>
-                        {month.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+
+                {/* Date Range Filter */}
+                <DateRangeFilter
+                  defaultPreset={pendingPreset}
+                  minDate="2018-01-01"
+                  defaultFrom={pendingDateFrom}
+                  defaultTo={pendingDateTo}
+                  onChange={({ preset, from, to }) => {
+                    setPendingPreset(preset);
+                    setPendingDateFrom(from);
+                    setPendingDateTo(to);
+                  }}
+                  className="flex-shrink-0"
+                />
+
+                {/* Store Multi-Select */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full sm:w-40 h-10 justify-between" data-testid="select-stores">
+                      <span className="truncate">
+                        {pendingStores.length === 0
+                          ? "All Stores"
+                          : pendingStores.length === 1
+                          ? pendingStores[0]
+                          : `${pendingStores.length} stores`}
+                      </span>
+                      <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[200px] p-0">
+                    <div className="max-h-[300px] overflow-y-auto p-2 space-y-1">
+                      {storeOptions.map((store) => (
+                        <div key={store.value} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-accent rounded-sm cursor-pointer">
+                          <Checkbox
+                            id={`store-${store.value}`}
+                            checked={pendingStores.includes(store.value)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setPendingStores([...pendingStores, store.value]);
+                              } else {
+                                setPendingStores(pendingStores.filter(s => s !== store.value));
+                              }
+                            }}
+                          />
+                          <label
+                            htmlFor={`store-${store.value}`}
+                            className="flex-1 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                          >
+                            {store.label}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+
+                {/* Apply Filter Button - Always visible */}
+                <Button
+                  onClick={applyFilters}
+                  disabled={!hasPendingChanges}
+                  className="w-full sm:w-auto h-10 flex items-center justify-center gap-2"
+                  data-testid="button-apply-filters"
+                >
+                  <Filter className="w-4 h-4" />
+                  Apply Filters
+                </Button>
               </div>
             </div>
 
@@ -334,14 +597,78 @@ export default function SalesTransactionsPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Store</TableHead>
-                        <TableHead>Receipt #</TableHead>
-                        <TableHead>SKU</TableHead>
-                        <TableHead>Item Name</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead className="text-right">Price</TableHead>
-                        <TableHead>Sheet</TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('date')}
+                          >
+                            Date
+                            {getSortIcon('date')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('store')}
+                          >
+                            Store
+                            {getSortIcon('store')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('receiptNumber')}
+                          >
+                            Receipt #
+                            {getSortIcon('receiptNumber')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('sku')}
+                          >
+                            SKU
+                            {getSortIcon('sku')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('itemName')}
+                          >
+                            Item Name
+                            {getSortIcon('itemName')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('transactionStoreType')}
+                          >
+                            Type
+                            {getSortIcon('transactionStoreType')}
+                          </button>
+                        </TableHead>
+                        <TableHead className="text-right">
+                          <button
+                            className="flex items-center justify-end hover:text-foreground transition-colors ml-auto"
+                            onClick={() => handleSort('price')}
+                          >
+                            Price
+                            {getSortIcon('price')}
+                          </button>
+                        </TableHead>
+                        <TableHead>
+                          <button
+                            className="flex items-center hover:text-foreground transition-colors"
+                            onClick={() => handleSort('sheet')}
+                          >
+                            Sheet
+                            {getSortIcon('sheet')}
+                          </button>
+                        </TableHead>
                         <TableHead className="w-20">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -454,7 +781,7 @@ export default function SalesTransactionsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Clear Entire Database</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete ALL {transactionData?.total || 0} transactions from the database? 
+              Are you sure you want to delete ALL {transactionData?.total || 0} transactions from the database?
               This action cannot be undone and will permanently remove all sales transaction data.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -470,6 +797,68 @@ export default function SalesTransactionsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Audit Information Dialog */}
+      <Dialog open={showAuditInfoDialog} onOpenChange={setShowAuditInfoDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HelpCircle className="h-5 w-5" />
+              Important Store Data Context - For Audit Reference
+            </DialogTitle>
+            <DialogDescription>
+              Historical context about HQ and GM store data structure
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <h4 className="font-semibold text-sm">📅 Key Date: October 5, 2020</h4>
+              <p className="text-sm text-muted-foreground">
+                On this date, the company separated the warehouse from the GM physical store location.
+              </p>
+            </div>
+
+            <div className="border-l-4 border-orange-500 pl-4 py-2 bg-orange-50 dark:bg-orange-950/20 rounded-r">
+              <h4 className="font-semibold text-sm mb-2">⚠️ Before October 5, 2020:</h4>
+              <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                <li><strong>HQ Store</strong> = GM physical store sales (majority) + Online sales (minimal)</li>
+                <li>No warehouse existed as a separate entity</li>
+                <li>GM was treated as HQ while online presence was being established</li>
+                <li><strong className="text-orange-600 dark:text-orange-400">Cannot accurately split online vs. in-store transactions</strong></li>
+              </ul>
+            </div>
+
+            <div className="border-l-4 border-green-500 pl-4 py-2 bg-green-50 dark:bg-green-950/20 rounded-r">
+              <h4 className="font-semibold text-sm mb-2">✅ After October 5, 2020:</h4>
+              <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                <li><strong>HQ Store</strong> = Online/Warehouse sales only</li>
+                <li><strong>GM Store</strong> = Physical GM store location (separated out)</li>
+                <li>Clear distinction between online and physical store sales</li>
+              </ul>
+            </div>
+
+            <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+              <h4 className="font-semibold text-sm mb-2 flex items-center gap-2">
+                💡 For Accountants & Auditors:
+              </h4>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                <li>• Year-over-year comparisons for <strong>HQ</strong> will show a significant drop after Oct 5, 2020</li>
+                <li>• Year-over-year comparisons for <strong>GM</strong> will only show data from Oct 5, 2020 onwards</li>
+                <li>• Pre-split HQ data represents combined GM + minimal online sales (cannot be separated)</li>
+                <li>• Data integrity has been preserved - no historical modifications were made</li>
+                <li>• All data reflects how transactions were originally recorded in the system</li>
+              </ul>
+            </div>
+
+            <div className="pt-2 border-t">
+              <p className="text-xs text-muted-foreground italic">
+                This information is provided for audit trail and data interpretation purposes.
+                Contact management if you need additional clarification about historical data structure.
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -477,7 +477,40 @@ export function formatItemList(file: File): Promise<{
       
       // PARSE DATA FOR DATABASE UPLOAD
       const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null });
-      const parsedRecords = jsonData.map((row: any) => ({
+
+      // FILTER OUT TOTAL/SUMMARY ROWS
+      // QuickBooks exports often include summary rows at the end with:
+      // - No Item # (null/undefined)
+      // - No Item Name (null/undefined)
+      // - Very high quantities (sums of all items)
+      const filteredData = jsonData.filter((row: any) => {
+        const itemNumber = row['Item #'];
+        const itemName = row['Item Name'];
+        const availQty = Number(row['Avail Qty']) || 0;
+
+        // A valid item must have at least an Item # or Item Name
+        const hasItemNumber = itemNumber !== null &&
+                              itemNumber !== undefined &&
+                              String(itemNumber).trim() !== '';
+        const hasItemName = itemName !== null &&
+                            itemName !== undefined &&
+                            String(itemName).trim() !== '';
+
+        // Also reject rows with suspiciously high quantities (>10,000 units)
+        // as these are likely totals
+        const isSuspiciousQuantity = availQty > 10000;
+
+        // Keep row if it has Item # OR Item Name, AND doesn't have suspicious quantity
+        return (hasItemNumber || hasItemName) && !isSuspiciousQuantity;
+      });
+
+      // Log if any rows were filtered out
+      const filteredCount = jsonData.length - filteredData.length;
+      if (filteredCount > 0) {
+        console.log(`[formatItemList] Filtered out ${filteredCount} total/summary rows`);
+      }
+
+      const parsedRecords = filteredData.map((row: any) => ({
         item_number: row['Item #'] || null,
         vendor_name: row['Vendor Name'] || null,
         item_name: row['Item Name'] || null,

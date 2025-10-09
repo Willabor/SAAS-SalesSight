@@ -420,26 +420,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(String(req.query.limit)) || 50;
       const offset = parseInt(String(req.query.offset)) || 0;
       const search = req.query.search ? String(req.query.search) : undefined;
-      
-      // Parse and validate year/month as numbers
-      let year: number | undefined;
-      let month: number | undefined;
-      
-      if (req.query.year) {
-        const parsedYear = parseInt(String(req.query.year));
-        if (!isNaN(parsedYear) && parsedYear >= 1900 && parsedYear <= 2100) {
-          year = parsedYear;
-        }
+
+      // Parse date range (YYYY-MM-DD format)
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
+      const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
+
+      // Parse stores (comma-separated)
+      let stores: string[] | undefined;
+      if (req.query.stores) {
+        stores = String(req.query.stores)
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+        if (stores.length === 0) stores = undefined;
       }
-      
-      if (req.query.month) {
-        const parsedMonth = parseInt(String(req.query.month));
-        if (!isNaN(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12) {
-          month = parsedMonth;
-        }
-      }
-      
-      const result = await storage.getAllSalesTransactions(limit, offset, search, year, month);
+
+      // Parse sorting parameters
+      const sortBy = req.query.sortBy ? String(req.query.sortBy) : undefined;
+      const sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
+
+      const result = await storage.getAllSalesTransactions(limit, offset, search, dateFrom, dateTo, stores, sortBy, sortDirection);
       res.json(result);
     } catch (error) {
       console.error("Error fetching sales transactions:", error);
@@ -513,6 +513,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching sales insights:", error);
       res.status(500).json({ error: "Failed to fetch sales insights" });
+    }
+  });
+
+  // Get filtered sales transaction insights (revenue by store, avg transaction value)
+  app.get("/api/sales-transactions/insights", isAuthenticated, async (req, res) => {
+    try {
+      // Parse date range (YYYY-MM-DD format)
+      const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
+      const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
+
+      // Parse stores (comma-separated)
+      let stores: string[] | undefined;
+      if (req.query.stores) {
+        stores = String(req.query.stores)
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+        if (stores.length === 0) stores = undefined;
+      }
+
+      const search = req.query.search ? String(req.query.search) : undefined;
+
+      const insights = await storage.getSalesTransactionInsights(dateFrom, dateTo, search, stores);
+      res.json(insights);
+    } catch (error) {
+      console.error("Error fetching sales transaction insights:", error);
+      res.status(500).json({ error: "Failed to fetch sales transaction insights" });
     }
   });
 

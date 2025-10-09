@@ -104,7 +104,7 @@ export const receivingLines = pgTable("receiving_lines", {
   itemNumber: text("item_number"),
   itemName: text("item_name"),
   qty: integer("qty").notNull(), // Can be negative for reversals
-  cost: numeric("cost").notNull(), // Always positive (absolute value)
+  cost: numeric("cost").notNull(), // ⚠️ LINE TOTAL (qty × unit_price), not unit price! Always stored as positive (absolute value)
   uploadedAt: timestamp("uploaded_at").defaultNow(),
 });
 
