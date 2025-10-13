@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
-import { FileSpreadsheet, Package, Receipt, BarChart3, Truck, Target, LogOut, User, History, Settings } from "lucide-react";
+import { FileSpreadsheet, Package, Receipt, BarChart3, Truck, LogOut, User, History, Settings, Store, Sliders, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -74,10 +74,10 @@ export function AppHeader() {
                   <span className="hidden sm:inline">Insights</span>
                 </button>
               </Link>
-              <Link href="/google-marketing">
-                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-google-marketing">
-                  <Target className="w-5 h-5" />
-                  <span className="hidden sm:inline">Marketing</span>
+              <Link href="/profit-analysis">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-profit-analysis">
+                  <TrendingUp className="w-5 h-5" />
+                  <span className="hidden sm:inline">Profit</span>
                 </button>
               </Link>
               <Link href="/ml/training-history">
@@ -90,6 +90,18 @@ export function AppHeader() {
                 <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-receiving-history">
                   <Truck className="w-5 h-5" />
                   <span className="hidden sm:inline">Receiving</span>
+                </button>
+              </Link>
+              <Link href="/vendor-configuration">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-vendor-configuration">
+                  <Store className="w-5 h-5" />
+                  <span className="hidden sm:inline">Vendors</span>
+                </button>
+              </Link>
+              <Link href="/inventory-settings">
+                <button className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2" data-testid="link-inventory-settings">
+                  <Sliders className="w-5 h-5" />
+                  <span className="hidden sm:inline">Settings</span>
                 </button>
               </Link>
               <Link href="/receiving-metrics-settings">

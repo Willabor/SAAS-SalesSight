@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { 
-  Card, 
-  CardContent, 
-  CardDescription, 
-  CardHeader, 
-  CardTitle 
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
+import {
   TrendingUp,
   Store,
   Package,
@@ -27,10 +27,12 @@ import {
   BarChart3,
   Tag,
   Clock,
-  Truck
+  Truck,
+  Target
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import InventoryTurnoverDashboard from "@/components/inventory-turnover-dashboard";
+import GoogleMarketingPage from "@/pages/google-marketing";
 
 interface SalesInsights {
   byStore: Array<{ 
@@ -101,14 +103,18 @@ export default function SalesInsightsPage() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Tabs defaultValue="sales" className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsList className="grid w-full max-w-2xl grid-cols-3">
             <TabsTrigger value="sales" data-testid="tab-sales-insights">
               <BarChart3 className="w-4 h-4 mr-2" />
               Sales Insights
             </TabsTrigger>
             <TabsTrigger value="inventory" data-testid="tab-inventory-turnover">
               <Package className="w-4 h-4 mr-2" />
-              Inventory Turnover
+              Inventory Action Center
+            </TabsTrigger>
+            <TabsTrigger value="marketing" data-testid="tab-marketing">
+              <Target className="w-4 h-4 mr-2" />
+              Marketing
             </TabsTrigger>
           </TabsList>
 
@@ -500,6 +506,10 @@ export default function SalesInsightsPage() {
 
           <TabsContent value="inventory" className="space-y-6">
             <InventoryTurnoverDashboard />
+          </TabsContent>
+
+          <TabsContent value="marketing" className="space-y-6">
+            <GoogleMarketingPage />
           </TabsContent>
         </Tabs>
       </main>

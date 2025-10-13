@@ -16,6 +16,10 @@ import GoogleMarketingPage from "@/pages/google-marketing";
 import MLSettingsLogPage from "@/pages/ml-settings-log";
 import ReceivingMetricsSettings from "@/pages/receiving-metrics-settings";
 import ReceivingDashboard from "@/pages/receiving-dashboard";
+import VendorConfiguration from "@/pages/vendor-configuration";
+import InventorySettingsPage from "@/pages/inventory-settings";
+import ProfitAnalysisDashboard from "@/pages/profit-analysis-dashboard";
+import WarehouseAnalyticsPage from "@/pages/warehouse-analytics";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -37,6 +41,10 @@ function Router() {
           <Route path="/receiving/viewer" component={VoucherViewerPage} />
           <Route path="/receiving-metrics-settings" component={ReceivingMetricsSettings} />
           <Route path="/receiving-metrics/dashboard" component={ReceivingDashboard} />
+          <Route path="/vendor-configuration" component={VendorConfiguration} />
+          <Route path="/inventory-settings" component={InventorySettingsPage} />
+          <Route path="/profit-analysis" component={ProfitAnalysisDashboard} />
+          <Route path="/warehouse-analytics" component={WarehouseAnalyticsPage} />
         </>
       )}
       <Route path="/:rest*" component={NotFound} />

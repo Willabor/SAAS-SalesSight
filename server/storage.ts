@@ -7,6 +7,14 @@ import {
   receivingLines,
   itemReceivingMetrics,
   receivingMetricsSettings,
+  vendorConfigurations,
+  styleConfigurations,
+  prepackConfigurations,
+  prepackSizeDistributions,
+  prepackRecommendationLog,
+  inventorySettings,
+  skuProfitAnalysis,
+  skuFinancialData,
   type User,
   type UpsertUser,
   type InsertUser,
@@ -22,9 +30,33 @@ import {
   type InsertReceivingLine,
   type ItemReceivingMetrics,
   type InsertItemReceivingMetrics,
+  type VendorConfiguration,
+  type InsertVendorConfiguration,
+  type StyleConfiguration,
+  type InsertStyleConfiguration,
+  type StyleWithPacks,
+  type PrepackConfiguration,
+  type InsertPrepackConfiguration,
+  type PrepackSizeDistribution,
+  type InsertPrepackSizeDistribution,
+  type PrepackWithDistributions,
   mlSettingsLog,
   type MLSettingsLog,
-  type InsertMLSettingsLog
+  type InsertMLSettingsLog,
+  type InventorySettings,
+  type InsertInventorySettings,
+  type UpdateInventorySettings,
+  type SkuProfitAnalysis,
+  type SkuFinancialData,
+  warehouseInventory,
+  warehouseDistributionPlans,
+  warehouseDistributionDetails,
+  type WarehouseInventory,
+  type InsertWarehouseInventory,
+  type WarehouseDistributionPlan,
+  type InsertWarehouseDistributionPlan,
+  type WarehouseDistributionDetail,
+  type InsertWarehouseDistributionDetail
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, asc, sql, count, sum, ilike, or, and, gte, lte, inArray } from "drizzle-orm";
@@ -270,6 +302,28 @@ export interface IStorage {
     priority: string;
   }>>;
 
+  getTransferRecommendationsWithSKUs(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    fromStore: string;
+    toStore: string;
+    fromStoreQty: number;
+    toStoreQty: number;
+    fromStoreDailySales: number;
+    toStoreDailySales: number;
+    recommendedQty: number;
+    priority: string;
+    avgMarginPercent: number;
+    skuDetails: Array<{
+      sku: string;
+      color: string | null;
+      size: string | null;
+      fromStoreQty: number;
+      toStoreQty: number;
+    }>;
+  }>>;
+
   getRestockingRecommendations(limit?: number): Promise<Array<{
     styleNumber: string;
     itemName: string;
@@ -284,6 +338,21 @@ export interface IStorage {
     avgMarginPercent: number;
     recommendedOrderQty: number;
     priority: string;
+  }>>;
+
+  getStylesNeedingRestock(limit?: number): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    usesPrepacks: boolean;
+    totalActiveQty: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    recommendedOrderQty: number;
+    urgency: string;
   }>>;
 
   getSaleRecommendations(limit?: number): Promise<Array<{
@@ -355,6 +424,54 @@ export interface IStorage {
 
   // Multi-Dimensional Metrics (Phase 2)
   calculateMetricsMultidimensional(styleNumbers: string[], calculatedBy: string, settings?: any): Promise<any>;
+
+  // Vendor Configuration operations (Phase 0)
+  getVendorConfigurations(filters?: { usesPrepacks?: boolean; limit?: number; offset?: number }): Promise<{
+    vendors: VendorConfiguration[];
+    total: number;
+  }>;
+  getVendorConfiguration(vendorName: string): Promise<VendorConfiguration | undefined>;
+  createVendorConfiguration(vendor: InsertVendorConfiguration): Promise<VendorConfiguration>;
+  updateVendorConfiguration(vendorName: string, vendor: Partial<InsertVendorConfiguration>): Promise<VendorConfiguration | undefined>;
+  deleteVendorConfiguration(vendorName: string): Promise<boolean>;
+
+  // Style Configuration operations (Style-First Architecture)
+  listStyleConfigurations(vendorName?: string): Promise<StyleWithPacks[]>;
+  getStyleConfiguration(id: number): Promise<StyleWithPacks | undefined>;
+  createStyleConfiguration(style: InsertStyleConfiguration): Promise<StyleConfiguration>;
+  updateStyleConfiguration(id: number, style: Partial<InsertStyleConfiguration>): Promise<StyleConfiguration | undefined>;
+  deleteStyleConfiguration(id: number): Promise<boolean>;
+
+  // Prepack Configuration operations (Style-First Architecture)
+  getPrepackConfigurations(filters?: { vendorName?: string; styleNumber?: string; styleConfigId?: number }): Promise<PrepackConfiguration[]>;
+  getPrepackConfigurationWithDistributions(id: number): Promise<PrepackWithDistributions | undefined>;
+  createPrepackConfiguration(
+    prepack: InsertPrepackConfiguration,
+    distributions: InsertPrepackSizeDistribution[]
+  ): Promise<PrepackWithDistributions>;
+  updatePrepackConfiguration(
+    id: number,
+    prepack: Partial<InsertPrepackConfiguration>,
+    distributions?: InsertPrepackSizeDistribution[]
+  ): Promise<PrepackWithDistributions | undefined>;
+  deletePrepackConfiguration(id: number): Promise<boolean>;
+  calculatePackCost(
+    vendorName: string,
+    styleNumber: string,
+    sizeDistributions: Array<{ sizeValue: string; quantity: number }>
+  ): Promise<{
+    totalCost: string;
+    averageCostPerUnit: string;
+    sizeBreakdown: Array<{
+      sizeValue: string;
+      quantity: number;
+      averageCost: string;
+      subtotal: string;
+      itemsFound: number;
+    }>;
+    totalItemsFound: number;
+    totalItemsExpected: number;
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2269,6 +2386,255 @@ export class DatabaseStorage implements IStorage {
     return recommendations.slice(0, limit);
   }
 
+  async getTransferRecommendationsWithSKUs(limit: number = 50): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    fromStore: string;
+    toStore: string;
+    fromStoreQty: number;
+    toStoreQty: number;
+    fromStoreDailySales: number;
+    toStoreDailySales: number;
+    recommendedQty: number;
+    priority: string;
+    avgMarginPercent: number;
+    skuDetails: Array<{
+      sku: string;
+      color: string | null;
+      size: string | null;
+      fromStoreQty: number;
+      toStoreQty: number;
+    }>;
+  }>> {
+    // Get all SKUs with per-store quantities and style information
+    const skusWithData = await db
+      .select({
+        sku: itemList.itemNumber,
+        styleNumber: itemList.styleNumber,
+        itemName: itemList.itemName,
+        category: itemList.category,
+        size: itemList.size,
+        attribute: itemList.attribute,
+        gmQty: itemList.gmQty,
+        hmQty: itemList.hmQty,
+        nmQty: itemList.nmQty,
+        lmQty: itemList.lmQty,
+        orderCost: itemList.orderCost,
+        sellingPrice: itemList.sellingPrice,
+      })
+      .from(itemList)
+      .where(sql`
+        ${itemList.styleNumber} IS NOT NULL
+        AND ${itemList.styleNumber} != ''
+        AND ${itemList.itemNumber} IS NOT NULL
+      `);
+
+    // Calculate per-SKU sales velocities for the last 30 days (active stores only)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const salesVelocityData = await db
+      .select({
+        sku: salesTransactions.sku,
+        store: salesTransactions.store,
+        salesCount: sql<number>`COUNT(${salesTransactions.id})`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+      })
+      .from(salesTransactions)
+      .where(
+        and(
+          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0]),
+          sql`${salesTransactions.store} IN ('GM', 'HM', 'NM', 'LM')`,
+          sql`${salesTransactions.sku} IS NOT NULL`
+        )
+      )
+      .groupBy(salesTransactions.sku, salesTransactions.store);
+
+    // Build velocity map: sku -> { storeName -> avgDailySales }
+    const skuVelocityMap = new Map<string, Map<string, number>>();
+    for (const row of salesVelocityData) {
+      if (!row.sku) continue;
+
+      if (!skuVelocityMap.has(row.sku)) {
+        skuVelocityMap.set(row.sku, new Map());
+      }
+      const storeMap = skuVelocityMap.get(row.sku)!;
+      storeMap.set(row.store || '', Number(row.avgDailySales) || 0);
+    }
+
+    // Group SKUs by style
+    const styleGroups = new Map<string, typeof skusWithData>();
+    for (const sku of skusWithData) {
+      if (!sku.styleNumber) continue;
+
+      if (!styleGroups.has(sku.styleNumber)) {
+        styleGroups.set(sku.styleNumber, []);
+      }
+      styleGroups.get(sku.styleNumber)!.push(sku);
+    }
+
+    // Helper function to parse color from attribute field
+    const parseColor = (attribute: string | null): string | null => {
+      if (!attribute) return null;
+      // Attribute format is typically "Color: Black" or just "Black"
+      const match = attribute.match(/(?:Color:\s*)?(.+)/i);
+      return match ? match[1].trim() : attribute.trim();
+    };
+
+    const recommendations: Array<{
+      styleNumber: string;
+      itemName: string;
+      category: string | null;
+      fromStore: string;
+      toStore: string;
+      fromStoreQty: number;
+      toStoreQty: number;
+      fromStoreDailySales: number;
+      toStoreDailySales: number;
+      recommendedQty: number;
+      priority: string;
+      avgMarginPercent: number;
+      skuDetails: Array<{
+        sku: string;
+        color: string | null;
+        size: string | null;
+        fromStoreQty: number;
+        toStoreQty: number;
+      }>;
+    }> = [];
+
+    // For each style, calculate aggregated store quantities and velocities
+    for (const [styleNumber, skus] of Array.from(styleGroups.entries())) {
+      // Aggregate quantities by store
+      const storeQtyMap = new Map<string, number>([
+        ['GM', 0], ['HM', 0], ['NM', 0], ['LM', 0]
+      ]);
+
+      for (const sku of skus) {
+        storeQtyMap.set('GM', (storeQtyMap.get('GM') || 0) + (Number(sku.gmQty) || 0));
+        storeQtyMap.set('HM', (storeQtyMap.get('HM') || 0) + (Number(sku.hmQty) || 0));
+        storeQtyMap.set('NM', (storeQtyMap.get('NM') || 0) + (Number(sku.nmQty) || 0));
+        storeQtyMap.set('LM', (storeQtyMap.get('LM') || 0) + (Number(sku.lmQty) || 0));
+      }
+
+      // Aggregate velocities by store
+      const storeVelocityMap = new Map<string, number>([
+        ['GM', 0], ['HM', 0], ['NM', 0], ['LM', 0]
+      ]);
+
+      for (const sku of skus) {
+        const skuVelocities = skuVelocityMap.get(sku.sku || '') || new Map();
+        for (const store of ['GM', 'HM', 'NM', 'LM']) {
+          const velocity = skuVelocities.get(store) || 0;
+          storeVelocityMap.set(store, (storeVelocityMap.get(store) || 0) + velocity);
+        }
+      }
+
+      // Calculate average margin
+      const avgOrderCost = skus.reduce((sum: number, sku) => sum + (Number(sku.orderCost) || 0), 0) / skus.length;
+      const avgSellingPrice = skus.reduce((sum: number, sku) => sum + (Number(sku.sellingPrice) || 0), 0) / skus.length;
+      const avgMarginPercent = avgSellingPrice > 0
+        ? ((avgSellingPrice - avgOrderCost) / avgSellingPrice) * 100
+        : 0;
+
+      const stores = [
+        { name: 'GM', qty: storeQtyMap.get('GM') || 0 },
+        { name: 'HM', qty: storeQtyMap.get('HM') || 0 },
+        { name: 'NM', qty: storeQtyMap.get('NM') || 0 },
+        { name: 'LM', qty: storeQtyMap.get('LM') || 0 },
+      ];
+
+      // Find transfer opportunities
+      for (let i = 0; i < stores.length; i++) {
+        for (let j = 0; j < stores.length; j++) {
+          if (i === j) continue;
+
+          const fromStore = stores[i];
+          const toStore = stores[j];
+          const fromVelocity = storeVelocityMap.get(fromStore.name) || 0;
+          const toVelocity = storeVelocityMap.get(toStore.name) || 0;
+
+          const fromStockSufficient = fromStore.qty > 5;
+          const toStoreNeedsMore = toVelocity > 0 && (toStore.qty < toVelocity * 7);
+          const velocityGap = toVelocity > fromVelocity && toVelocity > 0.1;
+
+          if (fromStockSufficient && (toStoreNeedsMore || velocityGap)) {
+            const targetSupplyDays = 14;
+            const recommendedByVelocity = Math.ceil(toVelocity * targetSupplyDays);
+            const maxFromHalf = Math.floor(fromStore.qty / 2);
+            const recommendedQty = Math.min(recommendedByVelocity, maxFromHalf, 20);
+
+            if (recommendedQty >= 1) {
+              let priority = 'Low';
+              if (toVelocity > fromVelocity * 2 && avgMarginPercent > 50) {
+                priority = 'High';
+              } else if (toVelocity > fromVelocity * 1.5 || avgMarginPercent > 60) {
+                priority = 'Medium';
+              }
+
+              // Build SKU details for this transfer recommendation
+              const skuDetails = skus.map((sku: typeof skusWithData[0]) => {
+                const color = parseColor(sku.attribute);
+                const size = sku.size;
+
+                let fromStoreQty = 0;
+                let toStoreQty = 0;
+
+                if (fromStore.name === 'GM') fromStoreQty = Number(sku.gmQty) || 0;
+                else if (fromStore.name === 'HM') fromStoreQty = Number(sku.hmQty) || 0;
+                else if (fromStore.name === 'NM') fromStoreQty = Number(sku.nmQty) || 0;
+                else if (fromStore.name === 'LM') fromStoreQty = Number(sku.lmQty) || 0;
+
+                if (toStore.name === 'GM') toStoreQty = Number(sku.gmQty) || 0;
+                else if (toStore.name === 'HM') toStoreQty = Number(sku.hmQty) || 0;
+                else if (toStore.name === 'NM') toStoreQty = Number(sku.nmQty) || 0;
+                else if (toStore.name === 'LM') toStoreQty = Number(sku.lmQty) || 0;
+
+                return {
+                  sku: sku.sku || '',
+                  color,
+                  size,
+                  fromStoreQty,
+                  toStoreQty,
+                };
+              }).filter((detail: { sku: string; color: string | null; size: string | null; fromStoreQty: number; toStoreQty: number }) => detail.fromStoreQty > 0 || detail.toStoreQty > 0); // Only include SKUs with relevant quantities
+
+              recommendations.push({
+                styleNumber,
+                itemName: skus[0]?.itemName || '',
+                category: skus[0]?.category || null,
+                fromStore: fromStore.name,
+                toStore: toStore.name,
+                fromStoreQty: fromStore.qty,
+                toStoreQty: toStore.qty,
+                fromStoreDailySales: Number(fromVelocity.toFixed(2)),
+                toStoreDailySales: Number(toVelocity.toFixed(2)),
+                recommendedQty,
+                priority,
+                avgMarginPercent: Number(avgMarginPercent.toFixed(2)),
+                skuDetails,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort by priority then velocity gap
+    const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+    recommendations.sort((a, b) => {
+      if (priorityOrder[a.priority as keyof typeof priorityOrder] !== priorityOrder[b.priority as keyof typeof priorityOrder]) {
+        return priorityOrder[a.priority as keyof typeof priorityOrder] - priorityOrder[b.priority as keyof typeof priorityOrder];
+      }
+      const aGap = a.toStoreDailySales - a.fromStoreDailySales;
+      const bGap = b.toStoreDailySales - b.fromStoreDailySales;
+      return bGap - aGap;
+    });
+
+    return recommendations.slice(0, limit);
+  }
+
   async getRestockingRecommendations(limit: number = 50): Promise<Array<{
     styleNumber: string;
     itemName: string;
@@ -2284,7 +2650,12 @@ export class DatabaseStorage implements IStorage {
     recommendedOrderQty: number;
     priority: string;
   }>> {
-    const stylesWithSales = await this.getStyleOverstockUnderstock(30, 500);
+    // Get settings from database instead of hardcoded values
+    const settings = await this.getInventorySettings();
+    const salesPeriodDays = settings.salesAnalysisPeriodDays;
+    const urgencyThresholdDays = settings.restockUrgencyThresholdDays;
+
+    const stylesWithSales = await this.getStyleOverstockUnderstock(salesPeriodDays, 500);
     const allStyles = await this.getStyleInventoryMetrics();
 
     // Create a map for quick lookup
@@ -2295,12 +2666,19 @@ export class DatabaseStorage implements IStorage {
     const recommendations = stylesWithSales
       .filter(style => {
         // Only recommend restocking for items that are selling and running low
+        const hasClassification = (
+          style.classification === 'Core High' ||
+          style.classification === 'Core Medium' ||
+          style.classification === 'Core Low'
+        );
+
+        // Allow urgent items (0 days supply) even without classification
+        const isUrgent = style.daysOfSupply === 0;
+
         return (
-          style.daysOfSupply < 21 &&
+          style.daysOfSupply < urgencyThresholdDays &&
           style.avgDailySales > 0 &&
-          (style.classification === 'Core High' ||
-            style.classification === 'Core Medium' ||
-            style.classification === 'Core Low')
+          (hasClassification || isUrgent)
         );
       })
       .map(style => {
@@ -2314,6 +2692,9 @@ export class DatabaseStorage implements IStorage {
           recommendedOrderQty = Math.ceil(style.avgDailySales * 21); // 21 days supply
         } else if (style.classification === 'Core Low') {
           recommendedOrderQty = Math.ceil(style.avgDailySales * 14); // 14 days supply
+        } else {
+          // Default for unclassified items: 14 days supply
+          recommendedOrderQty = Math.ceil(style.avgDailySales * 14);
         }
 
         // Determine priority
@@ -2357,6 +2738,186 @@ export class DatabaseStorage implements IStorage {
         }
         return b.avgMarginPercent - a.avgMarginPercent;
       });
+
+    return recommendations.slice(0, limit);
+  }
+
+  async getStylesNeedingRestock(limit: number = 50): Promise<Array<{
+    styleNumber: string;
+    itemName: string;
+    category: string | null;
+    vendorName: string | null;
+    usesPrepacks: boolean;
+    totalActiveQty: number;
+    avgDailySales: number;
+    daysOfSupply: number;
+    lastReceived: string | null;
+    daysSinceLastReceive: number | null;
+    recommendedOrderQty: number;
+    urgency: string;
+  }>> {
+    // Get all styles with inventory levels and vendor info
+    const stylesWithInventory = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        itemName: itemList.itemName,
+        category: itemList.category,
+        vendorName: itemList.vendorName,
+        totalActiveQty: sql<number>`SUM(COALESCE(${itemList.gmQty}, 0) + COALESCE(${itemList.hmQty}, 0) + COALESCE(${itemList.nmQty}, 0) + COALESCE(${itemList.lmQty}, 0))`,
+      })
+      .from(itemList)
+      .where(sql`
+        ${itemList.styleNumber} IS NOT NULL
+        AND ${itemList.styleNumber} != ''
+        AND ${itemList.vendorName} IS NOT NULL
+      `)
+      .groupBy(
+        itemList.styleNumber,
+        itemList.itemName,
+        itemList.category,
+        itemList.vendorName
+      );
+
+    // Get vendor configurations to check which vendors use prepacks
+    const vendorConfigs = await db
+      .select({
+        vendorName: vendorConfigurations.vendorName,
+        usesPrepacks: vendorConfigurations.usesPrepacks,
+      })
+      .from(vendorConfigurations);
+
+    const vendorPrepackMap = new Map<string, boolean>();
+    for (const config of vendorConfigs) {
+      vendorPrepackMap.set(config.vendorName || '', config.usesPrepacks || false);
+    }
+
+    // Calculate sales velocities for the last 30 days
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const salesVelocityData = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        salesCount: sql<number>`COUNT(${salesTransactions.id})`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+      })
+      .from(salesTransactions)
+      .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
+      .where(
+        and(
+          sql`${itemList.styleNumber} IS NOT NULL`,
+          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0])
+        )
+      )
+      .groupBy(itemList.styleNumber);
+
+    const velocityMap = new Map<string, number>();
+    for (const row of salesVelocityData) {
+      if (row.styleNumber) {
+        velocityMap.set(row.styleNumber, Number(row.avgDailySales) || 0);
+      }
+    }
+
+    // Get last received dates
+    const lastReceivedData = await db
+      .select({
+        styleNumber: itemList.styleNumber,
+        lastReceived: sql<string>`MAX(${receivingVouchers.date})`,
+      })
+      .from(receivingVouchers)
+      .innerJoin(receivingLines, eq(receivingVouchers.id, receivingLines.voucherId))
+      .innerJoin(itemList, eq(receivingLines.itemNumber, itemList.itemNumber))
+      .where(sql`${itemList.styleNumber} IS NOT NULL`)
+      .groupBy(itemList.styleNumber);
+
+    const lastReceivedMap = new Map<string, string>();
+    for (const row of lastReceivedData) {
+      if (row.styleNumber && row.lastReceived) {
+        lastReceivedMap.set(row.styleNumber, row.lastReceived);
+      }
+    }
+
+    const recommendations: Array<{
+      styleNumber: string;
+      itemName: string;
+      category: string | null;
+      vendorName: string | null;
+      usesPrepacks: boolean;
+      totalActiveQty: number;
+      avgDailySales: number;
+      daysOfSupply: number;
+      lastReceived: string | null;
+      daysSinceLastReceive: number | null;
+      recommendedOrderQty: number;
+      urgency: string;
+    }> = [];
+
+    const today = new Date();
+
+    for (const style of stylesWithInventory) {
+      if (!style.styleNumber || !style.vendorName) continue;
+
+      // Only include vendors that use prepacks
+      const usesPrepacks = vendorPrepackMap.get(style.vendorName) || false;
+      if (!usesPrepacks) continue;
+
+      const totalActiveQty = Number(style.totalActiveQty) || 0;
+      const avgDailySales = velocityMap.get(style.styleNumber) || 0;
+
+      // Calculate days of supply
+      const daysOfSupply = avgDailySales > 0 ? totalActiveQty / avgDailySales : 999;
+
+      // Only recommend restock if days of supply is low
+      if (daysOfSupply > 30) continue;
+
+      // Calculate last received info
+      const lastReceived = lastReceivedMap.get(style.styleNumber) || null;
+      let daysSinceLastReceive: number | null = null;
+      if (lastReceived) {
+        const lastReceivedDate = new Date(lastReceived);
+        daysSinceLastReceive = Math.floor((today.getTime() - lastReceivedDate.getTime()) / (1000 * 60 * 60 * 24));
+      }
+
+      // Calculate recommended order quantity (30 days of supply)
+      const recommendedOrderQty = Math.max(
+        Math.ceil(avgDailySales * 30) - totalActiveQty,
+        0
+      );
+
+      // Determine urgency
+      let urgency = 'Low';
+      if (daysOfSupply < 7) {
+        urgency = 'Critical';
+      } else if (daysOfSupply < 14) {
+        urgency = 'High';
+      } else if (daysOfSupply < 21) {
+        urgency = 'Medium';
+      }
+
+      recommendations.push({
+        styleNumber: style.styleNumber,
+        itemName: style.itemName || '',
+        category: style.category,
+        vendorName: style.vendorName,
+        usesPrepacks,
+        totalActiveQty,
+        avgDailySales: Number(avgDailySales.toFixed(2)),
+        daysOfSupply: Number(daysOfSupply.toFixed(1)),
+        lastReceived,
+        daysSinceLastReceive,
+        recommendedOrderQty,
+        urgency,
+      });
+    }
+
+    // Sort by urgency (Critical > High > Medium > Low) then by days of supply (lowest first)
+    const urgencyOrder = { Critical: 1, High: 2, Medium: 3, Low: 4 };
+    recommendations.sort((a, b) => {
+      if (urgencyOrder[a.urgency as keyof typeof urgencyOrder] !== urgencyOrder[b.urgency as keyof typeof urgencyOrder]) {
+        return urgencyOrder[a.urgency as keyof typeof urgencyOrder] - urgencyOrder[b.urgency as keyof typeof urgencyOrder];
+      }
+      return a.daysOfSupply - b.daysOfSupply;
+    });
 
     return recommendations.slice(0, limit);
   }
@@ -2982,6 +3543,922 @@ export class DatabaseStorage implements IStorage {
   async calculateMetricsMultidimensional(styleNumbers: string[], calculatedBy: string, settings?: any): Promise<any> {
     const { calculateMetricsForStylesMultidim } = await import("./lib/receiving-metrics-calculator-multidim");
     return await calculateMetricsForStylesMultidim(styleNumbers, calculatedBy, settings);
+  }
+
+  // ========================================
+  // VENDOR CONFIGURATION OPERATIONS (Phase 0)
+  // ========================================
+
+  async getVendorConfigurations(filters?: {
+    usesPrepacks?: boolean;
+    limit?: number;
+    offset?: number
+  }): Promise<{ vendors: VendorConfiguration[]; total: number }> {
+    const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
+
+    let query = db.select().from(vendorConfigurations);
+
+    if (filters?.usesPrepacks !== undefined) {
+      query = query.where(eq(vendorConfigurations.usesPrepacks, filters.usesPrepacks)) as any;
+    }
+
+    const vendors = await query
+      .orderBy(asc(vendorConfigurations.vendorName))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(vendorConfigurations)
+      .where(
+        filters?.usesPrepacks !== undefined
+          ? eq(vendorConfigurations.usesPrepacks, filters.usesPrepacks)
+          : sql`1=1`
+      );
+
+    return { vendors, total };
+  }
+
+  async getVendorConfiguration(vendorName: string): Promise<VendorConfiguration | undefined> {
+    const [vendor] = await db
+      .select()
+      .from(vendorConfigurations)
+      .where(eq(vendorConfigurations.vendorName, vendorName))
+      .limit(1);
+    return vendor;
+  }
+
+  async createVendorConfiguration(vendor: InsertVendorConfiguration): Promise<VendorConfiguration> {
+    const [created] = await db
+      .insert(vendorConfigurations)
+      .values({
+        ...vendor,
+        updatedAt: new Date()
+      })
+      .returning();
+    return created;
+  }
+
+  async updateVendorConfiguration(
+    vendorName: string,
+    vendor: Partial<InsertVendorConfiguration>
+  ): Promise<VendorConfiguration | undefined> {
+    const [updated] = await db
+      .update(vendorConfigurations)
+      .set({
+        ...vendor,
+        updatedAt: new Date()
+      })
+      .where(eq(vendorConfigurations.vendorName, vendorName))
+      .returning();
+    return updated;
+  }
+
+  async deleteVendorConfiguration(vendorName: string): Promise<boolean> {
+    const result = await db
+      .delete(vendorConfigurations)
+      .where(eq(vendorConfigurations.vendorName, vendorName));
+    return (result.rowCount || 0) > 0;
+  }
+
+  // ========================================
+  // STYLE CONFIGURATION OPERATIONS (Style-First Architecture)
+  // ========================================
+
+  async listStyleConfigurations(vendorName?: string): Promise<StyleWithPacks[]> {
+    let query = db.select().from(styleConfigurations);
+
+    if (vendorName) {
+      query = query.where(eq(styleConfigurations.vendorName, vendorName)) as any;
+    }
+
+    const styles = await query.orderBy(
+      asc(styleConfigurations.vendorName),
+      asc(styleConfigurations.styleNumber)
+    );
+
+    // Fetch packs and distributions for each style
+    const stylesWithPacks: StyleWithPacks[] = await Promise.all(
+      styles.map(async (style) => {
+        // Get all packs for this style
+        const packs = await db
+          .select()
+          .from(prepackConfigurations)
+          .where(eq(prepackConfigurations.styleConfigId, style.id))
+          .orderBy(asc(prepackConfigurations.prepackName));
+
+        // Get distributions for each pack
+        const packsWithDistributions: PrepackWithDistributions[] = await Promise.all(
+          packs.map(async (pack) => {
+            const distributions = await db
+              .select()
+              .from(prepackSizeDistributions)
+              .where(eq(prepackSizeDistributions.prepackConfigId, pack.id))
+              .orderBy(asc(prepackSizeDistributions.sizeValue));
+
+            return {
+              ...pack,
+              distributions
+            };
+          })
+        );
+
+        return {
+          ...style,
+          packs: packsWithDistributions
+        };
+      })
+    );
+
+    return stylesWithPacks;
+  }
+
+  async getStyleConfiguration(id: number): Promise<StyleWithPacks | undefined> {
+    // Get style
+    const [style] = await db
+      .select()
+      .from(styleConfigurations)
+      .where(eq(styleConfigurations.id, id))
+      .limit(1);
+
+    if (!style) return undefined;
+
+    // Get all packs for this style
+    const packs = await db
+      .select()
+      .from(prepackConfigurations)
+      .where(eq(prepackConfigurations.styleConfigId, id))
+      .orderBy(asc(prepackConfigurations.prepackName));
+
+    // Get distributions for each pack
+    const packsWithDistributions: PrepackWithDistributions[] = await Promise.all(
+      packs.map(async (pack) => {
+        const distributions = await db
+          .select()
+          .from(prepackSizeDistributions)
+          .where(eq(prepackSizeDistributions.prepackConfigId, pack.id))
+          .orderBy(asc(prepackSizeDistributions.sizeValue));
+
+        return {
+          ...pack,
+          distributions
+        };
+      })
+    );
+
+    return {
+      ...style,
+      packs: packsWithDistributions
+    };
+  }
+
+  async createStyleConfiguration(style: InsertStyleConfiguration): Promise<StyleConfiguration> {
+    const [created] = await db
+      .insert(styleConfigurations)
+      .values({
+        ...style,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return created;
+  }
+
+  async updateStyleConfiguration(
+    id: number,
+    style: Partial<InsertStyleConfiguration>
+  ): Promise<StyleConfiguration | undefined> {
+    const [updated] = await db
+      .update(styleConfigurations)
+      .set({
+        ...style,
+        updatedAt: new Date()
+      })
+      .where(eq(styleConfigurations.id, id))
+      .returning();
+
+    return updated;
+  }
+
+  async deleteStyleConfiguration(id: number): Promise<boolean> {
+    // Cascade delete will automatically remove associated packs and their distributions
+    const result = await db
+      .delete(styleConfigurations)
+      .where(eq(styleConfigurations.id, id));
+
+    return (result.rowCount || 0) > 0;
+  }
+
+  // ========================================
+  // PREPACK CONFIGURATION OPERATIONS (Style-First Architecture)
+  // ========================================
+
+  async getPrepackConfigurations(filters?: {
+    vendorName?: string;
+    styleNumber?: string;
+    styleConfigId?: number;
+  }): Promise<PrepackConfiguration[]> {
+    let query = db.select().from(prepackConfigurations);
+
+    const conditions = [];
+
+    // Support legacy vendorName/styleNumber filters by joining with styleConfigurations
+    if (filters?.vendorName || filters?.styleNumber) {
+      // This will be a join query - implement after migration
+      console.warn('Legacy vendorName/styleNumber filters not fully supported yet. Use styleConfigId instead.');
+    }
+
+    if (filters?.styleConfigId) {
+      conditions.push(eq(prepackConfigurations.styleConfigId, filters.styleConfigId));
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    return await query.orderBy(asc(prepackConfigurations.prepackName));
+  }
+
+  async getPrepackConfigurationWithDistributions(id: number): Promise<PrepackWithDistributions | undefined> {
+    const [config] = await db
+      .select()
+      .from(prepackConfigurations)
+      .where(eq(prepackConfigurations.id, id))
+      .limit(1);
+
+    if (!config) return undefined;
+
+    const distributions = await db
+      .select()
+      .from(prepackSizeDistributions)
+      .where(eq(prepackSizeDistributions.prepackConfigId, id))
+      .orderBy(asc(prepackSizeDistributions.sizeValue));
+
+    return { ...config, distributions };
+  }
+
+  async createPrepackConfiguration(
+    prepack: InsertPrepackConfiguration,
+    distributions: InsertPrepackSizeDistribution[]
+  ): Promise<PrepackWithDistributions> {
+    // Create the prepack configuration
+    const [config] = await db
+      .insert(prepackConfigurations)
+      .values({
+        ...prepack,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    // Calculate percentages and insert distributions
+    const distributionsWithPercentage = distributions.map(dist => ({
+      ...dist,
+      prepackConfigId: config.id,
+      percentage: prepack.piecesPerBox
+        ? ((dist.quantity / prepack.piecesPerBox) * 100).toFixed(2)
+        : null
+    }));
+
+    const createdDistributions = await db
+      .insert(prepackSizeDistributions)
+      .values(distributionsWithPercentage)
+      .returning();
+
+    return { ...config, distributions: createdDistributions };
+  }
+
+  async updatePrepackConfiguration(
+    id: number,
+    prepack: Partial<InsertPrepackConfiguration>,
+    distributions?: InsertPrepackSizeDistribution[]
+  ): Promise<PrepackWithDistributions | undefined> {
+    // Update the prepack configuration
+    const [config] = await db
+      .update(prepackConfigurations)
+      .set({
+        ...prepack,
+        updatedAt: new Date()
+      })
+      .where(eq(prepackConfigurations.id, id))
+      .returning();
+
+    if (!config) return undefined;
+
+    // If distributions are provided, replace them
+    if (distributions) {
+      // Delete existing distributions
+      await db
+        .delete(prepackSizeDistributions)
+        .where(eq(prepackSizeDistributions.prepackConfigId, id));
+
+      // Calculate percentages and insert new distributions
+      const distributionsWithPercentage = distributions.map(dist => ({
+        ...dist,
+        prepackConfigId: id,
+        percentage: config.piecesPerBox
+          ? ((dist.quantity / config.piecesPerBox) * 100).toFixed(2)
+          : null
+      }));
+
+      const createdDistributions = await db
+        .insert(prepackSizeDistributions)
+        .values(distributionsWithPercentage)
+        .returning();
+
+      return { ...config, distributions: createdDistributions };
+    }
+
+    // If no distributions provided, return existing ones
+    const existingDistributions = await db
+      .select()
+      .from(prepackSizeDistributions)
+      .where(eq(prepackSizeDistributions.prepackConfigId, id))
+      .orderBy(asc(prepackSizeDistributions.sizeValue));
+
+    return { ...config, distributions: existingDistributions };
+  }
+
+  async deletePrepackConfiguration(id: number): Promise<boolean> {
+    // Cascade delete will automatically remove size distributions
+    const result = await db
+      .delete(prepackConfigurations)
+      .where(eq(prepackConfigurations.id, id));
+    return (result.rowCount || 0) > 0;
+  }
+
+  async calculatePackCost(
+    vendorName: string,
+    styleNumber: string,
+    sizeDistributions: Array<{ sizeValue: string; quantity: number }>
+  ): Promise<{
+    totalCost: string;
+    averageCostPerUnit: string;
+    sizeBreakdown: Array<{
+      sizeValue: string;
+      quantity: number;
+      averageCost: string;
+      subtotal: string;
+      itemsFound: number;
+    }>;
+    totalItemsFound: number;
+    totalItemsExpected: number;
+  }> {
+    const sizeBreakdown = await Promise.all(
+      sizeDistributions.map(async (dist) => {
+        // Strategy: Prioritize costs from the specified style number first,
+        // then fall back to other styles from the same vendor if not found.
+        // This ensures Pack E uses 8501E costs ($17) instead of averaging with 8501B ($14).
+
+        // Step 1: Try to find items matching vendor + specified style + size
+        const itemsFromStyle = await db
+          .select({
+            orderCost: itemList.orderCost,
+            styleNumber: itemList.styleNumber,
+          })
+          .from(itemList)
+          .where(
+            and(
+              eq(itemList.vendorName, vendorName),
+              or(
+                eq(itemList.styleNumber, styleNumber),
+                eq(itemList.styleNumber2, styleNumber)
+              ),
+              eq(itemList.size, dist.sizeValue)
+            )
+          );
+
+        // Step 2: If not found in the specified style, search across ALL styles from vendor
+        let items = itemsFromStyle;
+        if (items.length === 0) {
+          items = await db
+            .select({
+              orderCost: itemList.orderCost,
+              styleNumber: itemList.styleNumber,
+            })
+            .from(itemList)
+            .where(
+              and(
+                eq(itemList.vendorName, vendorName),
+                eq(itemList.size, dist.sizeValue)
+              )
+            );
+        }
+
+        // Calculate average cost for this size across all colors
+        const validCosts = items
+          .map(item => item.orderCost ? parseFloat(item.orderCost) : null)
+          .filter(cost => cost !== null && !isNaN(cost)) as number[];
+
+        const averageCost = validCosts.length > 0
+          ? validCosts.reduce((sum, cost) => sum + cost, 0) / validCosts.length
+          : 0;
+
+        const subtotal = averageCost * dist.quantity;
+
+        return {
+          sizeValue: dist.sizeValue,
+          quantity: dist.quantity,
+          averageCost: averageCost.toFixed(2),
+          subtotal: subtotal.toFixed(2),
+          itemsFound: items.length,
+        };
+      })
+    );
+
+    const totalCost = sizeBreakdown.reduce(
+      (sum, item) => sum + parseFloat(item.subtotal),
+      0
+    );
+
+    const totalPieces = sizeDistributions.reduce(
+      (sum, dist) => sum + dist.quantity,
+      0
+    );
+
+    const averageCostPerUnit = totalPieces > 0 ? totalCost / totalPieces : 0;
+
+    const totalItemsFound = sizeBreakdown.reduce(
+      (sum, item) => sum + item.itemsFound,
+      0
+    );
+
+    return {
+      totalCost: totalCost.toFixed(2),
+      averageCostPerUnit: averageCostPerUnit.toFixed(2),
+      sizeBreakdown,
+      totalItemsFound,
+      totalItemsExpected: sizeDistributions.length,
+    };
+  }
+
+  // Prepack Recommendation Logging
+  async logPrepackRecommendation(log: {
+    userId: string | null;
+    requestLimit: number;
+    stylesFound: number;
+    recommendationsGenerated: number;
+    recommendations: any[];
+    processingTimeMs: number;
+    success: boolean;
+    errorMessage: string | null;
+  }) {
+    await db.insert(prepackRecommendationLog).values(log);
+  }
+
+  async getPrepackRecommendationLogs(limit: number = 50) {
+    const logs = await db
+      .select()
+      .from(prepackRecommendationLog)
+      .orderBy(desc(prepackRecommendationLog.createdAt))
+      .limit(limit);
+
+    return logs;
+  }
+
+  // Inventory Settings - Centralized configuration
+  async getInventorySettings(): Promise<InventorySettings> {
+    const settings = await db
+      .select()
+      .from(inventorySettings)
+      .limit(1);
+
+    // Return first row or defaults if none exist
+    if (settings.length === 0) {
+      const defaultSettings: InsertInventorySettings = {
+        salesAnalysisPeriodDays: 90,
+        restockUrgencyThresholdDays: 21,
+        overstockThresholdDays: 90,
+        understockThresholdDays: 7,
+        transferMinStockLevel: 5,
+        transferTargetDaysSupply: 14,
+        createdBy: 'system'
+      };
+
+      const [created] = await db.insert(inventorySettings).values(defaultSettings).returning();
+      return created;
+    }
+
+    return settings[0];
+  }
+
+  async updateInventorySettings(
+    updates: UpdateInventorySettings,
+    userId?: string
+  ): Promise<InventorySettings> {
+    const current = await this.getInventorySettings();
+
+    const [updated] = await db
+      .update(inventorySettings)
+      .set({
+        ...updates,
+        updatedAt: new Date(),
+        updatedBy: userId
+      })
+      .where(eq(inventorySettings.id, current.id))
+      .returning();
+
+    return updated;
+  }
+
+  // ========================================
+  // PROFIT ANALYSIS METHODS
+  // ========================================
+
+  /**
+   * Get summary statistics for profit analysis dashboard
+   */
+  async getProfitAnalysisSummary() {
+    const result = await db
+      .select({
+        total_opportunity: sql<string>`COALESCE(SUM(${skuProfitAnalysis.profitOpportunity}), 0)`,
+        critical_opportunity: sql<string>`COALESCE(SUM(CASE WHEN ${skuProfitAnalysis.urgencyLevel} = 'CRITICAL' THEN ${skuProfitAnalysis.profitOpportunity} ELSE 0 END), 0)`,
+        sku_count: sql<number>`COUNT(*)`,
+        avg_roi: sql<string>`COALESCE(AVG(${skuProfitAnalysis.predictedRoi}), 0)`,
+        last_updated: sql<string>`MAX(${skuProfitAnalysis.analysisTimestamp})`
+      })
+      .from(skuProfitAnalysis)
+      .where(eq(skuProfitAnalysis.isCurrent, true));
+
+    const row = result[0];
+    return {
+      total_opportunity: parseFloat(row.total_opportunity) || 0,
+      critical_opportunity: parseFloat(row.critical_opportunity) || 0,
+      sku_count: row.sku_count || 0,
+      avg_roi: parseFloat(row.avg_roi) || 0,
+      last_updated: row.last_updated || new Date().toISOString()
+    };
+  }
+
+  /**
+   * Get filtered profit opportunities
+   */
+  async getProfitOpportunities(
+    vendor?: string,
+    color?: string,
+    urgency?: string,
+    limit: number = 50
+  ): Promise<SkuProfitAnalysis[]> {
+    const conditions = [eq(skuProfitAnalysis.isCurrent, true)];
+
+    if (vendor && vendor !== 'all') {
+      conditions.push(eq(skuProfitAnalysis.vendorName, vendor));
+    }
+    if (color && color !== 'all') {
+      conditions.push(eq(skuProfitAnalysis.color, color));
+    }
+    if (urgency && urgency !== 'all') {
+      conditions.push(eq(skuProfitAnalysis.urgencyLevel, urgency));
+    }
+
+    const opportunities = await db
+      .select()
+      .from(skuProfitAnalysis)
+      .where(and(...conditions))
+      .orderBy(desc(skuProfitAnalysis.profitOpportunity))
+      .limit(limit);
+
+    return opportunities;
+  }
+
+  /**
+   * Get count of active SKUs (for progress tracking)
+   */
+  async getActiveSkuCount(): Promise<number> {
+    const result = await db
+      .select({ count: sql<number>`COUNT(DISTINCT ${skuFinancialData.sku})` })
+      .from(skuFinancialData)
+      .where(sql`${skuFinancialData.currentInventory} >= 0`);
+
+    return result[0]?.count || 0;
+  }
+
+  /**
+   * Recalculate profit analysis for all SKUs
+   * This is a background job that updates the sku_profit_analysis table
+   */
+  async recalculateProfitAnalysis(
+    jobId: string,
+    progressCallback: (progress: {
+      status: 'processing' | 'completed' | 'error';
+      progress: number;
+      skus_processed: number;
+      total_skus: number;
+      opportunities_found?: number;
+      total_opportunity?: number;
+      error_message?: string;
+    }) => void
+  ): Promise<void> {
+    try {
+      // Get all SKUs with financial data
+      const allSkus = await db
+        .select()
+        .from(skuFinancialData)
+        .where(sql`${skuFinancialData.currentInventory} >= 0`);
+
+      const totalSkus = allSkus.length;
+      let skusProcessed = 0;
+      let opportunitiesFound = 0;
+      let totalOpportunity = 0;
+
+      // Mark all current records as not current
+      await db
+        .update(skuProfitAnalysis)
+        .set({ isCurrent: false })
+        .where(eq(skuProfitAnalysis.isCurrent, true));
+
+      const today = new Date().toISOString().split('T')[0];
+
+      // Process SKUs in batches
+      const batchSize = 50;
+      for (let i = 0; i < allSkus.length; i += batchSize) {
+        const batch = allSkus.slice(i, Math.min(i + batchSize, allSkus.length));
+
+        // Calculate profit opportunities for each SKU in batch
+        const analysisRecords = batch.map((sku) => {
+          // Calculate shortage (if days of supply < 30, we have a shortage)
+          const targetDaysSupply = 90;
+          const velocity = parseFloat(sku.velocity90d?.toString() || '0');
+          const currentInventory = sku.currentInventory || 0;
+          const targetQty = Math.ceil(velocity * targetDaysSupply);
+          const shortageUnits = Math.max(0, targetQty - currentInventory);
+
+          const profitPerUnit = parseFloat(sku.profitPerUnit?.toString() || '0');
+          const profitOpportunity = shortageUnits * profitPerUnit;
+
+          // Determine urgency level
+          const daysOfSupply = parseFloat(sku.daysOfSupply?.toString() || '999');
+          let urgencyLevel = 'HEALTHY';
+          if (daysOfSupply < 14 && velocity > 0.1) {
+            urgencyLevel = 'CRITICAL';
+          } else if (daysOfSupply < 30) {
+            urgencyLevel = 'LOW';
+          } else if (daysOfSupply < 60) {
+            urgencyLevel = 'MONITOR';
+          } else if (daysOfSupply < 90) {
+            urgencyLevel = 'GOOD';
+          }
+
+          const daysUntilStockout = velocity > 0 ? Math.floor(currentInventory / velocity) : 999;
+
+          // Only count as opportunity if shortage > 0 and urgency is not HEALTHY
+          if (shortageUnits > 0 && urgencyLevel !== 'HEALTHY') {
+            opportunitiesFound++;
+            totalOpportunity += profitOpportunity;
+          }
+
+          return {
+            sku: sku.sku,
+            styleNumber: sku.styleNumber || 'UNKNOWN',
+            vendorName: sku.vendorName || 'UNKNOWN',
+            color: sku.color || 'N/A',
+            size: sku.size || 'N/A',
+            inseam: sku.inseam || null,
+            analysisDate: today,
+            currentInventory: currentInventory,
+            daysOfSupply: sku.daysOfSupply,
+            velocity30d: sku.velocity30d,
+            velocity90d: sku.velocity90d,
+            velocity365d: sku.velocity365d,
+            velocityTrend: 'STABLE',
+            sellingPrice: sku.avgSellingPrice,
+            unitCost: sku.unitCost,
+            profitPerUnit: sku.profitPerUnit,
+            marginPct: sku.marginPct,
+            shortageUnits: shortageUnits,
+            profitOpportunity: profitOpportunity.toString(),
+            lostRevenuePerDay: (velocity * profitPerUnit).toString(),
+            cumulativeOpportunity: (velocity * profitPerUnit * 30).toString(),
+            recommendedAction: shortageUnits > 0 ? 'ORDER' : 'MONITOR',
+            recommendedBoxes: null,
+            recommendedPrepackName: null,
+            recommendedColor: sku.color || 'N/A',
+            predictedNetProfit: (profitOpportunity * 0.7).toString(), // 70% expected realization
+            predictedRevenue: (shortageUnits * parseFloat(sku.avgSellingPrice?.toString() || '0')).toString(),
+            predictedHoldingCost: '0',
+            predictedOpportunityCost: profitOpportunity.toString(),
+            predictedRoi: '0',
+            profitabilityTier: profitOpportunity > 500 ? 'EXCELLENT' : profitOpportunity > 200 ? 'GOOD' : profitOpportunity > 50 ? 'MARGINAL' : 'UNPROFITABLE',
+            urgencyLevel: urgencyLevel,
+            daysUntilStockout: daysUntilStockout,
+            stockoutRiskScore: Math.min(100, Math.max(0, 100 - daysOfSupply)).toString(),
+            actualNetProfit: null,
+            actualRevenue: null,
+            predictionError: null,
+            predictionAccuracyPct: null,
+            isCurrent: true,
+            notes: null
+          };
+        });
+
+        // Insert batch into database
+        if (analysisRecords.length > 0) {
+          await db.insert(skuProfitAnalysis).values(analysisRecords);
+        }
+
+        skusProcessed += batch.length;
+        const progress = Math.floor((skusProcessed / totalSkus) * 100);
+
+        // Report progress
+        progressCallback({
+          status: 'processing',
+          progress,
+          skus_processed: skusProcessed,
+          total_skus: totalSkus,
+          opportunities_found: opportunitiesFound,
+          total_opportunity: totalOpportunity
+        });
+
+        // Small delay to prevent overwhelming the database
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Report completion
+      progressCallback({
+        status: 'completed',
+        progress: 100,
+        skus_processed: totalSkus,
+        total_skus: totalSkus,
+        opportunities_found: opportunitiesFound,
+        total_opportunity: totalOpportunity
+      });
+
+    } catch (error) {
+      console.error('Recalculation error:', error);
+      progressCallback({
+        status: 'error',
+        progress: 0,
+        skus_processed: 0,
+        total_skus: 0,
+        error_message: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw error;
+    }
+  }
+
+  // ========================================
+  // WAREHOUSE DISTRIBUTION FUNCTIONS
+  // Network-level restocking with warehouse distribution
+  // ========================================
+
+  /**
+   * Generate a distribution plan from ML recommendation
+   */
+  async generateDistributionPlan(data: {
+    styleNumber: string;
+    vendorName?: string;
+    totalBoxes: number;
+    totalPieces: number;
+    totalCost?: number;
+    orderDate?: Date;
+    expectedArrivalDate?: Date;
+    distributionDetails: Array<{
+      phase: 'initial' | 'reserve';
+      targetStore?: string;
+      sku: string;
+      color: string;
+      size: string;
+      quantity: number;
+      priority?: string;
+      rationale?: string;
+    }>;
+    createdBy?: string;
+  }): Promise<{ planId: string }> {
+    // Generate unique plan ID
+    const planId = `plan_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+
+    // Insert distribution plan
+    await db.insert(warehouseDistributionPlans).values({
+      planId,
+      styleNumber: data.styleNumber,
+      vendorName: data.vendorName || null,
+      totalBoxes: data.totalBoxes,
+      totalPieces: data.totalPieces,
+      totalCost: data.totalCost?.toString() || null,
+      orderDate: data.orderDate ? data.orderDate.toISOString().split('T')[0] : null,
+      expectedArrivalDate: data.expectedArrivalDate ? data.expectedArrivalDate.toISOString().split('T')[0] : null,
+      status: 'pending',
+      createdBy: data.createdBy || null,
+    });
+
+    // Insert distribution details
+    if (data.distributionDetails.length > 0) {
+      await db.insert(warehouseDistributionDetails).values(
+        data.distributionDetails.map(detail => ({
+          planId,
+          distributionPhase: detail.phase,
+          targetStore: detail.targetStore || null,
+          sku: detail.sku,
+          color: detail.color,
+          size: detail.size,
+          quantity: detail.quantity,
+          priority: detail.priority || null,
+          rationale: detail.rationale || null,
+          status: 'planned',
+        }))
+      );
+    }
+
+    return { planId };
+  }
+
+  /**
+   * Get a specific distribution plan by ID
+   */
+  async getDistributionPlan(planId: string): Promise<{
+    plan: any;
+    details: any[];
+  } | null> {
+    const [plan] = await db
+      .select()
+      .from(warehouseDistributionPlans)
+      .where(eq(warehouseDistributionPlans.planId, planId));
+
+    if (!plan) {
+      return null;
+    }
+
+    const details = await db
+      .select()
+      .from(warehouseDistributionDetails)
+      .where(eq(warehouseDistributionDetails.planId, planId))
+      .orderBy(
+        asc(warehouseDistributionDetails.distributionPhase),
+        asc(warehouseDistributionDetails.targetStore)
+      );
+
+    return { plan, details };
+  }
+
+  /**
+   * Get all distribution plans with optional filters
+   */
+  async getDistributionPlans(filters?: {
+    styleNumber?: string;
+    status?: string;
+    limit?: number;
+  }): Promise<any[]> {
+    const conditions: any[] = [];
+
+    if (filters?.styleNumber) {
+      conditions.push(eq(warehouseDistributionPlans.styleNumber, filters.styleNumber));
+    }
+    if (filters?.status) {
+      conditions.push(eq(warehouseDistributionPlans.status, filters.status));
+    }
+
+    let query = db
+      .select()
+      .from(warehouseDistributionPlans)
+      .orderBy(desc(warehouseDistributionPlans.createdAt));
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as any;
+    }
+
+    return await query;
+  }
+
+  /**
+   * Update distribution plan status
+   */
+  async updateDistributionPlanStatus(planId: string, status: string): Promise<void> {
+    await db
+      .update(warehouseDistributionPlans)
+      .set({ status })
+      .where(eq(warehouseDistributionPlans.planId, planId));
+  }
+
+  /**
+   * Mark SKU as distributed to a store
+   */
+  async markSkuDistributed(data: {
+    planId: string;
+    sku: string;
+    targetStore?: string;
+    status: string;
+  }): Promise<void> {
+    const conditions: any[] = [
+      eq(warehouseDistributionDetails.planId, data.planId),
+      eq(warehouseDistributionDetails.sku, data.sku)
+    ];
+
+    if (data.targetStore) {
+      conditions.push(eq(warehouseDistributionDetails.targetStore, data.targetStore));
+    }
+
+    await db
+      .update(warehouseDistributionDetails)
+      .set({
+        status: data.status,
+        updatedAt: sql`CURRENT_TIMESTAMP`
+      })
+      .where(and(...conditions));
   }
 }
 

@@ -9,6 +9,17 @@ from datetime import datetime
 from config import settings
 from models.transfer_predictor import TransferPredictor
 from models.segmentation_predictor import SegmentationPredictor
+from models.prepack_optimizer import PrepackOptimizer, PrepackContents, SKUNeed
+from models.profit_based_optimizer import ProfitBasedPrepackOptimizer
+from utils.prepack_data import (
+    get_vendor_prepacks_by_color,
+    get_style_inventory_needs_by_color,
+    get_style_inventory_needs_with_financials,
+    get_vendor_by_style,
+    check_vendor_uses_prepacks,
+    get_styles_needing_restock,
+    get_available_colors_for_style
+)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -29,6 +40,8 @@ app.add_middleware(
 # Global model instances (loaded on startup)
 transfer_model: Optional[TransferPredictor] = None
 segmentation_model: Optional[SegmentationPredictor] = None
+prepack_optimizer: PrepackOptimizer = PrepackOptimizer()
+profit_optimizer: ProfitBasedPrepackOptimizer = ProfitBasedPrepackOptimizer()
 
 
 # Pydantic models for API
@@ -105,6 +118,10 @@ class HealthResponse(BaseModel):
 async def startup_event():
     """Load the latest models on service startup."""
     global transfer_model, segmentation_model
+
+    # Ensure model cache directory exists
+    import os
+    os.makedirs(settings.model_cache_dir, exist_ok=True)
 
     print("=" * 60)
     print("STARTING ML SERVICE")
@@ -595,6 +612,352 @@ async def predict_product_segmentation():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
+
+
+# ==========================
+# PREPACK OPTIMIZATION ENDPOINTS
+# ⚠️  DRAFT/PROTOTYPE - FOR PLANNING REFERENCE ONLY ⚠️
+# These endpoints were added during planning phase as proof-of-concept
+# DO NOT USE IN PRODUCTION without review and approval
+# ==========================
+
+class PrepackRecommendationRequest(BaseModel):
+    style_number: str
+    target_days_supply: Optional[int] = 90
+    max_waste_tolerance: Optional[float] = 0.30
+    min_coverage_target: Optional[float] = 0.90
+
+
+class PrepackRecommendationResponse(BaseModel):
+    success: bool
+    style_number: str
+    vendor_name: Optional[str]
+    uses_prepacks: bool
+    current_network_days_supply: float
+    urgency_level: str
+    recommendation: str
+    total_boxes: int
+    total_pieces: int
+    total_cost: float
+    coverage_pct: float
+    waste_pct: float
+    score: float
+    prepack_combinations: Dict[str, int]
+    available_prepacks: List[str]
+    message: Optional[str] = None
+
+
+@app.post("/api/ml/prepack-recommendations", response_model=PrepackRecommendationResponse)
+async def get_prepack_recommendations(request: PrepackRecommendationRequest):
+    """
+    Generate optimal prepack ordering recommendations for a style.
+
+    Since ~70% of vendors ship prepacked boxes with fixed size assortments,
+    this endpoint analyzes inventory needs and recommends which prepack boxes
+    to order to minimize waste while meeting inventory targets.
+
+    This solves a bin packing optimization problem.
+    """
+
+    try:
+        style_number = request.style_number
+
+        # Step 1: Determine vendor for this style
+        vendor_name = get_vendor_by_style(style_number)
+
+        if not vendor_name:
+            return PrepackRecommendationResponse(
+                success=False,
+                style_number=style_number,
+                vendor_name=None,
+                uses_prepacks=False,
+                current_network_days_supply=0,
+                urgency_level="unknown",
+                recommendation="Cannot determine vendor for this style",
+                total_boxes=0,
+                total_pieces=0,
+                total_cost=0,
+                coverage_pct=0,
+                waste_pct=0,
+                score=0,
+                prepack_combinations={},
+                available_prepacks=[],
+                message="Style not found in receiving history"
+            )
+
+        # Step 2: Check if vendor uses prepacks
+        uses_prepacks = check_vendor_uses_prepacks(vendor_name)
+
+        if not uses_prepacks:
+            return PrepackRecommendationResponse(
+                success=True,
+                style_number=style_number,
+                vendor_name=vendor_name,
+                uses_prepacks=False,
+                current_network_days_supply=0,
+                urgency_level="n/a",
+                recommendation=f"{vendor_name} allows open stock ordering - no prepack optimization needed",
+                total_boxes=0,
+                total_pieces=0,
+                total_cost=0,
+                coverage_pct=1.0,
+                waste_pct=0,
+                score=100,
+                prepack_combinations={},
+                available_prepacks=[],
+                message="This vendor ships open stock - order individual SKUs as needed"
+            )
+
+        # Step 3: Get available prepacks for this vendor/style
+        available_prepacks = get_vendor_prepacks(vendor_name, style_number)
+
+        if not available_prepacks:
+            return PrepackRecommendationResponse(
+                success=False,
+                style_number=style_number,
+                vendor_name=vendor_name,
+                uses_prepacks=True,
+                current_network_days_supply=0,
+                urgency_level="unknown",
+                recommendation="No prepack configurations found in database",
+                total_boxes=0,
+                total_pieces=0,
+                total_cost=0,
+                coverage_pct=0,
+                waste_pct=0,
+                score=0,
+                prepack_combinations={},
+                available_prepacks=[],
+                message=f"Please add prepack configurations for {vendor_name} style {style_number}"
+            )
+
+        # Step 4: Get current inventory needs
+        needs, network_days_supply = get_style_inventory_needs(
+            style_number,
+            target_days_supply=request.target_days_supply
+        )
+
+        # Step 5: Run optimization
+        optimizer = PrepackOptimizer(
+            max_waste_tolerance=request.max_waste_tolerance,
+            min_coverage_target=request.min_coverage_target
+        )
+
+        solution = optimizer.optimize(
+            needs=needs,
+            available_prepacks=available_prepacks,
+            current_network_days_supply=network_days_supply
+        )
+
+        # Step 6: Determine urgency level
+        if network_days_supply < 14:
+            urgency = "critical"
+        elif network_days_supply < 30:
+            urgency = "low"
+        elif network_days_supply < 60:
+            urgency = "monitor"
+        elif network_days_supply < 120:
+            urgency = "good"
+        else:
+            urgency = "healthy"
+
+        return PrepackRecommendationResponse(
+            success=True,
+            style_number=style_number,
+            vendor_name=vendor_name,
+            uses_prepacks=True,
+            current_network_days_supply=network_days_supply,
+            urgency_level=urgency,
+            recommendation=solution.recommendation,
+            total_boxes=solution.total_boxes,
+            total_pieces=solution.total_pieces,
+            total_cost=solution.total_cost,
+            coverage_pct=solution.coverage_pct,
+            waste_pct=solution.waste_pct,
+            score=solution.score,
+            prepack_combinations=solution.prepack_combinations,
+            available_prepacks=[p.prepack_name for p in available_prepacks],
+            message=None
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prepack optimization failed: {str(e)}"
+        )
+
+
+@app.post("/api/ml/prepack-batch-recommendations")
+async def get_prepack_batch_recommendations(limit: int = 20):
+    """
+    Generate color-aware prepack ordering recommendations for multiple styles.
+
+    This is the production endpoint for Phase 2. It:
+    1. Queries styles needing restock from prepack vendors
+    2. For each style, analyzes inventory needs BY COLOR
+    3. Generates color-specific prepack recommendations
+    4. Returns recommendations in format: "5 boxes Pack A (Black) + 2 boxes Pack A (Olive)"
+
+    CRITICAL: This endpoint is color-aware - each recommendation specifies both pack type AND color.
+    """
+    try:
+        print(f"Batch prepack recommendations requested (limit={limit})")
+
+        # Step 1: Get styles needing restock from prepack vendors
+        styles_needing_restock = get_styles_needing_restock(limit=limit)
+
+        if not styles_needing_restock:
+            return {
+                "success": True,
+                "count": 0,
+                "generated_at": datetime.now().isoformat(),
+                "recommendations": [],
+                "message": "No styles currently need restocking"
+            }
+
+        print(f"Found {len(styles_needing_restock)} styles needing restock")
+
+        # Step 2: Process each style
+        all_recommendations = []
+
+        for style_info in styles_needing_restock:
+            style_number = style_info['style_number']
+            vendor_name = style_info['vendor_name']
+
+            try:
+                # Get inventory needs WITH FINANCIAL DATA grouped by color
+                needs_by_color = get_style_inventory_needs_with_financials(style_number, target_days_supply=90)
+
+                if not needs_by_color:
+                    continue
+
+                # Get available colors for this style
+                available_colors = get_available_colors_for_style(style_number, vendor_name)
+
+                if not available_colors:
+                    print(f"No colors configured for {style_number}")
+                    continue
+
+                # Get all prepacks for this style (all colors)
+                all_prepacks = []
+                for color in available_colors:
+                    prepacks = get_vendor_prepacks_by_color(vendor_name, style_number, color)
+                    if prepacks:
+                        # Convert to PrepackContents format for optimizer
+                        for pack in prepacks:
+                            # Parse size and inseam from pack size distribution
+                            contents = {}
+                            for size_str, qty in pack['size_distribution'].items():
+                                # Handle jeans format like "30W X 32L"
+                                size_parts = str(size_str).split('X')
+                                if len(size_parts) > 1:
+                                    waist = size_parts[0].strip()
+                                    inseam = size_parts[1].strip()
+                                    contents[(waist, inseam)] = qty
+                                else:
+                                    # No inseam (e.g., shorts)
+                                    contents[(size_str, '')] = qty
+
+                            prepack_contents = PrepackContents(
+                                prepack_id=pack['prepack_id'],
+                                prepack_name=pack['prepack_name'],
+                                vendor_name=pack['vendor_name'],
+                                style_number=pack['style_number'],
+                                color=pack['color'],
+                                total_pieces=pack['total_pieces'],
+                                cost_per_box=pack['cost_per_box'],
+                                contents=contents
+                            )
+                            all_prepacks.append(prepack_contents)
+
+                if not all_prepacks:
+                    continue
+
+                # Use intelligent optimizer to find best prepack combination
+                # This considers size-level velocity and minimizes waste
+                optimizer = PrepackOptimizer(
+                    max_waste_tolerance=0.35,  # Allow up to 35% waste
+                    min_coverage_target=0.85,  # Must cover at least 85% of needs
+                    max_boxes_per_prepack=10   # Don't order more than 10 boxes of one type
+                )
+
+                # Run color-aware PROFIT-BASED optimization
+                solution = profit_optimizer.optimize_color_aware(
+                    needs_by_color=needs_by_color,
+                    available_prepacks=all_prepacks,
+                    current_network_days_supply=style_info['days_of_supply']
+                )
+
+                if solution['total_boxes'] > 0:
+                    # Build color breakdown from optimizer solution
+                    color_breakdown = []
+                    for color, color_solution in solution.get('by_color', {}).items():
+                        for prepack_name, box_count in color_solution.prepack_combinations.items():
+                            if box_count > 0:
+                                color_breakdown.append({
+                                    'color': color,
+                                    'pack_name': prepack_name,
+                                    'boxes': box_count,
+                                    'total_pieces': box_count * color_solution.total_pieces // color_solution.total_boxes,
+                                    'cost_per_box': color_solution.total_cost / color_solution.total_boxes if color_solution.total_boxes > 0 else 0,
+                                    'total_cost': color_solution.total_cost,
+                                    'coverage_pct': color_solution.coverage_pct,
+                                    'waste_pct': color_solution.waste_pct
+                                })
+
+                    all_recommendations.append({
+                        'style_number': style_number,
+                        'item_name': style_info['item_name'],
+                        'vendor_name': vendor_name,
+                        'days_of_supply': style_info['days_of_supply'],
+                        'avg_daily_sales': style_info['avg_daily_sales'],
+                        'recommendation': solution['recommendation'],
+                        'total_boxes': solution['total_boxes'],
+                        'total_cost': solution['total_cost'],
+                        'total_pieces': solution['total_pieces'],
+                        'coverage_pct': solution['overall_coverage_pct'],
+                        'waste_pct': solution['overall_waste_pct'],
+                        'color_breakdown': color_breakdown,
+                        'urgency': 'Critical' if style_info['days_of_supply'] < 7 else 'High' if style_info['days_of_supply'] < 14 else 'Medium',
+                        # PROFIT-BASED METRICS
+                        'net_profit': solution.get('net_profit', 0),
+                        'roi_pct': solution.get('roi_pct', 0),
+                        'profitability_tier': solution.get('profitability_tier', 'UNKNOWN'),
+                        'profit_analysis': {
+                            'expected_revenue': solution.get('expected_revenue', 0),
+                            'prepack_cost': solution.get('total_cost', 0),
+                            'holding_cost': solution.get('holding_cost', 0),
+                            'opportunity_cost': solution.get('opportunity_cost', 0)
+                        },
+                        'optimization_details': {
+                            'size_velocity_aware': True,
+                            'colors_optimized': len(solution.get('by_color', {})),
+                            'algorithm': 'profit_based_optimization',
+                            'profit_maximizing': True
+                        }
+                    })
+
+            except Exception as e:
+                print(f"Error processing style {style_number}: {e}")
+                continue
+
+        return {
+            "success": True,
+            "count": len(all_recommendations),
+            "generated_at": datetime.now().isoformat(),
+            "recommendations": all_recommendations,
+            "message": f"Processed {len(styles_needing_restock)} styles, generated {len(all_recommendations)} recommendations"
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch prepack recommendations failed: {str(e)}"
+        )
 
 
 # Main entry point (for local development only)

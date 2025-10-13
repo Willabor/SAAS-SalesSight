@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { AppHeader } from "@/components/app-header";
-import { CheckCircle2, XCircle, Clock, Zap, Filter, Package, Sparkles } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, Zap, Filter, Package, Sparkles, Box } from "lucide-react";
 
 interface MLSettingsLogEntry {
   id: number;
@@ -34,9 +34,26 @@ interface MLSettingsLogEntry {
   createdAt: string;
 }
 
+interface PrepackRecommendationLog {
+  id: number;
+  userId: string | null;
+  requestLimit: number;
+  stylesFound: number;
+  recommendationsGenerated: number;
+  recommendations: any[];
+  processingTimeMs: number;
+  success: boolean;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
 export default function MLSettingsLogPage() {
   const { data: logs = [], isLoading } = useQuery<MLSettingsLogEntry[]>({
     queryKey: ["/api/ml/settings-log"],
+  });
+
+  const { data: prepackLogs = [], isLoading: isLoadingPrepack } = useQuery<PrepackRecommendationLog[]>({
+    queryKey: ["/api/ml/prepack-logs"],
   });
 
   const formatDuration = (ms: number) => {
@@ -157,6 +174,87 @@ export default function MLSettingsLogPage() {
                           <div className="text-sm text-muted-foreground">
                             {log.trainingDays}d training
                           </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Prepack Recommendation History</CardTitle>
+            <CardDescription>
+              Complete log of all prepack recommendation requests and results
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoadingPrepack ? (
+              <div className="text-center py-8 text-muted-foreground">Loading logs...</div>
+            ) : prepackLogs.length === 0 ? (
+              <div className="text-center py-12">
+                <Box className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground">
+                  No prepack recommendations generated yet. Visit the Prepack Restocking Recommendations page to generate logs.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Styles Found</TableHead>
+                      <TableHead>Recommendations</TableHead>
+                      <TableHead>Processing Time</TableHead>
+                      <TableHead>Details</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {prepackLogs.map((log) => (
+                      <TableRow key={log.id}>
+                        <TableCell className="text-sm">
+                          {formatDate(log.createdAt)}
+                        </TableCell>
+                        <TableCell>
+                          {log.success ? (
+                            <Badge variant="default" className="gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Success
+                            </Badge>
+                          ) : (
+                            <Badge variant="destructive" className="gap-1">
+                              <XCircle className="w-3 h-3" />
+                              Failed
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <span className="font-semibold">{log.stylesFound}</span>
+                          <span className="text-muted-foreground text-xs ml-1">styles</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="font-semibold">{log.recommendationsGenerated}</span>
+                          <span className="text-muted-foreground text-xs ml-1">generated</span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <Zap className="w-3 h-3 text-muted-foreground" />
+                            {formatDuration(log.processingTimeMs)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {log.errorMessage ? (
+                            <span className="text-destructive text-sm">{log.errorMessage}</span>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">
+                              Limit: {log.requestLimit}
+                            </span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

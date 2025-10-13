@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { UploadProgressAdvanced } from "@/components/upload-progress-advanced";
 import { calculateMetricsWithProgress } from "@/lib/api";
+import { AppHeader } from "@/components/app-header";
 import { exportReceivingMetricsToExcel } from "@/lib/excelExport";
 import {
   executeTrackedUpload,
@@ -435,32 +436,38 @@ export default function ReceivingMetricsSettings() {
 
   if (isLoading) {
     return (
-      <div className="container mx-auto p-6">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 bg-gray-200 rounded w-1/4"></div>
-          <div className="h-32 bg-gray-200 rounded"></div>
-        </div>
+      <div className="min-h-screen bg-background">
+        <AppHeader />
+        <main className="container mx-auto p-6">
+          <div className="animate-pulse space-y-4">
+            <div className="h-8 bg-gray-200 rounded w-1/4"></div>
+            <div className="h-32 bg-gray-200 rounded"></div>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-3 mb-2">
-          <Link href="/">
-            <Button variant="ghost" size="sm" data-testid="button-back-dashboard">
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back to Dashboard
-            </Button>
-          </Link>
+    <div className="min-h-screen bg-background">
+      <AppHeader />
+
+      <main className="container mx-auto p-6 space-y-6">
+        {/* Header */}
+        <div>
+          <div className="flex items-center gap-3 mb-2">
+            <Link href="/">
+              <Button variant="ghost" size="sm" data-testid="button-back-dashboard">
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Dashboard
+              </Button>
+            </Link>
+          </div>
+          <h1 className="text-3xl font-bold">Receiving Metrics Settings</h1>
+          <p className="text-muted-foreground mt-2">
+            Multi-dimensional lifecycle analysis combining receiving patterns, sales velocity, and inventory levels
+          </p>
         </div>
-        <h1 className="text-3xl font-bold">Receiving Metrics Settings</h1>
-        <p className="text-muted-foreground mt-2">
-          Multi-dimensional lifecycle analysis combining receiving patterns, sales velocity, and inventory levels
-        </p>
-      </div>
 
       {/* Progress Tracker - Show when calculating */}
       {isCalculating && uploadStats && (
@@ -1138,6 +1145,7 @@ export default function ReceivingMetricsSettings() {
           </p>
         </CardContent>
       </Card>
+      </main>
     </div>
   );
 }

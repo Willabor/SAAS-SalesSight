@@ -686,21 +686,46 @@ export function flattenSalesData(workbook: XLSX.WorkBook): Promise<{
               transactionStoreType: row['Transaction Store Type']
             };
           } 
-          // LINE ITEM ROW (no Date, has Store/Receipt#/Price)
+          // LINE ITEM ROW (no Date, but has Store=SKU, Receipt#=ItemName, and Price)
+          // In the hierarchical structure, line items have SKU in Store column and Item Name in Receipt# column
           else if (!row.Date && row.Store && row['Receipt #'] && row.Price !== null && currentTransaction) {
-            const transaction = {
-              Date: currentTransaction.date,
-              Store: currentTransaction.store,
-              'Receipt #': currentTransaction.receiptNumber,
-              SKU: row.Store,
-              'Item Name': row['Receipt #'],
-              'Transaction Store Type': row['Transaction Store Type'] || currentTransaction.transactionStoreType,
-              Price: row.Price,
-              Sheet: sheetName
-            };
-            
-            sheetTransactions.push(transaction);
-            allTransactions.push(transaction);
+            // FILTER OUT SUBTOTAL/TOTAL ROWS
+            // These often have keywords like "Total", "Subtotal", "Grand Total" in the Store or Receipt# column
+            const storeStr = String(row.Store || '').toLowerCase();
+            const itemStr = String(row['Receipt #'] || '').toLowerCase();
+
+            const isSubtotal = storeStr.includes('total') ||
+                              storeStr.includes('subtotal') ||
+                              itemStr.includes('total') ||
+                              itemStr.includes('subtotal') ||
+                              storeStr.includes('grand') ||
+                              itemStr.includes('grand');
+
+            // Only add if it's NOT a subtotal row
+            if (!isSubtotal) {
+              // Get transaction type (1 = sale, -1 = return)
+              const transactionType = row['Transaction Store Type'] || currentTransaction.transactionStoreType;
+
+              // Negate price if it's a return (Transaction Store Type = -1)
+              let price = row.Price;
+              if (transactionType === -1 || transactionType === '-1') {
+                price = -Math.abs(price); // Ensure it's negative
+              }
+
+              const transaction = {
+                Date: currentTransaction.date,
+                Store: currentTransaction.store,
+                'Receipt #': currentTransaction.receiptNumber,
+                SKU: row.Store,           // Line items have SKU in the Store column
+                'Item Name': row['Receipt #'],  // Line items have Item Name in the Receipt # column
+                'Transaction Store Type': transactionType,
+                Price: price,
+                Sheet: sheetName
+              };
+
+              sheetTransactions.push(transaction);
+              allTransactions.push(transaction);
+            }
           }
         }
         
@@ -790,4 +815,42 @@ export function downloadCSVFile(csvData: string, filename: string) {
   link.href = URL.createObjectURL(blob);
   link.download = filename;
   link.click();
+}
+
+// Currency formatting helper
+export function formatCurrency(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') {
+    return '$0.00';
+  }
+
+  const numValue = typeof value === 'string' ? parseFloat(value) : value;
+
+  if (isNaN(numValue)) {
+    return '$0.00';
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(numValue);
+}
+
+// Number formatting helper
+export function formatNumber(value: string | number | null | undefined, decimals: number = 0): string {
+  if (value === null || value === undefined || value === '') {
+    return '0';
+  }
+
+  const numValue = typeof value === 'string' ? parseFloat(value) : value;
+
+  if (isNaN(numValue)) {
+    return '0';
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(numValue);
 }

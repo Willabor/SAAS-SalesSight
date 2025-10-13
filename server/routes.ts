@@ -949,6 +949,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/inventory/transfer-recommendations-sku", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const recommendations = await storage.getTransferRecommendationsWithSKUs(limit);
+      res.json(recommendations);
+    } catch (error) {
+      console.error("Error fetching transfer recommendations with SKUs:", error);
+      res.status(500).json({ error: "Failed to fetch transfer recommendations with SKUs" });
+    }
+  });
+
   app.get("/api/inventory/transfer-recommendations-ml", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 20;
@@ -1010,6 +1021,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching restocking recommendations:", error);
       res.status(500).json({ error: "Failed to fetch restocking recommendations" });
+    }
+  });
+
+  app.get("/api/inventory/prepack-restocking-recommendations", isAuthenticated, async (req, res) => {
+    const startTime = Date.now();
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+
+      // Call ML service for color-aware prepack recommendations
+      const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+      const mlUrl = `${mlServiceUrl}/api/ml/prepack-batch-recommendations?limit=${limit}`;
+      console.log(`Calling ML service at: ${mlUrl}`);
+
+      const response = await fetch(mlUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unable to read error response');
+        console.error(`ML service error: ${response.status} ${response.statusText}`, errorText);
+        throw new Error(`ML service returned ${response.status}: ${errorText}`);
+      }
+
+      const data = await response.json();
+      const processingTime = Date.now() - startTime;
+
+      // Log the recommendation request
+      try {
+        await storage.logPrepackRecommendation({
+          userId: (req.user as any)?.claims?.sub || null,
+          requestLimit: limit,
+          stylesFound: data.count || 0,
+          recommendationsGenerated: data.recommendations?.length || 0,
+          recommendations: data.recommendations || [],
+          processingTimeMs: processingTime,
+          success: true,
+          errorMessage: null,
+        });
+      } catch (logError) {
+        console.error("Failed to log prepack recommendation:", logError);
+        // Don't fail the request if logging fails
+      }
+
+      res.json(data);
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      console.error("Error fetching prepack restocking recommendations:", error);
+
+      // Log the failed request
+      try {
+        await storage.logPrepackRecommendation({
+          userId: (req.user as any)?.claims?.sub || null,
+          requestLimit: parseInt(req.query.limit as string) || 50,
+          stylesFound: 0,
+          recommendationsGenerated: 0,
+          recommendations: [],
+          processingTimeMs: processingTime,
+          success: false,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      } catch (logError) {
+        console.error("Failed to log prepack recommendation error:", logError);
+      }
+
+      res.status(500).json({ error: "Failed to fetch prepack restocking recommendations" });
     }
   });
 
@@ -1240,6 +1320,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching ML settings log:", error);
       res.status(500).json({ error: "Failed to fetch ML settings log" });
+    }
+  });
+
+  app.get("/api/ml/prepack-logs", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const logs = await storage.getPrepackRecommendationLogs(limit);
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching prepack recommendation logs:", error);
+      res.status(500).json({ error: "Failed to fetch prepack recommendation logs" });
     }
   });
 
@@ -1826,6 +1917,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Inventory Settings endpoints - Centralized configuration
+  app.get("/api/inventory-settings", isAuthenticated, async (req, res) => {
+    try {
+      const settings = await storage.getInventorySettings();
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching inventory settings:", error);
+      res.status(500).json({ error: "Failed to fetch inventory settings" });
+    }
+  });
+
+  app.put("/api/inventory-settings", isAuthenticated, async (req, res) => {
+    try {
+      const userId = (req.user as any)?.claims?.sub;
+      const updated = await storage.updateInventorySettings(req.body, userId);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating inventory settings:", error);
+      res.status(500).json({ error: "Failed to update inventory settings" });
+    }
+  });
+
   // Receiving Metrics Settings endpoints (must be before :styleNumber)
   app.get("/api/receiving-metrics/settings", isAuthenticated, async (req, res) => {
     try {
@@ -1911,6 +2024,1110 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting metrics:", error);
       res.status(500).json({ error: "Failed to delete metrics" });
+    }
+  });
+
+  // ========================================
+  // VENDOR CONFIGURATION ROUTES (Phase 0)
+  // ========================================
+
+  // Auto-detect size type for a vendor
+  app.post("/api/vendor-configurations/:vendorName/detect-size-type", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName } = req.params;
+      const { detectSizeType } = await import("./lib/size-type-detection");
+
+      const result = await detectSizeType(vendorName);
+
+      // Optionally auto-update vendor configuration if confidence is high
+      const autoUpdate = req.query.autoUpdate === 'true';
+      if (autoUpdate && result.confidence >= 0.7) {
+        await storage.updateVendorConfiguration(vendorName, {
+          defaultSizeType: result.detectedType,
+          sizeTypeAutoDetected: true,
+          sizeTypeConfidence: result.confidence.toString(),
+        });
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error detecting size type:", error);
+      res.status(500).json({ error: "Failed to detect size type" });
+    }
+  });
+
+  // Get all vendor configurations with filters
+  app.get("/api/vendor-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+      const usesPrepacksParam = req.query.usesPrepacks as string;
+
+      let usesPrepacks: boolean | undefined;
+      if (usesPrepacksParam === 'true') usesPrepacks = true;
+      else if (usesPrepacksParam === 'false') usesPrepacks = false;
+
+      const result = await storage.getVendorConfigurations({
+        usesPrepacks,
+        limit,
+        offset
+      });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching vendor configurations:", error);
+      res.status(500).json({ error: "Failed to fetch vendor configurations" });
+    }
+  });
+
+  // Get vendor configuration by name
+  app.get("/api/vendor-configurations/:vendorName", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName } = req.params;
+      const vendor = await storage.getVendorConfiguration(vendorName);
+
+      if (!vendor) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+
+      res.json(vendor);
+    } catch (error) {
+      console.error("Error fetching vendor configuration:", error);
+      res.status(500).json({ error: "Failed to fetch vendor configuration" });
+    }
+  });
+
+  // Create vendor configuration
+  app.post("/api/vendor-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const vendorData = req.body;
+      const created = await storage.createVendorConfiguration(vendorData);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("Error creating vendor configuration:", error);
+      res.status(500).json({ error: "Failed to create vendor configuration" });
+    }
+  });
+
+  // Update vendor configuration
+  app.put("/api/vendor-configurations/:vendorName", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName } = req.params;
+      const updates = req.body;
+      const updated = await storage.updateVendorConfiguration(vendorName, updates);
+
+      if (!updated) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating vendor configuration:", error);
+      res.status(500).json({ error: "Failed to update vendor configuration" });
+    }
+  });
+
+  // Delete vendor configuration
+  app.delete("/api/vendor-configurations/:vendorName", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName } = req.params;
+      const deleted = await storage.deleteVendorConfiguration(vendorName);
+
+      if (!deleted) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+
+      res.json({ success: true, message: "Vendor configuration deleted" });
+    } catch (error) {
+      console.error("Error deleting vendor configuration:", error);
+      res.status(500).json({ error: "Failed to delete vendor configuration" });
+    }
+  });
+
+  // Bulk import vendors from CSV
+  app.post("/api/vendor-configurations/import/csv", isAuthenticated, async (req, res) => {
+    try {
+      const { vendors } = req.body;
+
+      if (!vendors || !Array.isArray(vendors)) {
+        return res.status(400).json({ error: "Invalid data format. Expected: { vendors: [...] }" });
+      }
+
+      let created = 0;
+      let updated = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < vendors.length; i++) {
+        const vendor = vendors[i];
+        try {
+          // Check if vendor exists
+          const existing = await storage.getVendorConfiguration(vendor.vendorName);
+
+          const vendorData = {
+            vendorName: vendor.vendorName,
+            usesPrepacks: vendor.usesPrepacks === true || vendor.usesPrepacks === 'true' || vendor.usesPrepacks === 'TRUE',
+            minOrderQty: vendor.minOrderQty ? parseInt(String(vendor.minOrderQty)) : null,
+            minOrderValue: vendor.minOrderValue ? String(vendor.minOrderValue) : null,
+            defaultSizeType: vendor.defaultSizeType || null,
+            sizeTypeAutoDetected: false,
+            notes: vendor.notes || null,
+          };
+
+          if (existing) {
+            await storage.updateVendorConfiguration(vendor.vendorName, vendorData);
+            updated++;
+          } else {
+            await storage.createVendorConfiguration(vendorData);
+            created++;
+          }
+        } catch (error) {
+          failed++;
+          const errorMessage = error instanceof Error ? error.message : "Unknown error";
+          errors.push(`Row ${i + 1} (${vendor.vendorName || 'unnamed'}): ${errorMessage}`);
+        }
+      }
+
+      res.json({
+        success: true,
+        created,
+        updated,
+        failed,
+        total: vendors.length,
+        errors: errors.slice(0, 10), // Return first 10 errors
+      });
+    } catch (error) {
+      console.error("CSV import error:", error);
+      res.status(500).json({ error: "Failed to import vendors" });
+    }
+  });
+
+  // ========================================
+  // STYLE CONFIGURATION ROUTES (Style-First Architecture)
+  // ========================================
+
+  // List all styles (optionally filtered by vendor)
+  app.get("/api/style-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const vendorName = req.query.vendorName as string | undefined;
+
+      const styles = await storage.listStyleConfigurations(vendorName);
+
+      res.json(styles);
+    } catch (error) {
+      console.error("Error fetching style configurations:", error);
+      res.status(500).json({ error: "Failed to fetch style configurations" });
+    }
+  });
+
+  // Get single style with all packs and distributions
+  app.get("/api/style-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid style ID" });
+      }
+
+      const style = await storage.getStyleConfiguration(id);
+
+      if (!style) {
+        return res.status(404).json({ error: "Style configuration not found" });
+      }
+
+      res.json(style);
+    } catch (error) {
+      console.error("Error fetching style configuration:", error);
+      res.status(500).json({ error: "Failed to fetch style configuration" });
+    }
+  });
+
+  // Create new style
+  app.post("/api/style-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const created = await storage.createStyleConfiguration(req.body);
+
+      res.status(201).json(created);
+    } catch (error: any) {
+      console.error("Error creating style configuration:", error);
+
+      if (error.code === "23505") {  // Unique constraint violation
+        return res.status(409).json({
+          error: "Style number already exists for this vendor"
+        });
+      }
+
+      if (error.code === "23503") {  // Foreign key violation
+        return res.status(404).json({
+          error: "Vendor not found"
+        });
+      }
+
+      res.status(500).json({ error: "Failed to create style configuration" });
+    }
+  });
+
+  // Update style
+  app.put("/api/style-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid style ID" });
+      }
+
+      const updated = await storage.updateStyleConfiguration(id, req.body);
+
+      if (!updated) {
+        return res.status(404).json({ error: "Style configuration not found" });
+      }
+
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Error updating style configuration:", error);
+
+      if (error.code === "23505") {
+        return res.status(409).json({
+          error: "Style number already exists for this vendor"
+        });
+      }
+
+      res.status(500).json({ error: "Failed to update style configuration" });
+    }
+  });
+
+  // Delete style (cascades to packs)
+  app.delete("/api/style-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid style ID" });
+      }
+
+      const deleted = await storage.deleteStyleConfiguration(id);
+
+      if (!deleted) {
+        return res.status(404).json({ error: "Style configuration not found" });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting style configuration:", error);
+      res.status(500).json({ error: "Failed to delete style configuration" });
+    }
+  });
+
+  // ========================================
+  // PREPACK CONFIGURATION ROUTES (Style-First Architecture)
+  // ========================================
+
+  // Get prepack configurations with filters
+  app.get("/api/prepack-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const vendorName = req.query.vendorName as string | undefined;
+      const styleNumber = req.query.styleNumber as string | undefined;
+      const styleConfigId = req.query.styleConfigId ? parseInt(req.query.styleConfigId as string) : undefined;
+
+      const prepacks = await storage.getPrepackConfigurations({
+        vendorName,
+        styleNumber,
+        styleConfigId
+      });
+      res.json(prepacks);
+    } catch (error) {
+      console.error("Error fetching prepack configurations:", error);
+      res.status(500).json({ error: "Failed to fetch prepack configurations" });
+    }
+  });
+
+  // Get prepack configuration by ID with distributions
+  app.get("/api/prepack-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid prepack ID" });
+      }
+
+      const result = await storage.getPrepackConfigurationWithDistributions(id);
+
+      if (!result) {
+        return res.status(404).json({ error: "Prepack configuration not found" });
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching prepack configuration:", error);
+      res.status(500).json({ error: "Failed to fetch prepack configuration" });
+    }
+  });
+
+  // Create prepack configuration with distributions
+  app.post("/api/prepack-configurations", isAuthenticated, async (req, res) => {
+    try {
+      const { prepack, distributions } = req.body;
+
+      if (!prepack || !distributions || !Array.isArray(distributions)) {
+        return res.status(400).json({ error: "Invalid request format. Expected: { prepack: {...}, distributions: [...] }" });
+      }
+
+      const created = await storage.createPrepackConfiguration(prepack, distributions);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("Error creating prepack configuration:", error);
+      res.status(500).json({ error: "Failed to create prepack configuration" });
+    }
+  });
+
+  // Update prepack configuration
+  app.put("/api/prepack-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid prepack ID" });
+      }
+
+      const { prepack, distributions } = req.body;
+
+      if (!prepack) {
+        return res.status(400).json({ error: "Prepack configuration is required" });
+      }
+
+      const updated = await storage.updatePrepackConfiguration(id, prepack, distributions);
+
+      if (!updated) {
+        return res.status(404).json({ error: "Prepack configuration not found" });
+      }
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating prepack configuration:", error);
+      res.status(500).json({ error: "Failed to update prepack configuration" });
+    }
+  });
+
+  // Delete prepack configuration
+  app.delete("/api/prepack-configurations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid prepack ID" });
+      }
+
+      const deleted = await storage.deletePrepackConfiguration(id);
+
+      if (!deleted) {
+        return res.status(404).json({ error: "Prepack configuration not found" });
+      }
+
+      res.json({ success: true, message: "Prepack configuration deleted" });
+    } catch (error) {
+      console.error("Error deleting prepack configuration:", error);
+      res.status(500).json({ error: "Failed to delete prepack configuration" });
+    }
+  });
+
+  // Calculate pack cost from inventory
+  app.post("/api/prepack-configurations/calculate-cost", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName, styleNumber, sizeDistributions } = req.body;
+
+      if (!vendorName || !styleNumber || !sizeDistributions || !Array.isArray(sizeDistributions)) {
+        return res.status(400).json({ error: "vendorName, styleNumber, and sizeDistributions are required" });
+      }
+
+      const result = await storage.calculatePackCost(vendorName, styleNumber, sizeDistributions);
+      res.json(result);
+    } catch (error) {
+      console.error("Error calculating pack cost:", error);
+      res.status(500).json({ error: "Failed to calculate pack cost" });
+    }
+  });
+
+  // ========================================
+  // PROFIT ANALYSIS API ENDPOINTS
+  // ========================================
+
+  // In-memory job tracker for recalculation progress
+  const recalculationJobs = new Map<string, {
+    status: 'processing' | 'completed' | 'error';
+    progress: number;
+    skus_processed: number;
+    total_skus: number;
+    opportunities_found?: number;
+    total_opportunity?: number;
+    error_message?: string;
+  }>();
+
+  // Get profit analysis summary stats
+  app.get("/api/profit-analysis/summary", isAuthenticated, async (req, res) => {
+    try {
+      const summary = await storage.getProfitAnalysisSummary();
+      res.json(summary);
+    } catch (error) {
+      console.error("Error fetching profit analysis summary:", error);
+      res.status(500).json({ error: "Failed to fetch profit analysis summary" });
+    }
+  });
+
+  // Get profit opportunities with filters
+  app.get("/api/profit-analysis/opportunities", isAuthenticated, async (req, res) => {
+    try {
+      const vendor = req.query.vendor as string | undefined;
+      const color = req.query.color as string | undefined;
+      const urgency = req.query.urgency as string | undefined;
+      const limit = parseInt(String(req.query.limit)) || 50;
+
+      const opportunities = await storage.getProfitOpportunities(vendor, color, urgency, limit);
+      res.json(opportunities);
+    } catch (error) {
+      console.error("Error fetching profit opportunities:", error);
+      res.status(500).json({ error: "Failed to fetch profit opportunities" });
+    }
+  });
+
+  // Start profit analysis recalculation
+  app.post("/api/profit-analysis/recalculate", isAuthenticated, async (req, res) => {
+    try {
+      const { force, scope } = req.body;
+
+      // Generate unique job ID
+      const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // Get total SKU count
+      const totalSkus = await storage.getActiveSkuCount();
+
+      // Initialize job status
+      recalculationJobs.set(jobId, {
+        status: 'processing',
+        progress: 0,
+        skus_processed: 0,
+        total_skus: totalSkus,
+      });
+
+      // Start background recalculation (non-blocking)
+      storage.recalculateProfitAnalysis(jobId, (progress) => {
+        // Update job status from storage callback
+        const job = recalculationJobs.get(jobId);
+        if (job) {
+          recalculationJobs.set(jobId, { ...job, ...progress });
+        }
+      }).catch((error) => {
+        console.error(`Recalculation job ${jobId} failed:`, error);
+        recalculationJobs.set(jobId, {
+          status: 'error',
+          progress: 0,
+          skus_processed: 0,
+          total_skus: totalSkus,
+          error_message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      });
+
+      res.json({
+        job_id: jobId,
+        total_skus: totalSkus,
+        message: 'Recalculation started'
+      });
+    } catch (error) {
+      console.error("Error starting recalculation:", error);
+      res.status(500).json({ error: "Failed to start recalculation" });
+    }
+  });
+
+  // Get recalculation job status
+  app.get("/api/profit-analysis/recalculate/status/:job_id", isAuthenticated, async (req, res) => {
+    try {
+      const jobId = req.params.job_id;
+      const jobStatus = recalculationJobs.get(jobId);
+
+      if (!jobStatus) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      res.json(jobStatus);
+    } catch (error) {
+      console.error("Error fetching recalculation status:", error);
+      res.status(500).json({ error: "Failed to fetch recalculation status" });
+    }
+  });
+
+  // ========================================
+  // WAREHOUSE DISTRIBUTION ENDPOINTS
+  // Network-level restocking with warehouse distribution
+  // ========================================
+
+  /**
+   * POST /api/warehouse/distribution-plan/generate
+   * Generate a distribution plan from ML recommendation
+   */
+  app.post("/api/warehouse/distribution-plan/generate", isAuthenticated, async (req, res) => {
+    try {
+      const {
+        styleNumber,
+        vendorName,
+        totalBoxes,
+        totalPieces,
+        totalCost,
+        orderDate,
+        expectedArrivalDate,
+        distributionDetails,
+        createdBy
+      } = req.body;
+
+      if (!styleNumber || !totalBoxes || !totalPieces || !distributionDetails) {
+        return res.status(400).json({
+          error: "Missing required fields: styleNumber, totalBoxes, totalPieces, distributionDetails"
+        });
+      }
+
+      const result = await storage.generateDistributionPlan({
+        styleNumber,
+        vendorName,
+        totalBoxes,
+        totalPieces,
+        totalCost,
+        orderDate: orderDate ? new Date(orderDate) : undefined,
+        expectedArrivalDate: expectedArrivalDate ? new Date(expectedArrivalDate) : undefined,
+        distributionDetails,
+        createdBy: createdBy || req.user?.id
+      });
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error generating distribution plan:", error);
+      res.status(500).json({ error: "Failed to generate distribution plan" });
+    }
+  });
+
+  /**
+   * GET /api/warehouse/distribution-plan/:planId
+   * Get a specific distribution plan by ID
+   */
+  app.get("/api/warehouse/distribution-plan/:planId", isAuthenticated, async (req, res) => {
+    try {
+      const { planId } = req.params;
+
+      const result = await storage.getDistributionPlan(planId);
+
+      if (!result) {
+        return res.status(404).json({ error: "Distribution plan not found" });
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching distribution plan:", error);
+      res.status(500).json({ error: "Failed to fetch distribution plan" });
+    }
+  });
+
+  /**
+   * GET /api/warehouse/distribution-plans
+   * Get all distribution plans with optional filters
+   */
+  app.get("/api/warehouse/distribution-plans", isAuthenticated, async (req, res) => {
+    try {
+      const { styleNumber, status, limit } = req.query;
+
+      const plans = await storage.getDistributionPlans({
+        styleNumber: styleNumber as string | undefined,
+        status: status as string | undefined,
+        limit: limit ? parseInt(limit as string) : undefined
+      });
+
+      res.json(plans);
+    } catch (error) {
+      console.error("Error fetching distribution plans:", error);
+      res.status(500).json({ error: "Failed to fetch distribution plans" });
+    }
+  });
+
+  /**
+   * PUT /api/warehouse/distribution-plan/:planId/status
+   * Update distribution plan status
+   */
+  app.put("/api/warehouse/distribution-plan/:planId/status", isAuthenticated, async (req, res) => {
+    try {
+      const { planId } = req.params;
+      const { status } = req.body;
+
+      if (!status) {
+        return res.status(400).json({ error: "Status is required" });
+      }
+
+      await storage.updateDistributionPlanStatus(planId, status);
+
+      res.json({ success: true, message: "Plan status updated" });
+    } catch (error) {
+      console.error("Error updating plan status:", error);
+      res.status(500).json({ error: "Failed to update plan status" });
+    }
+  });
+
+  /**
+   * POST /api/warehouse/distribution/:planId/distribute
+   * Mark SKU as distributed to a store
+   */
+  app.post("/api/warehouse/distribution/:planId/distribute", isAuthenticated, async (req, res) => {
+    try {
+      const { planId } = req.params;
+      const { sku, targetStore, status } = req.body;
+
+      if (!sku || !status) {
+        return res.status(400).json({ error: "SKU and status are required" });
+      }
+
+      await storage.markSkuDistributed({
+        planId,
+        sku,
+        targetStore,
+        status
+      });
+
+      res.json({ success: true, message: "SKU distribution status updated" });
+    } catch (error) {
+      console.error("Error marking SKU as distributed:", error);
+      res.status(500).json({ error: "Failed to mark SKU as distributed" });
+    }
+  });
+
+  // Endpoint to enrich prepack recommendations with distribution plans
+  // Helper function to calculate store-level distribution based on real data
+  async function calculateStoreLevelDistribution(styleNumber: string, db: any) {
+    const storeColumns = [
+      { code: 'HQ', name: 'HQ', column: 'hq_qty' },
+      { code: 'GM', name: 'GM', column: 'gm_qty' },
+      { code: 'HM', name: 'HM', column: 'hm_qty' },
+      { code: 'MM', name: 'MM', column: 'mm_qty' },
+      { code: 'NM', name: 'NM', column: 'nm_qty' },
+      { code: 'PM', name: 'PM', column: 'pm_qty' },
+      { code: 'LM', name: 'LA', column: 'lm_qty' },
+    ];
+
+    const results = [];
+
+    for (const store of storeColumns) {
+      // Get current inventory for this style at this store
+      const inventoryResult = await db.execute(sql`
+        SELECT SUM(${sql.identifier(store.column)}) as total_qty
+        FROM item_list
+        WHERE style_number = ${styleNumber}
+      `);
+      const currentInventory = parseInt(inventoryResult.rows[0]?.total_qty || '0');
+
+      // Get sales velocity (last 90 days)
+      const salesResult = await db.execute(sql`
+        SELECT COUNT(*) as sales_count
+        FROM sales_transactions st
+        INNER JOIN item_list il ON st.sku = il.item_number
+        WHERE il.style_number = ${styleNumber}
+          AND st.store = ${store.code}
+          AND st.date >= CURRENT_DATE - INTERVAL '90 days'
+      `);
+      const salesCount90d = parseInt(salesResult.rows[0]?.sales_count || '0');
+      const salesVelocity = salesCount90d / 90; // units per day
+
+      // Calculate days of supply
+      const daysOfSupply = salesVelocity > 0 ? currentInventory / salesVelocity : 999;
+
+      // Determine if store needs restocking
+      const needsRestock = daysOfSupply < 30 && salesVelocity > 0;
+
+      // Calculate demand weight (higher for stores with lower supply and higher velocity)
+      let demandWeight = 0;
+      if (needsRestock) {
+        // Weight based on urgency (inverse of days of supply) and velocity
+        const urgencyScore = Math.max(0, 30 - daysOfSupply) / 30; // 0-1, higher is more urgent
+        const velocityScore = Math.min(salesVelocity / 2, 1); // normalized velocity, capped at 1
+        demandWeight = urgencyScore * 0.6 + velocityScore * 0.4; // weighted combination
+      }
+
+      results.push({
+        storeCode: store.code,
+        storeName: store.name,
+        currentInventory,
+        salesVelocity,
+        daysOfSupply,
+        needsRestock,
+        demandWeight,
+      });
+    }
+
+    return results;
+  }
+
+  app.get("/api/inventory/prepack-restocking-with-distribution", isAuthenticated, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      let recommendations: any[] = [];
+      let mlServiceAvailable = true;
+      let fallbackUsed = false;
+
+      // Try fetching from ML service first
+      try {
+        const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+        const mlUrl = `${mlServiceUrl}/api/ml/prepack-batch-recommendations?limit=${limit}`;
+
+        console.log(`Attempting to fetch from ML service: ${mlUrl}`);
+
+        const response = await fetch(mlUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({}),
+          signal: AbortSignal.timeout(5000), // 5 second timeout
+        });
+
+        if (!response.ok) {
+          console.warn(`ML service returned ${response.status}, falling back to database`);
+          mlServiceAvailable = false;
+        } else {
+          const data = await response.json();
+          recommendations = data.recommendations || [];
+          console.log(`ML service success: ${recommendations.length} recommendations`);
+        }
+      } catch (mlError: any) {
+        console.warn(`ML service unavailable (${mlError.message}), falling back to database`);
+        mlServiceAvailable = false;
+      }
+
+      // Fallback: If ML service fails, return empty with warning message
+      if (!mlServiceAvailable) {
+        fallbackUsed = true;
+        console.log('Using fallback mode - ML service unavailable');
+        // Return empty recommendations with informative message
+        return res.json({
+          success: true,
+          count: 0,
+          recommendations: [],
+          warning: 'ML service unavailable - prepack recommendations temporarily disabled. Please try again later or check ML service status.',
+          mlServiceAvailable: false,
+          fallbackUsed: true,
+        });
+      }
+
+      // Generate distribution plans for each recommendation
+      const enrichedRecommendations = await Promise.all(
+        recommendations.map(async (rec: any) => {
+          try {
+            // Generate a distribution plan using real store-level analysis
+            const distributionDetails: any[] = [];
+
+            // Get real store-level metrics for this style
+            const storeMetrics = await calculateStoreLevelDistribution(rec.style_number, db);
+
+            rec.color_breakdown?.forEach((color: any) => {
+              const totalPieces = color.total_pieces;
+              let remainingPieces = totalPieces;
+
+              // Phase 1: Distribute based on stockout risk and sales velocity
+              const storeAllocations = storeMetrics
+                .filter(s => s.needsRestock) // Only stores that need inventory
+                .sort((a, b) => {
+                  // Prioritize by stockout risk (lowest days of supply first)
+                  if (a.daysOfSupply !== b.daysOfSupply) {
+                    return a.daysOfSupply - b.daysOfSupply;
+                  }
+                  // Then by sales velocity (higher velocity first)
+                  return b.salesVelocity - a.salesVelocity;
+                });
+
+              // Reserve 30-35% for warehouse, distribute rest to stores
+              const warehouseReservePercent = 0.32;
+              const storePieces = Math.floor(totalPieces * (1 - warehouseReservePercent));
+              let allocatedPieces = 0;
+
+              // Allocate based on weighted demand
+              const totalWeight = storeAllocations.reduce((sum, s) => sum + s.demandWeight, 0);
+
+              storeAllocations.forEach((store) => {
+                if (allocatedPieces >= storePieces) return;
+
+                // Calculate allocation based on demand weight
+                let allocation = Math.floor((store.demandWeight / totalWeight) * storePieces);
+
+                // Ensure at least minimum viable quantity for stores with urgent need
+                if (store.daysOfSupply < 7 && allocation < 2) {
+                  allocation = Math.min(2, storePieces - allocatedPieces);
+                }
+
+                if (allocation > 0) {
+                  distributionDetails.push({
+                    phase: 'initial',
+                    targetStore: store.storeCode,
+                    sku: `${rec.style_number}-${color.color}`,
+                    color: color.color,
+                    size: 'Assorted',
+                    quantity: allocation,
+                    priority: store.daysOfSupply < 7 ? 'CRITICAL' :
+                             store.daysOfSupply < 14 ? 'HIGH' :
+                             store.daysOfSupply < 21 ? 'MEDIUM' : 'LOW',
+                    rationale: `${store.storeName}: ${store.daysOfSupply.toFixed(1)} days of supply, ${store.salesVelocity.toFixed(2)} units/day velocity, ${store.currentInventory} current stock`
+                  });
+                  allocatedPieces += allocation;
+                }
+              });
+
+              // Phase 2: Warehouse reserve
+              const reservePieces = totalPieces - allocatedPieces;
+              if (reservePieces > 0) {
+                distributionDetails.push({
+                  phase: 'reserve',
+                  sku: `${rec.style_number}-${color.color}`,
+                  color: color.color,
+                  size: 'Assorted',
+                  quantity: reservePieces,
+                  rationale: `Warehouse reserve (${((reservePieces/totalPieces)*100).toFixed(1)}%) for flexible transfers based on emerging demand patterns`
+                });
+              }
+
+              remainingPieces -= allocatedPieces;
+            });
+
+            // Generate the distribution plan
+            const plan = await storage.generateDistributionPlan({
+              styleNumber: rec.style_number,
+              vendorName: rec.vendor_name,
+              totalBoxes: rec.total_boxes,
+              totalPieces: rec.color_breakdown?.reduce((sum: number, c: any) => sum + c.total_pieces, 0) || 0,
+              totalCost: rec.total_cost,
+              orderDate: new Date(),
+              expectedArrivalDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+              distributionDetails,
+              createdBy: (req.user as any)?.claims?.sub || 'system'
+            });
+
+            // Fetch the complete plan
+            const fullPlan = await storage.getDistributionPlan(plan.planId);
+
+            return {
+              ...rec,
+              distributionPlan: fullPlan
+            };
+          } catch (error) {
+            console.error(`Failed to generate distribution plan for ${rec.style_number}:`, error);
+            return rec; // Return recommendation without distribution plan if generation fails
+          }
+        })
+      );
+
+      res.json({
+        success: true,
+        count: enrichedRecommendations.length,
+        recommendations: enrichedRecommendations,
+        mlServiceAvailable: true,
+        fallbackUsed: false,
+      });
+    } catch (error) {
+      console.error("Error fetching prepack recommendations with distribution:", error);
+      res.status(500).json({ error: "Failed to fetch prepack recommendations with distribution" });
+    }
+  });
+
+  // Historical tracking dashboard - Distribution performance analytics
+  app.get("/api/warehouse/distribution-analytics", isAuthenticated, async (req, res) => {
+    try {
+      const daysBack = parseInt(req.query.days as string) || 90;
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - daysBack);
+
+      // 1. Overall distribution metrics
+      const overallMetrics = await db.execute(sql`
+        SELECT
+          COUNT(*)::int as total_plans,
+          COUNT(CASE WHEN status = 'completed' THEN 1 END)::int as completed_plans,
+          COUNT(CASE WHEN status = 'distributed' THEN 1 END)::int as distributed_plans,
+          COUNT(CASE WHEN status = 'received' THEN 1 END)::int as received_plans,
+          COUNT(CASE WHEN status = 'ordered' THEN 1 END)::int as ordered_plans,
+          COUNT(CASE WHEN status = 'pending' THEN 1 END)::int as pending_plans,
+          SUM(total_boxes)::int as total_boxes_ordered,
+          SUM(total_pieces)::int as total_pieces_ordered,
+          SUM(total_cost)::numeric as total_investment
+        FROM warehouse_distribution_plans
+        WHERE created_at >= ${startDate.toISOString()}
+      `);
+
+      const metrics = overallMetrics.rows[0];
+      const completionRate = metrics.total_plans > 0
+        ? ((metrics.completed_plans + metrics.distributed_plans) / metrics.total_plans * 100).toFixed(1)
+        : '0.0';
+
+      // 2. Average cycle times (time between status transitions)
+      const cycleTimeData = await db.execute(sql`
+        WITH status_transitions AS (
+          SELECT
+            plan_id,
+            order_date,
+            expected_arrival_date,
+            created_at,
+            status,
+            CASE
+              WHEN status IN ('received', 'distributed') THEN
+                EXTRACT(EPOCH FROM (expected_arrival_date - order_date)) / 86400
+              ELSE NULL
+            END as order_to_receive_days,
+            CASE
+              WHEN status = 'distributed' THEN
+                EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400
+              ELSE NULL
+            END as total_cycle_days
+          FROM warehouse_distribution_plans
+          WHERE created_at >= ${startDate.toISOString()}
+            AND order_date IS NOT NULL
+        )
+        SELECT
+          AVG(order_to_receive_days)::numeric as avg_order_to_receive_days,
+          AVG(total_cycle_days)::numeric as avg_total_cycle_days,
+          MIN(order_to_receive_days)::numeric as min_receive_time,
+          MAX(order_to_receive_days)::numeric as max_receive_time
+        FROM status_transitions
+        WHERE order_to_receive_days IS NOT NULL OR total_cycle_days IS NOT NULL
+      `);
+
+      const cycleTimes = cycleTimeData.rows[0];
+
+      // 3. Top performing styles (by completion rate)
+      const topStyles = await db.execute(sql`
+        SELECT
+          style_number,
+          vendor_name,
+          COUNT(*)::int as total_orders,
+          COUNT(CASE WHEN status IN ('distributed', 'completed') THEN 1 END)::int as completed_orders,
+          SUM(total_boxes)::int as total_boxes,
+          SUM(total_pieces)::int as total_pieces,
+          SUM(total_cost)::numeric as total_cost,
+          ROUND(COUNT(CASE WHEN status IN ('distributed', 'completed') THEN 1 END)::numeric / COUNT(*)::numeric * 100, 1) as completion_rate
+        FROM warehouse_distribution_plans
+        WHERE created_at >= ${startDate.toISOString()}
+        GROUP BY style_number, vendor_name
+        HAVING COUNT(*) >= 2
+        ORDER BY completion_rate DESC, total_orders DESC
+        LIMIT 10
+      `);
+
+      // 4. Distribution timeline (plans created over time)
+      const timeline = await db.execute(sql`
+        SELECT
+          DATE(created_at) as date,
+          COUNT(*)::int as plans_created,
+          SUM(total_boxes)::int as boxes_ordered,
+          SUM(total_cost)::numeric as investment,
+          COUNT(CASE WHEN status IN ('distributed', 'completed') THEN 1 END)::int as completed_count
+        FROM warehouse_distribution_plans
+        WHERE created_at >= ${startDate.toISOString()}
+        GROUP BY DATE(created_at)
+        ORDER BY date DESC
+        LIMIT 30
+      `);
+
+      // 5. Store-level distribution performance
+      const storePerformance = await db.execute(sql`
+        SELECT
+          target_store,
+          COUNT(DISTINCT plan_id)::int as plans_received,
+          SUM(quantity)::int as total_pieces_allocated,
+          COUNT(CASE WHEN status = 'distributed' THEN 1 END)::int as pieces_distributed,
+          ROUND(COUNT(CASE WHEN status = 'distributed' THEN 1 END)::numeric / COUNT(*)::numeric * 100, 1) as distribution_rate
+        FROM warehouse_distribution_details
+        WHERE created_at >= ${startDate.toISOString()}
+          AND target_store IS NOT NULL
+          AND distribution_phase = 'initial'
+        GROUP BY target_store
+        ORDER BY total_pieces_allocated DESC
+      `);
+
+      // 6. Recent distribution activity
+      const recentActivity = await db.execute(sql`
+        SELECT
+          p.plan_id,
+          p.style_number,
+          p.vendor_name,
+          p.total_boxes,
+          p.total_pieces,
+          p.total_cost,
+          p.status,
+          p.order_date,
+          p.expected_arrival_date,
+          p.created_at,
+          COUNT(d.id)::int as distribution_line_count,
+          COUNT(CASE WHEN d.status = 'distributed' THEN 1 END)::int as distributed_line_count
+        FROM warehouse_distribution_plans p
+        LEFT JOIN warehouse_distribution_details d ON p.plan_id = d.plan_id
+        WHERE p.created_at >= ${startDate.toISOString()}
+        GROUP BY p.plan_id, p.style_number, p.vendor_name, p.total_boxes, p.total_pieces, p.total_cost, p.status, p.order_date, p.expected_arrival_date, p.created_at
+        ORDER BY p.created_at DESC
+        LIMIT 20
+      `);
+
+      res.json({
+        success: true,
+        period: {
+          daysBack,
+          startDate: startDate.toISOString(),
+          endDate: new Date().toISOString(),
+        },
+        overall: {
+          totalPlans: metrics.total_plans,
+          completedPlans: metrics.completed_plans + metrics.distributed_plans,
+          pendingPlans: metrics.pending_plans + metrics.ordered_plans + metrics.received_plans,
+          completionRate: parseFloat(completionRate),
+          totalBoxes: metrics.total_boxes_ordered || 0,
+          totalPieces: metrics.total_pieces_ordered || 0,
+          totalInvestment: parseFloat(metrics.total_investment || '0'),
+          statusBreakdown: {
+            pending: metrics.pending_plans,
+            ordered: metrics.ordered_plans,
+            received: metrics.received_plans,
+            distributed: metrics.distributed_plans,
+            completed: metrics.completed_plans,
+          }
+        },
+        cycleTimes: {
+          avgOrderToReceive: parseFloat(cycleTimes.avg_order_to_receive_days || '0'),
+          avgTotalCycle: parseFloat(cycleTimes.avg_total_cycle_days || '0'),
+          minReceiveTime: parseFloat(cycleTimes.min_receive_time || '0'),
+          maxReceiveTime: parseFloat(cycleTimes.max_receive_time || '0'),
+        },
+        topStyles: topStyles.rows.map((row: any) => ({
+          styleNumber: row.style_number,
+          vendorName: row.vendor_name,
+          totalOrders: row.total_orders,
+          completedOrders: row.completed_orders,
+          totalBoxes: row.total_boxes,
+          totalPieces: row.total_pieces,
+          totalCost: parseFloat(row.total_cost || '0'),
+          completionRate: parseFloat(row.completion_rate || '0'),
+        })),
+        timeline: timeline.rows.map((row: any) => ({
+          date: row.date,
+          plansCreated: row.plans_created,
+          boxesOrdered: row.boxes_ordered || 0,
+          investment: parseFloat(row.investment || '0'),
+          completedCount: row.completed_count,
+        })),
+        storePerformance: storePerformance.rows.map((row: any) => ({
+          store: row.target_store,
+          plansReceived: row.plans_received,
+          piecesAllocated: row.total_pieces_allocated,
+          piecesDistributed: row.pieces_distributed,
+          distributionRate: parseFloat(row.distribution_rate || '0'),
+        })),
+        recentActivity: recentActivity.rows.map((row: any) => ({
+          planId: row.plan_id,
+          styleNumber: row.style_number,
+          vendorName: row.vendor_name,
+          totalBoxes: row.total_boxes,
+          totalPieces: row.total_pieces,
+          totalCost: parseFloat(row.total_cost || '0'),
+          status: row.status,
+          orderDate: row.order_date,
+          expectedArrival: row.expected_arrival_date,
+          createdAt: row.created_at,
+          distributionProgress: `${row.distributed_line_count}/${row.distribution_line_count}`,
+        })),
+      });
+    } catch (error) {
+      console.error("Error fetching distribution analytics:", error);
+      res.status(500).json({ error: "Failed to fetch distribution analytics" });
     }
   });
 

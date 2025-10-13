@@ -61,7 +61,6 @@ import {
   ChevronUp,
   Filter,
 } from "lucide-react";
-import { AppHeader } from "@/components/app-header";
 import { exportToExcel, exportMultipleSheetsToExcel, formatDataForExport } from "@/lib/excel-export";
 
 // Product Segmentation Interfaces
@@ -580,44 +579,31 @@ export default function GoogleMarketingPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppHeader />
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="text-center py-16">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-4 text-muted-foreground">
-              {useMLSegmentation ? 'Loading AI-powered segmentation...' : 'Loading product segmentation...'}
-            </p>
-          </div>
-        </main>
+      <div className="text-center py-16">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4 text-muted-foreground">
+          {useMLSegmentation ? 'Loading AI-powered segmentation...' : 'Loading product segmentation...'}
+        </p>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppHeader />
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <Card>
-            <CardContent className="py-16 text-center">
-              <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
-              <p className="text-destructive text-lg">Failed to load product segmentation</p>
-              <p className="text-muted-foreground mt-2">Please try refreshing the page</p>
-            </CardContent>
-          </Card>
-        </main>
-      </div>
+      <Card>
+        <CardContent className="py-16 text-center">
+          <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
+          <p className="text-destructive text-lg">Failed to load product segmentation</p>
+          <p className="text-muted-foreground mt-2">Please try refreshing the page</p>
+        </CardContent>
+      </Card>
     );
   }
 
   const { metadata, segments } = data;
 
   return (
-    <div className="min-h-screen bg-background">
-      <AppHeader />
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div>
         <div className="space-y-6">
           {/* Page Header */}
           <div className="flex items-center justify-between">
@@ -2036,7 +2022,6 @@ export default function GoogleMarketingPage() {
             </CardContent>
           </Card>
         </div>
-      </main>
     </div>
   );
 }

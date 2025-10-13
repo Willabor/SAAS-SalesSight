@@ -38,6 +38,7 @@ import {
   saveSettings,
   resetSettings as resetSettingsToDefaults,
 } from "@/lib/inventory-settings";
+import { NetworkLevelRestocking } from "@/components/NetworkLevelRestocking";
 
 // Style-level inventory metrics (PHASE 2 - Updated interfaces)
 interface StyleInventoryMetrics {
@@ -183,6 +184,53 @@ interface SaleRecommendation {
   priority: string;
 }
 
+// Phase 2: Prepack Recommendations (Color-Aware)
+interface PrepackColorBreakdown {
+  color: string;
+  pack_name: string;
+  boxes: number;
+  total_pieces: number;
+  cost_per_box: number;
+  total_cost: number;
+}
+
+interface PrepackRecommendation {
+  style_number: string;
+  item_name: string;
+  vendor_name: string;
+  days_of_supply: number;
+  avg_daily_sales: number;
+  recommendation: string;
+  total_boxes: number;
+  total_cost: number;
+  color_breakdown: PrepackColorBreakdown[];
+  urgency: string;
+  distributionPlan?: {
+    plan: {
+      planId: string;
+      styleNumber: string;
+      vendorName: string;
+      totalBoxes: number;
+      totalPieces: number;
+      totalCost: string;
+      status: string;
+      orderDate?: string;
+      expectedArrivalDate?: string;
+    };
+    details: Array<{
+      phase: 'initial' | 'reserve';
+      targetStore?: string;
+      sku: string;
+      color: string;
+      size: string;
+      quantity: number;
+      priority?: string;
+      rationale?: string;
+      status?: string;
+    }>;
+  };
+}
+
 export default function InventoryTurnoverDashboard() {
   const [settings, setSettings] = useState<InventorySettings>(() => loadSettings());
   const [showClassificationBreakdown, setShowClassificationBreakdown] = useState(false);
@@ -191,6 +239,7 @@ export default function InventoryTurnoverDashboard() {
   const [filterStockStatus, setFilterStockStatus] = useState<string>('all');
   const [excludeSeasonalHold, setExcludeSeasonalHold] = useState(true);
   const [useMLPredictions, setUseMLPredictions] = useState(false);
+  const [expandedPrepackRows, setExpandedPrepackRows] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -288,6 +337,24 @@ export default function InventoryTurnoverDashboard() {
       return response.json();
     },
   });
+
+  // Phase 2: Prepack Restocking Recommendations (Color-Aware) with Distribution Plans
+  const { data: prepackRecommendationsData, isLoading: prepackLoading } = useQuery<{
+    success: boolean;
+    count: number;
+    recommendations: PrepackRecommendation[];
+  }>({
+    queryKey: ["inventory", "prepack-restocking-with-distribution", 20],
+    queryFn: async () => {
+      const response = await fetch(`/api/inventory/prepack-restocking-with-distribution?limit=20`, {
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error("Failed to fetch prepack restocking recommendations");
+      return response.json();
+    },
+  });
+
+  const prepackRecommendations = prepackRecommendationsData?.recommendations || [];
 
   const formatCurrency = (value: string | number) => {
     const num = typeof value === 'string' ? parseFloat(value) : value;
@@ -507,6 +574,75 @@ export default function InventoryTurnoverDashboard() {
     });
 
     exportToExcel(exportData, 'sale-recommendations', 'Sale Recommendations');
+  };
+
+  const handleExportPrepackRecommendations = () => {
+    if (!prepackRecommendations || prepackRecommendations.length === 0) {
+      alert('No data to export');
+      return;
+    }
+
+    // Flatten the data: one row per color breakdown entry
+    const flattenedData = prepackRecommendations.flatMap(item => {
+      if (item.color_breakdown && item.color_breakdown.length > 0) {
+        return item.color_breakdown.map(color => ({
+          styleNumber: item.style_number,
+          itemName: item.item_name,
+          vendorName: item.vendor_name,
+          urgency: item.urgency,
+          daysOfSupply: item.days_of_supply.toFixed(1),
+          avgDailySales: item.avg_daily_sales.toFixed(2),
+          recommendation: item.recommendation,
+          color: color.color,
+          packName: color.pack_name,
+          boxes: color.boxes,
+          totalPieces: color.total_pieces,
+          costPerBox: color.cost_per_box,
+          colorTotalCost: color.total_cost,
+          styleTotalBoxes: item.total_boxes,
+          styleTotalCost: item.total_cost,
+        }));
+      } else {
+        // If no color breakdown, export one row with just the style info
+        return [{
+          styleNumber: item.style_number,
+          itemName: item.item_name,
+          vendorName: item.vendor_name,
+          urgency: item.urgency,
+          daysOfSupply: item.days_of_supply.toFixed(1),
+          avgDailySales: item.avg_daily_sales.toFixed(2),
+          recommendation: item.recommendation,
+          color: '',
+          packName: '',
+          boxes: '',
+          totalPieces: '',
+          costPerBox: '',
+          colorTotalCost: '',
+          styleTotalBoxes: item.total_boxes,
+          styleTotalCost: item.total_cost,
+        }];
+      }
+    });
+
+    const exportData = formatDataForExport(flattenedData, {
+      styleNumber: 'Style Number',
+      itemName: 'Item Name',
+      vendorName: 'Vendor',
+      urgency: 'Urgency',
+      daysOfSupply: 'Days of Supply',
+      avgDailySales: 'Avg Daily Sales',
+      color: 'Color',
+      packName: 'Pack Name',
+      boxes: 'Boxes to Order',
+      totalPieces: 'Total Pieces',
+      costPerBox: 'Cost per Box',
+      colorTotalCost: 'Color Total Cost',
+      styleTotalBoxes: 'Style Total Boxes',
+      styleTotalCost: 'Style Total Cost',
+      recommendation: 'Recommendation',
+    });
+
+    exportToExcel(exportData, 'prepack-restocking-recommendations', 'Prepack Recommendations');
   };
 
   const handleExportAll = () => {
@@ -1262,6 +1398,234 @@ export default function InventoryTurnoverDashboard() {
             </div>
           ) : (
             <p className="text-center text-muted-foreground py-8">No transfer opportunities found</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Prepack Restocking Recommendations (Phase 2 - Color-Aware) */}
+      <Card data-testid="card-prepack-restocking">
+        <CardHeader>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-2">
+              <Package className="w-5 h-5 text-purple-600 mt-1" />
+              <div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <CardTitle className="text-base sm:text-lg">Prepack Restocking Recommendations</CardTitle>
+                  <Badge variant="default" className="bg-purple-600 w-fit">
+                    🎨 Color-Aware
+                  </Badge>
+                </div>
+                <CardDescription className="mt-1">
+                  AI-powered prepack ordering for vendors with prepacked boxes (showing top 20)
+                </CardDescription>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">{prepackRecommendations.length} styles</Badge>
+              <Button
+                onClick={handleExportPrepackRecommendations}
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                data-testid="button-export-prepack-recommendations"
+              >
+                <Download className="w-3 h-3" />
+                <span className="hidden sm:inline">Export</span>
+                <span className="sm:hidden">Export</span>
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {prepackLoading ? (
+            <p className="text-center text-muted-foreground py-8">Loading prepack recommendations...</p>
+          ) : prepackRecommendations && prepackRecommendations.length > 0 ? (
+            <div className="space-y-4">
+              {prepackRecommendations.map((item, index) => {
+                const isExpanded = expandedPrepackRows.has(item.style_number);
+                const toggleRow = () => {
+                  const newExpanded = new Set(expandedPrepackRows);
+                  if (isExpanded) {
+                    newExpanded.delete(item.style_number);
+                  } else {
+                    newExpanded.add(item.style_number);
+                  }
+                  setExpandedPrepackRows(newExpanded);
+                };
+
+                return (
+                  <div key={`${item.style_number}-${index}`} className="border rounded-lg overflow-hidden">
+                    {/* Collapsed Row - Style Summary */}
+                    <div
+                      className="p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+                      onClick={toggleRow}
+                    >
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                          <div className="col-span-2 md:col-span-1">
+                            <p className="font-mono text-sm font-semibold">{item.style_number}</p>
+                            <p className="text-sm text-muted-foreground truncate max-w-[200px]">
+                              {item.item_name}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Vendor</p>
+                            <p className="text-sm font-medium truncate">{item.vendor_name}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Urgency</p>
+                            <Badge
+                              variant={
+                                item.urgency === 'Critical' ? 'destructive' :
+                                item.urgency === 'High' ? 'default' :
+                                'secondary'
+                              }
+                            >
+                              {item.urgency}
+                            </Badge>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Total Order</p>
+                            <p className="text-sm font-semibold">{item.total_boxes} boxes</p>
+                            <p className="text-xs text-muted-foreground">
+                              {item.color_breakdown.length} colors
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Total Cost</p>
+                            <p className="text-sm font-semibold text-green-600">
+                              {formatCurrency(item.total_cost)}
+                            </p>
+                          </div>
+                        </div>
+                        <Button variant="ghost" size="sm" className="self-start lg:self-auto">
+                          {isExpanded ? '▼ Hide Details' : '► Show Details'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Expanded Row - Color Breakdown */}
+                    {isExpanded && (
+                      <div className="border-t bg-muted/20 p-4">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          {/* Left Column: Prepack Order Breakdown */}
+                          <div>
+                            <h4 className="font-semibold mb-3 flex items-center gap-2">
+                              <Package className="w-4 h-4" />
+                              Prepack Order Breakdown
+                            </h4>
+                            <div className="space-y-2">
+                              {item.color_breakdown.map((color, colorIdx) => (
+                                <div
+                                  key={`${item.style_number}-${color.color}-${colorIdx}`}
+                                  className="p-3 bg-card rounded-md border"
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <Badge variant="outline" className="font-semibold">
+                                      {color.color}
+                                    </Badge>
+                                    <span className="text-sm text-muted-foreground">
+                                      {color.pack_name}
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-2 text-sm">
+                                    <div>
+                                      <p className="text-muted-foreground text-xs">Boxes</p>
+                                      <p className="font-semibold">{color.boxes}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground text-xs">Pieces</p>
+                                      <p className="font-semibold">{color.total_pieces}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground text-xs">Cost</p>
+                                      <p className="font-semibold text-green-600">
+                                        {formatCurrency(color.total_cost)}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-3 p-3 bg-card rounded-md border-2 border-primary/20">
+                              <p className="font-semibold mb-1">📦 Recommendation:</p>
+                              <p className="text-sm text-muted-foreground">{item.recommendation}</p>
+                            </div>
+                          </div>
+
+                          {/* Right Column: Supply Metrics */}
+                          <div>
+                            <h4 className="font-semibold mb-3 flex items-center gap-2">
+                              <BarChart3 className="w-4 h-4" />
+                              Supply Metrics
+                            </h4>
+                            <div className="space-y-3">
+                              <div className="p-3 bg-card rounded-md border">
+                                <p className="text-xs text-muted-foreground mb-1">Days of Supply</p>
+                                <p className="text-2xl font-bold text-red-600">
+                                  {item.days_of_supply.toFixed(1)} days
+                                </p>
+                              </div>
+                              <div className="p-3 bg-card rounded-md border">
+                                <p className="text-xs text-muted-foreground mb-1">Average Daily Sales</p>
+                                <p className="text-2xl font-bold text-blue-600">
+                                  {item.avg_daily_sales.toFixed(2)} units/day
+                                </p>
+                              </div>
+                              <div className="p-3 bg-card rounded-md border">
+                                <p className="text-xs text-muted-foreground mb-1">Total Investment</p>
+                                <p className="text-2xl font-bold text-green-600">
+                                  {formatCurrency(item.total_cost)}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {item.total_boxes} boxes • Average {formatCurrency(item.total_cost / item.total_boxes)}/box
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Network Level Distribution Plan */}
+                        <div className="mt-6 border-t pt-6">
+                          <NetworkLevelRestocking
+                            styleNumber={item.style_number}
+                            vendorName={item.vendor_name}
+                            mlRecommendation={{
+                              styleNumber: item.style_number,
+                              vendorName: item.vendor_name,
+                              recommendations: item.color_breakdown.map(color => ({
+                                packName: color.pack_name,
+                                color: color.color,
+                                boxes: color.boxes,
+                                pieces: color.total_pieces / color.boxes,
+                                cost: color.cost_per_box,
+                                totalCost: color.total_cost
+                              }))
+                            }}
+                            distributionPlan={item.distributionPlan ? {
+                              planId: item.distributionPlan.plan.planId,
+                              styleNumber: item.distributionPlan.plan.styleNumber,
+                              vendorName: item.distributionPlan.plan.vendorName,
+                              totalBoxes: item.distributionPlan.plan.totalBoxes,
+                              totalPieces: item.distributionPlan.plan.totalPieces,
+                              totalCost: parseFloat(item.distributionPlan.plan.totalCost),
+                              status: item.distributionPlan.plan.status,
+                              orderDate: item.distributionPlan.plan.orderDate,
+                              expectedArrivalDate: item.distributionPlan.plan.expectedArrivalDate,
+                              details: item.distributionPlan.details
+                            } : undefined}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-center text-muted-foreground py-8">
+              No prepack restocking needed at this time
+            </p>
           )}
         </CardContent>
       </Card>

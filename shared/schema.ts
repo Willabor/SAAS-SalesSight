@@ -370,6 +370,69 @@ export const insertReceivingMetricsSettingsSchema = createInsertSchema(receiving
   updatedAt: true,
 });
 
+// ========================================
+// VENDOR PREPACK CONFIGURATION SYSTEM
+// Phase 0: Foundation for prepack optimization
+// ========================================
+
+// Vendor Configurations - Store vendor-level settings
+export const vendorConfigurations = pgTable("vendor_configurations", {
+  id: serial("id").primaryKey(),
+  vendorName: text("vendor_name").notNull().unique(), // Must match vendorName in itemList
+  usesPrepacks: boolean("uses_prepacks").default(false), // true = prepack vendor, false = open stock
+  minOrderQty: integer("min_order_qty"), // Minimum order quantity if applicable
+  minOrderValue: numeric("min_order_value"), // Minimum order value ($)
+  defaultSizeType: text("default_size_type"), // jeans, apparel, shoes, numeric, onesize
+  sizeTypeAutoDetected: boolean("size_type_auto_detected").default(true),
+  sizeTypeConfidence: numeric("size_type_confidence"), // 0.0-1.0
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Style Configurations - Group packs by vendor style (NEW: Style-First Architecture)
+export const styleConfigurations = pgTable("style_configurations", {
+  id: serial("id").primaryKey(),
+  vendorName: text("vendor_name").notNull(), // References vendor_configurations.vendor_name
+  styleNumber: text("style_number").notNull(), // REQUIRED: Style number (e.g., "8501B")
+  sizeType: text("size_type").notNull(), // jeans, apparel, shoes, numeric, onesize
+  defaultColors: jsonb("default_colors").$type<string[]>(), // Default colors suggested for new packs
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  unique().on(table.vendorName, table.styleNumber), // One style per vendor
+  index("idx_style_vendor").on(table.vendorName),
+  index("idx_style_number").on(table.styleNumber),
+]);
+
+// Prepack Configurations - Define prepack boxes for each style (MODIFIED: Style-First Architecture)
+export const prepackConfigurations = pgTable("prepack_configurations", {
+  id: serial("id").primaryKey(),
+  styleConfigId: integer("style_config_id").notNull().references(() => styleConfigurations.id, { onDelete: 'cascade' }),
+  prepackName: text("prepack_name").notNull(), // "Pack A", "Pack B", "Pack E", etc.
+  piecesPerBox: integer("pieces_per_box").notNull(), // Total pieces in the box
+  costPerBox: numeric("cost_per_box"), // Cost to purchase one box
+  availableColors: jsonb("available_colors").$type<string[]>(), // Actual colors for THIS pack (can differ from style defaults)
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  unique().on(table.styleConfigId, table.prepackName), // One pack name per style
+  index("idx_prepack_style").on(table.styleConfigId),
+]);
+
+// Prepack Size Distributions - Define the size breakdown within each prepack
+export const prepackSizeDistributions = pgTable("prepack_size_distributions", {
+  id: serial("id").primaryKey(),
+  prepackConfigId: integer("prepack_config_id").notNull().references(() => prepackConfigurations.id, { onDelete: 'cascade' }),
+  sizeValue: text("size_value").notNull(), // "30W×32L", "S", "8.5", etc.
+  quantity: integer("quantity").notNull(), // Number of pieces of this size in the box
+  percentage: numeric("percentage"), // Calculated: (quantity / pieces_per_box) * 100
+}, (table) => [
+  index("idx_prepack_config").on(table.prepackConfigId),
+]);
+
 export type ReceivingVoucher = typeof receivingVouchers.$inferSelect;
 export type InsertReceivingVoucher = z.infer<typeof insertReceivingVoucherSchema>;
 export type ReceivingLine = typeof receivingLines.$inferSelect;
@@ -386,3 +449,376 @@ export type ItemReceivingMetrics = typeof itemReceivingMetrics.$inferSelect;
 export type InsertItemReceivingMetrics = z.infer<typeof insertItemReceivingMetricsSchema>;
 export type ReceivingMetricsSettings = typeof receivingMetricsSettings.$inferSelect;
 export type InsertReceivingMetricsSettings = z.infer<typeof insertReceivingMetricsSettingsSchema>;
+
+// Vendor Prepack Configuration insert schemas and types
+export const insertVendorConfigurationSchema = createInsertSchema(vendorConfigurations).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertStyleConfigurationSchema = createInsertSchema(styleConfigurations, {
+  vendorName: z.string().min(1, "Vendor name is required"),
+  styleNumber: z.string().min(1, "Style number is required"),
+  sizeType: z.enum(["jeans", "apparel", "shoes", "numeric", "onesize"]),
+  defaultColors: z.array(z.string()).nullable().optional(),
+  description: z.string().nullable().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertPrepackConfigurationSchema = createInsertSchema(prepackConfigurations, {
+  styleConfigId: z.number().int().positive("Style configuration ID is required"),
+  prepackName: z.string().min(1, "Pack name is required"),
+  piecesPerBox: z.number().int().positive("Pieces per box must be positive"),
+  costPerBox: z.string().regex(/^\d+(\.\d{1,2})?$/).nullable().optional(),
+  availableColors: z.array(z.string()).nullable().optional(),
+  description: z.string().nullable().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertPrepackSizeDistributionSchema = createInsertSchema(prepackSizeDistributions, {
+  prepackConfigId: z.number().int().positive(),
+  sizeValue: z.string().min(1),
+  quantity: z.number().int().positive(),
+  percentage: z.string().regex(/^\d+(\.\d{1,2})?$/).nullable().optional(),
+}).omit({
+  id: true,
+});
+
+export type VendorConfiguration = typeof vendorConfigurations.$inferSelect;
+export type InsertVendorConfiguration = z.infer<typeof insertVendorConfigurationSchema>;
+export type StyleConfiguration = typeof styleConfigurations.$inferSelect;
+export type InsertStyleConfiguration = z.infer<typeof insertStyleConfigurationSchema>;
+export type PrepackConfiguration = typeof prepackConfigurations.$inferSelect;
+export type InsertPrepackConfiguration = z.infer<typeof insertPrepackConfigurationSchema>;
+export type PrepackSizeDistribution = typeof prepackSizeDistributions.$inferSelect;
+export type InsertPrepackSizeDistribution = z.infer<typeof insertPrepackSizeDistributionSchema>;
+
+// Combined types for API responses
+export type PrepackWithDistributions = PrepackConfiguration & {
+  distributions: PrepackSizeDistribution[];
+};
+
+export type StyleWithPacks = StyleConfiguration & {
+  packs: PrepackWithDistributions[];
+};
+
+// Prepack Recommendation Log - Track every time recommendations are generated
+export const prepackRecommendationLog = pgTable("prepack_recommendation_log", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").references(() => users.id),
+  requestLimit: integer("request_limit").default(20),
+  stylesFound: integer("styles_found").default(0), // Number of styles needing restock
+  recommendationsGenerated: integer("recommendations_generated").default(0), // Number with valid recommendations
+  recommendations: jsonb("recommendations").$type<any[]>(), // Full recommendation data
+  processingTimeMs: integer("processing_time_ms"),
+  success: boolean("success").default(true),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_prepack_log_user").on(table.userId),
+  index("idx_prepack_log_created").on(table.createdAt),
+]);
+
+export const insertPrepackRecommendationLogSchema = createInsertSchema(prepackRecommendationLog).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type PrepackRecommendationLog = typeof prepackRecommendationLog.$inferSelect;
+export type InsertPrepackRecommendationLog = z.infer<typeof insertPrepackRecommendationLogSchema>;
+
+// Inventory Settings - Centralized configuration for inventory analysis periods
+export const inventorySettings = pgTable("inventory_settings", {
+  id: serial("id").primaryKey(),
+  salesAnalysisPeriodDays: integer("sales_analysis_period_days").notNull().default(90),
+  restockUrgencyThresholdDays: integer("restock_urgency_threshold_days").notNull().default(21),
+  overstockThresholdDays: integer("overstock_threshold_days").notNull().default(90),
+  understockThresholdDays: integer("understock_threshold_days").notNull().default(7),
+  transferMinStockLevel: integer("transfer_min_stock_level").notNull().default(5),
+  transferTargetDaysSupply: integer("transfer_target_days_supply").notNull().default(14),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  createdBy: varchar("created_by", { length: 100 }),
+  updatedBy: varchar("updated_by", { length: 100 }),
+});
+
+export const insertInventorySettingsSchema = createInsertSchema(inventorySettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateInventorySettingsSchema = createInsertSchema(inventorySettings).omit({
+  id: true,
+  createdAt: true,
+  createdBy: true,
+}).partial();
+
+export type InventorySettings = typeof inventorySettings.$inferSelect;
+export type InsertInventorySettings = z.infer<typeof insertInventorySettingsSchema>;
+export type UpdateInventorySettings = z.infer<typeof updateInventorySettingsSchema>;
+
+// ========================================
+// PROFIT-BASED OPTIMIZER SYSTEM
+// Financial data and profit analysis tables
+// ========================================
+
+// SKU Financial Data - Core pricing and velocity metrics per SKU
+export const skuFinancialData = pgTable("sku_financial_data", {
+  id: serial("id").primaryKey(),
+  sku: varchar("sku", { length: 50 }).notNull().unique(),
+  styleNumber: varchar("style_number", { length: 50 }),
+  vendorName: varchar("vendor_name", { length: 100 }),
+  color: varchar("color", { length: 50 }),
+  size: varchar("size", { length: 20 }),
+  inseam: varchar("inseam", { length: 10 }),
+
+  // Financial metrics
+  avgSellingPrice: numeric("avg_selling_price"), // From sales_transactions
+  unitCost: numeric("unit_cost"), // From vendor_pricing
+  profitPerUnit: numeric("profit_per_unit"), // price - cost
+  marginPct: numeric("margin_pct"), // (price-cost)/price * 100
+
+  // Velocity metrics (sales per day)
+  velocity30d: numeric("velocity_30d"), // Last 30 days
+  velocity90d: numeric("velocity_90d"), // Last 90 days
+  velocity365d: numeric("velocity_365d"), // Last 365 days
+  velocityAlltime: numeric("velocity_alltime"), // All time average
+
+  // Current state
+  currentInventory: integer("current_inventory").default(0),
+  daysOfSupply: numeric("days_of_supply"), // current_inventory / velocity
+
+  // Metadata
+  lastUpdated: timestamp("last_updated").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_sku_financial_sku").on(table.sku),
+  index("idx_sku_financial_style").on(table.styleNumber),
+  index("idx_sku_financial_vendor").on(table.vendorName),
+  index("idx_sku_financial_updated").on(table.lastUpdated),
+]);
+
+// Vendor Pricing - Unit costs by vendor and style
+export const vendorPricing = pgTable("vendor_pricing", {
+  id: serial("id").primaryKey(),
+  vendorName: varchar("vendor_name", { length: 100 }).notNull(),
+  styleNumber: varchar("style_number", { length: 50 }).notNull(),
+  unitCost: numeric("unit_cost").notNull(),
+  effectiveDate: date("effective_date").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique().on(table.vendorName, table.styleNumber, table.effectiveDate),
+  index("idx_vendor_pricing_vendor").on(table.vendorName),
+  index("idx_vendor_pricing_style").on(table.styleNumber),
+  index("idx_vendor_pricing_date").on(table.effectiveDate),
+]);
+
+// SKU Profit Analysis - Pre-calculated profit opportunities (daily snapshots)
+export const skuProfitAnalysis = pgTable("sku_profit_analysis", {
+  id: serial("id").primaryKey(),
+
+  // Identity
+  sku: varchar("sku", { length: 50 }).notNull(),
+  styleNumber: varchar("style_number", { length: 50 }).notNull(),
+  vendorName: varchar("vendor_name", { length: 100 }).notNull(),
+  color: varchar("color", { length: 50 }).notNull(),
+  size: varchar("size", { length: 20 }).notNull(),
+  inseam: varchar("inseam", { length: 10 }),
+
+  // Snapshot timestamp
+  analysisDate: date("analysis_date").notNull(),
+  analysisTimestamp: timestamp("analysis_timestamp").defaultNow(),
+
+  // Current inventory state
+  currentInventory: integer("current_inventory"),
+  daysOfSupply: numeric("days_of_supply"),
+
+  // Velocity metrics
+  velocity30d: numeric("velocity_30d"),
+  velocity90d: numeric("velocity_90d"),
+  velocity365d: numeric("velocity_365d"),
+  velocityTrend: varchar("velocity_trend", { length: 20 }), // INCREASING/STABLE/DECREASING
+
+  // Financial metrics
+  sellingPrice: numeric("selling_price"),
+  unitCost: numeric("unit_cost"),
+  profitPerUnit: numeric("profit_per_unit"),
+  marginPct: numeric("margin_pct"),
+
+  // Profit opportunity analysis
+  shortageUnits: integer("shortage_units"),
+  profitOpportunity: numeric("profit_opportunity"), // shortage × profit_per_unit
+  lostRevenuePerDay: numeric("lost_revenue_per_day"),
+  cumulativeOpportunity: numeric("cumulative_opportunity"), // 30-day projection
+
+  // Prepack recommendation (if applicable)
+  recommendedAction: varchar("recommended_action", { length: 50 }), // ORDER/MONITOR/HEALTHY/NO_PREPACK
+  recommendedBoxes: integer("recommended_boxes"),
+  recommendedPrepackName: varchar("recommended_prepack_name", { length: 50 }),
+  recommendedColor: varchar("recommended_color", { length: 50 }),
+
+  // Profit prediction
+  predictedNetProfit: numeric("predicted_net_profit"),
+  predictedRevenue: numeric("predicted_revenue"),
+  predictedHoldingCost: numeric("predicted_holding_cost"),
+  predictedOpportunityCost: numeric("predicted_opportunity_cost"),
+  predictedRoi: numeric("predicted_roi"),
+  profitabilityTier: varchar("profitability_tier", { length: 20 }), // EXCELLENT/GOOD/MARGINAL/UNPROFITABLE
+
+  // Urgency & risk
+  urgencyLevel: varchar("urgency_level", { length: 20 }), // CRITICAL/LOW/MONITOR/GOOD/HEALTHY
+  daysUntilStockout: integer("days_until_stockout"),
+  stockoutRiskScore: numeric("stockout_risk_score"), // 0-100
+
+  // Actual outcomes (populated later for validation)
+  actualNetProfit: numeric("actual_net_profit"),
+  actualRevenue: numeric("actual_revenue"),
+  predictionError: numeric("prediction_error"),
+  predictionAccuracyPct: numeric("prediction_accuracy_pct"),
+
+  // Tracking
+  isCurrent: boolean("is_current").default(true),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  unique().on(table.sku, table.analysisDate),
+  index("idx_profit_analysis_date").on(table.analysisDate),
+  index("idx_profit_analysis_current").on(table.isCurrent),
+  index("idx_profit_analysis_style").on(table.styleNumber, table.color),
+  index("idx_profit_analysis_vendor").on(table.vendorName),
+  index("idx_profit_analysis_opportunity").on(table.profitOpportunity),
+  index("idx_profit_analysis_urgency").on(table.urgencyLevel, table.profitOpportunity),
+  index("idx_profit_analysis_current_opportunities").on(table.isCurrent, table.profitOpportunity),
+  index("idx_profit_analysis_current_urgency").on(table.isCurrent, table.urgencyLevel),
+]);
+
+// Insert schemas for profit analysis tables
+export const insertSkuFinancialDataSchema = createInsertSchema(skuFinancialData).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertVendorPricingSchema = createInsertSchema(vendorPricing).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertSkuProfitAnalysisSchema = createInsertSchema(skuProfitAnalysis).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Types for profit analysis tables
+export type SkuFinancialData = typeof skuFinancialData.$inferSelect;
+export type InsertSkuFinancialData = z.infer<typeof insertSkuFinancialDataSchema>;
+export type VendorPricing = typeof vendorPricing.$inferSelect;
+export type InsertVendorPricing = z.infer<typeof insertVendorPricingSchema>;
+export type SkuProfitAnalysis = typeof skuProfitAnalysis.$inferSelect;
+export type InsertSkuProfitAnalysis = z.infer<typeof insertSkuProfitAnalysisSchema>;
+
+// ========================================
+// WAREHOUSE DISTRIBUTION SYSTEM
+// Network-level restocking with warehouse distribution
+// ========================================
+
+// Warehouse Inventory - Track inventory at warehouse/HQ
+export const warehouseInventory = pgTable("warehouse_inventory", {
+  id: serial("id").primaryKey(),
+  sku: varchar("sku", { length: 50 }).notNull(),
+  styleNumber: varchar("style_number", { length: 100 }),
+  color: varchar("color", { length: 100 }),
+  size: varchar("size", { length: 50 }),
+  inseam: varchar("inseam", { length: 50 }),
+  quantity: integer("quantity").notNull().default(0),
+  source: varchar("source", { length: 50 }), // 'prepack_receipt', 'store_return', 'transfer'
+  receivedDate: date("received_date"),
+  availableDate: date("available_date"),
+  allocatedToStore: varchar("allocated_to_store", { length: 50 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_warehouse_inv_sku").on(table.sku),
+  index("idx_warehouse_inv_style").on(table.styleNumber),
+  index("idx_warehouse_inv_color").on(table.color),
+  index("idx_warehouse_inv_source").on(table.source),
+]);
+
+// Warehouse Distribution Plans - Network-level distribution plans
+export const warehouseDistributionPlans = pgTable("warehouse_distribution_plans", {
+  id: serial("id").primaryKey(),
+  planId: varchar("plan_id", { length: 100 }).notNull().unique(),
+  styleNumber: varchar("style_number", { length: 100 }).notNull(),
+  vendorName: varchar("vendor_name", { length: 255 }),
+  totalBoxes: integer("total_boxes").notNull(),
+  totalPieces: integer("total_pieces").notNull(),
+  totalCost: numeric("total_cost"),
+  orderDate: date("order_date"),
+  expectedArrivalDate: date("expected_arrival_date"),
+  status: varchar("status", { length: 50 }).default('pending'), // pending, ordered, received, distributed
+  createdBy: varchar("created_by", { length: 255 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_dist_plan_style").on(table.styleNumber),
+  index("idx_dist_plan_status").on(table.status),
+  index("idx_dist_plan_created").on(table.createdAt),
+]);
+
+// Warehouse Distribution Details - Breakdown of distribution by store/SKU
+export const warehouseDistributionDetails = pgTable("warehouse_distribution_details", {
+  id: serial("id").primaryKey(),
+  planId: varchar("plan_id", { length: 100 }).notNull(),
+  distributionPhase: varchar("distribution_phase", { length: 50 }), // 'initial', 'reserve'
+  targetStore: varchar("target_store", { length: 50 }),
+  sku: varchar("sku", { length: 50 }),
+  color: varchar("color", { length: 100 }),
+  size: varchar("size", { length: 50 }),
+  quantity: integer("quantity").notNull(),
+  priority: varchar("priority", { length: 50 }), // 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'
+  rationale: text("rationale"),
+  status: varchar("status", { length: 50 }).default('planned'), // planned, distributed, completed
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_dist_detail_plan").on(table.planId),
+  index("idx_dist_detail_store").on(table.targetStore),
+  index("idx_dist_detail_sku").on(table.sku),
+  index("idx_dist_detail_phase").on(table.distributionPhase),
+]);
+
+// Insert schemas for warehouse distribution tables
+export const insertWarehouseInventorySchema = createInsertSchema(warehouseInventory).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertWarehouseDistributionPlanSchema = createInsertSchema(warehouseDistributionPlans).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertWarehouseDistributionDetailSchema = createInsertSchema(warehouseDistributionDetails).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Types for warehouse distribution tables
+export type WarehouseInventory = typeof warehouseInventory.$inferSelect;
+export type InsertWarehouseInventory = z.infer<typeof insertWarehouseInventorySchema>;
+export type WarehouseDistributionPlan = typeof warehouseDistributionPlans.$inferSelect;
+export type InsertWarehouseDistributionPlan = z.infer<typeof insertWarehouseDistributionPlanSchema>;
+export type WarehouseDistributionDetail = typeof warehouseDistributionDetails.$inferSelect;
+export type InsertWarehouseDistributionDetail = z.infer<typeof insertWarehouseDistributionDetailSchema>;

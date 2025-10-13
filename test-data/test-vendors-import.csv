@@ -1,0 +1,5 @@
+vendorName,usesPrepacks,minOrderQty,minOrderValue,defaultSizeType,notes
+"Test Vendor Alpha",true,12,300.00,jeans,"Test vendor for jeans"
+"Test Vendor Beta",false,,,apparel,"Open stock apparel vendor"
+"Test Vendor Gamma",true,24,500.00,shoes,"Footwear prepack vendor"
+"Test Vendor Delta",true,6,150.00,numeric,"Small quantity vendor"

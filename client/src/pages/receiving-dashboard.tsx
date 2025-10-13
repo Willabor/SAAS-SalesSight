@@ -15,6 +15,7 @@ import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Cart
 import { TrendingUp, TrendingDown, Package, DollarSign, AlertTriangle, Download, ArrowLeft, RefreshCw, Loader2, Search, ArrowUpDown, ArrowUp, ArrowDown, X, Calendar as CalendarIcon, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { Link } from "wouter";
 import { format, subDays, startOfYear } from "date-fns";
+import { AppHeader } from "@/components/app-header";
 
 type SortDirection = 'asc' | 'desc' | null;
 
@@ -248,20 +249,23 @@ export default function ReceivingDashboard() {
   // Error state - AFTER all hooks
   if (error) {
     return (
-      <div className="container mx-auto p-6">
-        <Card className="p-12">
-          <div className="text-center">
-            <AlertTriangle className="w-16 h-16 mx-auto text-destructive mb-4" />
-            <h3 className="text-2xl font-semibold mb-2">Error Loading Dashboard</h3>
-            <p className="text-muted-foreground mb-6">
-              {error instanceof Error ? error.message : 'Failed to fetch dashboard data'}
-            </p>
-            <Button onClick={() => refetch()}>
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Try Again
-            </Button>
-          </div>
-        </Card>
+      <div className="min-h-screen bg-background">
+        <AppHeader />
+        <main className="container mx-auto p-6">
+          <Card className="p-12">
+            <div className="text-center">
+              <AlertTriangle className="w-16 h-16 mx-auto text-destructive mb-4" />
+              <h3 className="text-2xl font-semibold mb-2">Error Loading Dashboard</h3>
+              <p className="text-muted-foreground mb-6">
+                {error instanceof Error ? error.message : 'Failed to fetch dashboard data'}
+              </p>
+              <Button onClick={() => refetch()}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Try Again
+              </Button>
+            </div>
+          </Card>
+        </main>
       </div>
     );
   }
@@ -269,56 +273,59 @@ export default function ReceivingDashboard() {
   // Loading state - AFTER all hooks
   if (isLoading) {
     return (
-      <div className="container mx-auto p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="space-y-2">
-            <div className="h-10 w-64 bg-muted animate-pulse rounded" />
-            <div className="h-4 w-48 bg-muted animate-pulse rounded" />
-          </div>
-          <div className="h-10 w-28 bg-muted animate-pulse rounded" />
-        </div>
-
-        {/* Filter skeleton */}
-        <Card>
-          <CardHeader>
-            <div className="h-6 w-24 bg-muted animate-pulse rounded" />
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="space-y-2">
-                  <div className="h-4 w-20 bg-muted animate-pulse rounded" />
-                  <div className="h-10 w-full bg-muted animate-pulse rounded" />
-                </div>
-              ))}
+      <div className="min-h-screen bg-background">
+        <AppHeader />
+        <main className="container mx-auto p-6 space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="space-y-2">
+              <div className="h-10 w-64 bg-muted animate-pulse rounded" />
+              <div className="h-4 w-48 bg-muted animate-pulse rounded" />
             </div>
-          </CardContent>
-        </Card>
+            <div className="h-10 w-28 bg-muted animate-pulse rounded" />
+          </div>
 
-        {/* Metrics skeleton */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <Card key={i}>
-              <CardHeader className="pb-2">
-                <div className="h-4 w-32 bg-muted animate-pulse rounded" />
-              </CardHeader>
-              <CardContent>
-                <div className="h-8 w-24 bg-muted animate-pulse rounded mb-2" />
-                <div className="h-3 w-36 bg-muted animate-pulse rounded" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+          {/* Filter skeleton */}
+          <Card>
+            <CardHeader>
+              <div className="h-6 w-24 bg-muted animate-pulse rounded" />
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <div className="h-4 w-20 bg-muted animate-pulse rounded" />
+                    <div className="h-10 w-full bg-muted animate-pulse rounded" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
 
-        {/* Chart skeleton */}
-        <Card>
-          <CardHeader>
-            <div className="h-6 w-48 bg-muted animate-pulse rounded" />
-          </CardHeader>
-          <CardContent>
-            <div className="h-[400px] bg-muted animate-pulse rounded" />
-          </CardContent>
-        </Card>
+          {/* Metrics skeleton */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {[...Array(4)].map((_, i) => (
+              <Card key={i}>
+                <CardHeader className="pb-2">
+                  <div className="h-4 w-32 bg-muted animate-pulse rounded" />
+                </CardHeader>
+                <CardContent>
+                  <div className="h-8 w-24 bg-muted animate-pulse rounded mb-2" />
+                  <div className="h-3 w-36 bg-muted animate-pulse rounded" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* Chart skeleton */}
+          <Card>
+            <CardHeader>
+              <div className="h-6 w-48 bg-muted animate-pulse rounded" />
+            </CardHeader>
+            <CardContent>
+              <div className="h-[400px] bg-muted animate-pulse rounded" />
+            </CardContent>
+          </Card>
+        </main>
       </div>
     );
   }
@@ -445,39 +452,42 @@ export default function ReceivingDashboard() {
     : `${filters.stores.length} stores`;
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-3 mb-2">
-            <Link href="/receiving-metrics-settings">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back to Settings
-              </Button>
-            </Link>
+    <div className="min-h-screen bg-background">
+      <AppHeader />
+
+      <main className="container mx-auto p-6 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <Link href="/receiving-metrics-settings">
+                <Button variant="ghost" size="sm">
+                  <ArrowLeft className="w-4 h-4 mr-2" />
+                  Back to Settings
+                </Button>
+              </Link>
+            </div>
+            <h1 className="text-4xl font-bold">Analytics Dashboard</h1>
+            <p className="text-muted-foreground mt-2">
+              Real-time insights • Last updated: {new Date().toLocaleString()}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              ⌘K to search • Esc to clear • ⌘R to refresh
+            </p>
           </div>
-          <h1 className="text-4xl font-bold">Analytics Dashboard</h1>
-          <p className="text-muted-foreground mt-2">
-            Real-time insights • Last updated: {new Date().toLocaleString()}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            ⌘K to search • Esc to clear • ⌘R to refresh
-          </p>
+          <Button
+            variant="outline"
+            onClick={handleRefresh}
+            disabled={isFetching}
+          >
+            {isFetching ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
+            Refresh
+          </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={handleRefresh}
-          disabled={isFetching}
-        >
-          {isFetching ? (
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-          ) : (
-            <RefreshCw className="w-4 h-4 mr-2" />
-          )}
-          Refresh
-        </Button>
-      </div>
 
       {/* Filters */}
       <Card>
@@ -1309,6 +1319,7 @@ export default function ReceivingDashboard() {
           </Card>
         </TabsContent>
       </Tabs>
+      </main>
     </div>
   );
 }
