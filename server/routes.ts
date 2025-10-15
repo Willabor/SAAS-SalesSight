@@ -69,6 +69,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ status: "ok", message: "Server is running" });
   });
 
+  // Debug endpoint to check stock for specific style/color (public for quick debugging)
+  app.get("/api/debug/stock/:styleNumber", async (req, res) => {
+    try {
+      const { styleNumber } = req.params;
+      const { color } = req.query;
+
+      const { itemList } = await import("@shared/schema");
+      const { eq, and } = await import("drizzle-orm");
+
+      let results;
+      if (color) {
+        results = await db
+          .select()
+          .from(itemList)
+          .where(
+            and(
+              eq(itemList.itemNumber, styleNumber),
+              sql`LOWER(${itemList.color}) LIKE LOWER('%' || ${color} || '%')`
+            )
+          );
+      } else {
+        results = await db
+          .select()
+          .from(itemList)
+          .where(eq(itemList.itemNumber, styleNumber));
+      }
+
+      let totalHM = 0, totalGM = 0, totalNM = 0, totalLM = 0;
+      results.forEach((item: any) => {
+        totalHM += item.hm || 0;
+        totalGM += item.gm || 0;
+        totalNM += item.nm || 0;
+        totalLM += item.lm || 0;
+      });
+
+      res.json({
+        styleNumber,
+        color: color || 'all',
+        skuCount: results.length,
+        totals: {
+          HM: totalHM,
+          GM: totalGM,
+          NM: totalNM,
+          LM: totalLM,
+          total: totalHM + totalGM + totalNM + totalLM
+        },
+        skus: results.map((r: any) => ({
+          sku: r.sku,
+          color: r.color,
+          size: r.size,
+          hm: r.hm,
+          gm: r.gm,
+          nm: r.nm,
+          lm: r.lm
+        }))
+      });
+    } catch (error) {
+      console.error("Error fetching stock:", error);
+      res.status(500).json({ error: "Failed to fetch stock" });
+    }
+  });
+
   // Get dashboard statistics
   app.get("/api/stats/item-list", isAuthenticated, async (req, res) => {
     try {
@@ -952,7 +1014,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/inventory/transfer-recommendations-sku", isAuthenticated, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
-      const recommendations = await storage.getTransferRecommendationsWithSKUs(limit);
+      const days = parseInt(req.query.days as string) || 60; // Default to 60 days
+      const recommendations = await storage.getTransferRecommendationsWithSKUs(limit, days);
       res.json(recommendations);
     } catch (error) {
       console.error("Error fetching transfer recommendations with SKUs:", error);
@@ -977,38 +1040,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const mlData = await mlResponse.json();
 
-      // Transform to match frontend interface
-      const recommendations = mlData.predictions.map((pred: any) => ({
-        styleNumber: pred.style_number,
-        itemName: pred.item_name,
-        category: pred.category,
-        fromStore: pred.from_store,
-        toStore: pred.to_store,
-        fromStoreQty: pred.from_store_qty,
-        toStoreQty: pred.to_store_qty,
-        fromStoreDailySales: pred.from_store_daily_sales,
-        toStoreDailySales: pred.to_store_daily_sales,
-        recommendedQty: pred.recommended_qty,
-        priority: pred.ml_priority,
-        avgMarginPercent: pred.margin_percent,
+      // Enrich ML predictions with SKU details from database
+      const days = parseInt(req.query.days as string) || 60;
+      const dbRecommendations = await storage.getTransferRecommendationsWithSKUs(100, days); // Fetch more to find matches
 
-        // ML-specific fields
-        mlPowered: true,
-        successProbability: pred.success_probability,
-        mlPriorityScore: pred.ml_priority_score,
-        confidenceLevel: pred.success_probability > 0.7 ? 'High' :
-                        pred.success_probability > 0.5 ? 'Medium' : 'Low',
-        modelVersion: pred.model_version
-      }));
+      // Transform ML predictions and add SKU details
+      const recommendations = mlData.predictions.map((pred: any) => {
+        // Find matching SKU details from database
+        const matchingRec = dbRecommendations.find(
+          (rec: any) =>
+            rec.styleNumber === pred.style_number &&
+            rec.fromStore === pred.from_store &&
+            rec.toStore === pred.to_store
+        );
+
+        return {
+          styleNumber: pred.style_number,
+          itemName: pred.item_name,
+          category: pred.category,
+          fromStore: pred.from_store,
+          toStore: pred.to_store,
+          fromStoreQty: pred.from_store_qty,
+          toStoreQty: pred.to_store_qty,
+          fromStoreDailySales: pred.from_store_daily_sales,
+          toStoreDailySales: pred.to_store_daily_sales,
+          recommendedQty: pred.recommended_qty,
+          priority: pred.ml_priority,
+          avgMarginPercent: pred.margin_percent,
+
+          // Add SKU details from database if available
+          skuDetails: matchingRec?.skuDetails || [],
+
+          // ML-specific fields
+          mlPowered: true,
+          successProbability: pred.success_probability,
+          mlPriorityScore: pred.ml_priority_score,
+          confidenceLevel: pred.success_probability > 0.7 ? 'High' :
+                          pred.success_probability > 0.5 ? 'Medium' : 'Low',
+          modelVersion: pred.model_version
+        };
+      });
 
       res.json(recommendations);
 
     } catch (error) {
       console.error('ML prediction error:', error);
 
-      // Fallback to rule-based recommendations
+      // Fallback to rule-based recommendations with SKU details
       const limit = parseInt(req.query.limit as string) || 20;
-      const fallback = await storage.getTransferRecommendations(limit);
+      const days = parseInt(req.query.days as string) || 60;
+      const fallback = await storage.getTransferRecommendationsWithSKUs(limit, days);
       res.json(fallback.map(item => ({ ...item, mlPowered: false })));
     }
   });
@@ -2443,6 +2524,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get available colors from inventory for a style
+  app.get("/api/prepack-configurations/available-colors", isAuthenticated, async (req, res) => {
+    try {
+      const { vendorName, styleNumber } = req.query;
+
+      if (!vendorName || !styleNumber) {
+        return res.status(400).json({ error: "vendorName and styleNumber are required" });
+      }
+
+      const colors = await storage.getAvailableColorsForStyle(vendorName as string, styleNumber as string);
+      res.json({ colors });
+    } catch (error) {
+      console.error("Error fetching available colors:", error);
+      res.status(500).json({ error: "Failed to fetch available colors from inventory" });
+    }
+  });
+
   // ========================================
   // PROFIT ANALYSIS API ENDPOINTS
   // ========================================
@@ -2774,7 +2872,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({}),
-          signal: AbortSignal.timeout(5000), // 5 second timeout
+          signal: AbortSignal.timeout(60000), // 60 second timeout for complex prepack optimization
         });
 
         if (!response.ok) {

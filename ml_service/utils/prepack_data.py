@@ -128,10 +128,10 @@ def get_style_inventory_needs_by_color(
     sales AS (
         SELECT
             il.item_number,
-            COUNT(st.id)::numeric / 30.0 as velocity_per_day
+            COUNT(st.id)::numeric / 90.0 as velocity_per_day
         FROM item_list il
         LEFT JOIN sales_transactions st ON st.sku = il.item_number
-            AND st.date >= CURRENT_DATE - INTERVAL '30 days'
+            AND st.date >= CURRENT_DATE - INTERVAL '90 days'
         WHERE il.style_number = %s
         GROUP BY il.item_number
     )
@@ -225,10 +225,10 @@ def get_styles_needing_restock(limit: int = 20) -> List[Dict]:
         SELECT
             il.style_number,
             il.attribute as color,
-            COUNT(st.id)::numeric / 30.0 as daily_velocity
+            COUNT(st.id)::numeric / 90.0 as daily_velocity
         FROM item_list il
         LEFT JOIN sales_transactions st ON st.sku = il.item_number
-            AND st.date >= CURRENT_DATE - INTERVAL '30 days'
+            AND st.date >= CURRENT_DATE - INTERVAL '90 days'
         WHERE il.style_number IS NOT NULL
         GROUP BY il.style_number, il.attribute
     ),
@@ -246,10 +246,11 @@ def get_styles_needing_restock(limit: int = 20) -> List[Dict]:
                 ELSE 999.0
             END as days_supply,
             -- Color needs restock if it has sales and low inventory
-            -- Threshold: 120 days for early restock warning
+            -- Threshold: 150 days (5 months) for steady sellers
+            -- This catches items that sell consistently but not heavily
             CASE
                 WHEN COALESCE(cv.daily_velocity, 0) > 0
-                     AND ci.total_qty / cv.daily_velocity < 120
+                     AND ci.total_qty / cv.daily_velocity < 150
                 THEN true
                 ELSE false
             END as color_needs_restock
@@ -444,10 +445,10 @@ def get_style_inventory_needs_with_financials(
     sales AS (
         SELECT
             il.item_number,
-            COUNT(st.id)::numeric / 30.0 as velocity_per_day
+            COUNT(st.id)::numeric / 90.0 as velocity_per_day
         FROM item_list il
         LEFT JOIN sales_transactions st ON st.sku = il.item_number
-            AND st.date >= CURRENT_DATE - INTERVAL '30 days'
+            AND st.date >= CURRENT_DATE - INTERVAL '90 days'
         WHERE il.style_number = %s
         GROUP BY il.item_number
     )

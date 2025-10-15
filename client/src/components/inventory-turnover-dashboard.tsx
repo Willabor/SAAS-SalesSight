@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Card,
@@ -11,6 +11,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -144,6 +151,15 @@ interface TransferRecommendation {
   mlPriorityScore?: number;
   confidenceLevel?: 'High' | 'Medium' | 'Low';
   modelVersion?: string;
+  skuDetails?: Array<{
+    sku: string;
+    color: string | null;
+    size: string | null;
+    fromStoreQty: number;
+    toStoreQty: number;
+    fromStoreDailySales: number;
+    toStoreDailySales: number;
+  }>;
 }
 
 interface RestockingRecommendation {
@@ -240,6 +256,15 @@ export default function InventoryTurnoverDashboard() {
   const [excludeSeasonalHold, setExcludeSeasonalHold] = useState(true);
   const [useMLPredictions, setUseMLPredictions] = useState(false);
   const [expandedPrepackRows, setExpandedPrepackRows] = useState<Set<string>>(new Set());
+  const [expandedTransferRows, setExpandedTransferRows] = useState<Set<string>>(new Set());
+
+  // Transfer Recommendations filters and sorting
+  const [transferFilterVendor, setTransferFilterVendor] = useState<string>('all');
+  const [transferFilterCategory, setTransferFilterCategory] = useState<string>('all');
+  const [transferFilterFromStore, setTransferFilterFromStore] = useState<string>('all');
+  const [transferFilterToStore, setTransferFilterToStore] = useState<string>('all');
+  const [transferSortBy, setTransferSortBy] = useState<'priority' | 'qty' | 'velocity'>('priority');
+  const [transferVelocityDays, setTransferVelocityDays] = useState<number>(60); // Default to 60 days
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -302,13 +327,13 @@ export default function InventoryTurnoverDashboard() {
   });
 
   const { data: transferRecommendations, isLoading: transferLoading } = useQuery<TransferRecommendation[]>({
-    queryKey: ["inventory", "transfer-recommendations", useMLPredictions, 20],
+    queryKey: ["inventory", "transfer-recommendations", useMLPredictions, 50, transferVelocityDays],
     queryFn: async () => {
       const endpoint = useMLPredictions
         ? '/api/inventory/transfer-recommendations-ml'
-        : '/api/inventory/transfer-recommendations';
+        : '/api/inventory/transfer-recommendations-sku'; // Changed to SKU endpoint for color/size breakdown
 
-      const response = await fetch(`${endpoint}?limit=20`, {
+      const response = await fetch(`${endpoint}?limit=50&days=${transferVelocityDays}`, {
         credentials: 'include',
       });
       if (!response.ok) throw new Error("Failed to fetch transfer recommendations");
@@ -355,6 +380,69 @@ export default function InventoryTurnoverDashboard() {
   });
 
   const prepackRecommendations = prepackRecommendationsData?.recommendations || [];
+
+  // Filter and sort transfer recommendations
+  const filteredAndSortedTransferRecommendations = useMemo(() => {
+    if (!transferRecommendations) return [];
+
+    // Apply filters
+    let filtered = transferRecommendations.filter(item => {
+      // Vendor filter (we need to get vendor from styleMetrics since transfer recs don't include it)
+      if (transferFilterVendor !== 'all') {
+        const styleMetric = styleMetrics?.find(m => m.styleNumber === item.styleNumber);
+        if (!styleMetric || styleMetric.vendorName !== transferFilterVendor) {
+          return false;
+        }
+      }
+
+      // Category filter
+      if (transferFilterCategory !== 'all' && item.category !== transferFilterCategory) {
+        return false;
+      }
+
+      // From Store filter
+      if (transferFilterFromStore !== 'all' && item.fromStore !== transferFilterFromStore) {
+        return false;
+      }
+
+      // To Store filter
+      if (transferFilterToStore !== 'all' && item.toStore !== transferFilterToStore) {
+        return false;
+      }
+
+      return true;
+    });
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      if (transferSortBy === 'priority') {
+        const priorityOrder = { High: 1, Medium: 2, Low: 3 };
+        return priorityOrder[a.priority as keyof typeof priorityOrder] - priorityOrder[b.priority as keyof typeof priorityOrder];
+      } else if (transferSortBy === 'qty') {
+        return b.recommendedQty - a.recommendedQty;
+      } else if (transferSortBy === 'velocity') {
+        return (b.toStoreDailySales - b.fromStoreDailySales) - (a.toStoreDailySales - a.fromStoreDailySales);
+      }
+      return 0;
+    });
+
+    return filtered;
+  }, [transferRecommendations, transferFilterVendor, transferFilterCategory, transferFilterFromStore, transferFilterToStore, transferSortBy, styleMetrics]);
+
+  // Extract unique values for filter dropdowns
+  const uniqueVendors = useMemo(() => {
+    if (!styleMetrics) return [];
+    const vendors = new Set(styleMetrics.map(m => m.vendorName).filter(Boolean));
+    return Array.from(vendors).sort();
+  }, [styleMetrics]);
+
+  const uniqueCategories = useMemo(() => {
+    if (!transferRecommendations) return [];
+    const categories = new Set(transferRecommendations.map(r => r.category).filter(Boolean));
+    return Array.from(categories).sort();
+  }, [transferRecommendations]);
+
+  const uniqueStores = ['GM', 'HM', 'NM', 'LM'];
 
   const formatCurrency = (value: string | number) => {
     const num = typeof value === 'string' ? parseFloat(value) : value;
@@ -487,37 +575,244 @@ export default function InventoryTurnoverDashboard() {
     exportToExcel(exportData, 'style-stock-analysis', 'Style Stock Analysis');
   };
 
+  // Helper function to calculate SKU-level transfer allocations (shared by UI and export)
+  const calculateSkuAllocations = (item: TransferRecommendation) => {
+    if (!item.skuDetails || item.skuDetails.length === 0) {
+      console.warn(`[SKU Allocation] ${item.styleNumber} ${item.fromStore}→${item.toStore}: No skuDetails array`);
+      return [];
+    }
+
+    const totalUnitsToTransfer = item.recommendedQty;
+
+    // DEBUG: Log SKU details for troubleshooting
+    if (item.skuDetails.every(sku => sku.fromStoreQty <= 0)) {
+      console.warn(`[SKU Allocation] ${item.styleNumber} ${item.fromStore}→${item.toStore}:`, {
+        skuCount: item.skuDetails.length,
+        totalRecommended: totalUnitsToTransfer,
+        skus: item.skuDetails.map(s => ({ sku: s.sku, size: s.size, fromQty: s.fromStoreQty })),
+        issue: 'All SKUs have 0 stock at source store'
+      });
+    }
+    const hasAnyVelocity = item.skuDetails.some(sku => sku.toStoreDailySales > 0);
+
+    // Calculate transfer scores for each SKU
+    const skusWithScores = item.skuDetails.map(sku => {
+      if (sku.fromStoreQty <= 0) {
+        return { ...sku, transferScore: 0, maxTransferable: 0, reason: 'No stock at source', recommendedTransferQty: 0 };
+      }
+
+      let transferScore = 0;
+      let urgencyLabel = '';
+      const maxTransferable = sku.fromStoreQty;
+
+      if (hasAnyVelocity) {
+        // MODE 1: VELOCITY-BASED
+        const baseVelocity = sku.toStoreDailySales || 0;
+        let stockoutMultiplier = 1;
+
+        if (sku.toStoreQty === 0) {
+          stockoutMultiplier = 10;
+          urgencyLabel = 'OUT - High velocity';
+        } else if (sku.toStoreQty <= 2) {
+          stockoutMultiplier = 5;
+          urgencyLabel = 'Low stock - High velocity';
+        } else {
+          urgencyLabel = 'In stock';
+        }
+
+        transferScore = baseVelocity * stockoutMultiplier;
+      } else {
+        // MODE 2: STOCKOUT-FIRST FALLBACK
+        const styleVelocity = item.toStoreDailySales || 0;
+
+        if (sku.toStoreQty === 0) {
+          transferScore = 1000 + styleVelocity;
+          urgencyLabel = 'OUT';
+        } else if (sku.toStoreQty <= 2) {
+          transferScore = 500 + styleVelocity;
+          urgencyLabel = 'Low stock';
+        } else if (sku.toStoreQty <= 5) {
+          // Give moderate priority to sizes with moderate stock
+          transferScore = 100 + styleVelocity;
+          urgencyLabel = 'Restock';
+        } else {
+          // Even if well-stocked, give small score to allow some allocation
+          transferScore = 10;
+          urgencyLabel = 'Replenishment';
+        }
+      }
+
+      return {
+        ...sku,
+        transferScore,
+        maxTransferable,
+        reason: urgencyLabel,
+        recommendedTransferQty: 0
+      };
+    });
+
+    // Sort by transfer score
+    const sortedSkus = [...skusWithScores].sort((a, b) => b.transferScore - a.transferScore);
+
+    // Allocate units
+    let remainingUnits = totalUnitsToTransfer;
+    const skusWithAllocations = sortedSkus.map(sku => {
+      if (remainingUnits <= 0 || sku.transferScore === 0) {
+        return { ...sku, recommendedTransferQty: 0 };
+      }
+
+      const maxToAllocate = Math.min(
+        remainingUnits,
+        sku.maxTransferable,
+        2 // Max 2 units per SKU to spread across varieties
+      );
+
+      remainingUnits -= maxToAllocate;
+      return { ...sku, recommendedTransferQty: maxToAllocate };
+    });
+
+    // Return only SKUs with transfer recommendations
+    return skusWithAllocations.filter(sku => sku.recommendedTransferQty > 0);
+  };
+
   const handleExportTransferRecommendations = () => {
-    if (!transferRecommendations || transferRecommendations.length === 0) {
+    if (!filteredAndSortedTransferRecommendations || filteredAndSortedTransferRecommendations.length === 0) {
       alert('No data to export');
       return;
     }
 
+    // Define field mapping (used for all sheets)
     const fieldMapping: any = {
       styleNumber: 'Style Number',
       itemName: 'Item Name',
       category: 'Category',
       fromStore: 'From Store',
       toStore: 'To Store',
-      fromStoreQty: 'From Store Qty',
-      toStoreQty: 'To Store Qty',
-      fromStoreDailySales: 'From Daily Sales',
-      toStoreDailySales: 'To Daily Sales',
-      recommendedQty: 'Recommended Transfer Qty',
-      avgMarginPercent: 'Margin %',
       priority: 'Priority',
+      styleMargin: 'Margin %',
+
+      sku: 'SKU',
+      color: 'Color',
+      size: 'Size',
+      skuFromQty: 'SKU From Qty',
+      skuToQty: 'SKU To Qty',
+      skuVelocity: 'SKU Velocity/Day',
+      transferQty: 'Transfer Qty',
+      reason: 'Reason',
+
+      styleTotalFromQty: 'Style Total From',
+      styleTotalToQty: 'Style Total To',
+      styleRecommendedQty: 'Style Recommended Qty',
+      styleFromDailySales: 'Style From Daily Sales',
+      styleToDailySales: 'Style To Daily Sales',
     };
 
-    // Add ML fields if using ML predictions
-    if (useMLPredictions && transferRecommendations[0]?.mlPowered) {
-      fieldMapping.successProbability = 'Success Probability';
-      fieldMapping.confidenceLevel = 'Confidence Level';
-      fieldMapping.mlPriorityScore = 'ML Priority Score';
-      fieldMapping.modelVersion = 'Model Version';
-    }
+    // Group recommendations by "From Store → To Store" combination
+    const groupedByStores = filteredAndSortedTransferRecommendations.reduce((acc, item) => {
+      const key = `${item.fromStore}-${item.toStore}`;
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(item);
+      return acc;
+    }, {} as Record<string, typeof filteredAndSortedTransferRecommendations>);
 
-    const exportData = formatDataForExport(transferRecommendations, fieldMapping);
-    exportToExcel(exportData, 'transfer-recommendations', 'Transfer Recommendations');
+    // Create sheets array - one sheet per store combination
+    const sheets = Object.entries(groupedByStores).map(([key, items]) => {
+      const [fromStore, toStore] = key.split('-');
+
+      // Flatten SKU details for this group - ONLY include SKUs with transfer recommendations
+      const flattenedData = items.flatMap(item => {
+        // Calculate which SKUs should be transferred (same logic as UI)
+        const skusToTransfer = calculateSkuAllocations(item);
+
+        if (skusToTransfer.length > 0) {
+          // One row per SKU that needs transfer
+          return skusToTransfer.map(sku => ({
+            styleNumber: item.styleNumber,
+            itemName: item.itemName,
+            category: item.category || 'N/A',
+            fromStore: item.fromStore,
+            toStore: item.toStore,
+            priority: item.priority,
+            styleMargin: item.avgMarginPercent,
+
+            // SKU-specific fields
+            sku: sku.sku,
+            color: sku.color || 'N/A',
+            size: sku.size || 'N/A',
+            skuFromQty: sku.fromStoreQty,
+            skuToQty: sku.toStoreQty,
+            skuVelocity: sku.toStoreDailySales || 0,
+            transferQty: sku.recommendedTransferQty, // NEW: include transfer quantity
+            reason: sku.reason, // NEW: include reason
+
+            // Style-level totals
+            styleTotalFromQty: item.fromStoreQty,
+            styleTotalToQty: item.toStoreQty,
+            styleRecommendedQty: item.recommendedQty,
+            styleFromDailySales: item.fromStoreDailySales,
+            styleToDailySales: item.toStoreDailySales,
+
+            // ML fields if available
+            ...(item.mlPowered ? {
+              successProbability: item.successProbability,
+              confidenceLevel: item.confidenceLevel,
+              mlPriorityScore: item.mlPriorityScore,
+              modelVersion: item.modelVersion,
+            } : {}),
+          }));
+        } else {
+          // No SKU details - just export style-level row
+          return [{
+            styleNumber: item.styleNumber,
+            itemName: item.itemName,
+            category: item.category || 'N/A',
+            fromStore: item.fromStore,
+            toStore: item.toStore,
+            priority: item.priority,
+            styleMargin: item.avgMarginPercent,
+            sku: 'N/A',
+            color: 'N/A',
+            size: 'N/A',
+            skuFromQty: item.fromStoreQty,
+            skuToQty: item.toStoreQty,
+            skuVelocity: 0,
+            transferQty: item.recommendedQty,
+            reason: 'Style-level only',
+            styleTotalFromQty: item.fromStoreQty,
+            styleTotalToQty: item.toStoreQty,
+            styleRecommendedQty: item.recommendedQty,
+            styleFromDailySales: item.fromStoreDailySales,
+            styleToDailySales: item.toStoreDailySales,
+
+            ...(item.mlPowered ? {
+              successProbability: item.successProbability,
+              confidenceLevel: item.confidenceLevel,
+              mlPriorityScore: item.mlPriorityScore,
+              modelVersion: item.modelVersion,
+            } : {}),
+          }];
+        }
+      });
+
+      // Add ML fields to mapping if using ML predictions
+      const sheetFieldMapping = { ...fieldMapping };
+      if (useMLPredictions && flattenedData[0]?.successProbability !== undefined) {
+        sheetFieldMapping.successProbability = 'Success Probability';
+        sheetFieldMapping.confidenceLevel = 'Confidence Level';
+        sheetFieldMapping.mlPriorityScore = 'ML Priority Score';
+        sheetFieldMapping.modelVersion = 'Model Version';
+      }
+
+      return {
+        data: formatDataForExport(flattenedData, sheetFieldMapping),
+        sheetName: `${fromStore} to ${toStore}`,
+      };
+    });
+
+    const fileName = `transfer-recommendations-${transferFilterVendor !== 'all' ? transferFilterVendor + '-' : ''}${transferFilterFromStore !== 'all' ? transferFilterFromStore + '-' : ''}${new Date().toISOString().split('T')[0]}`;
+    exportMultipleSheetsToExcel(sheets, fileName);
   };
 
   const handleExportRestockingRecommendations = () => {
@@ -1330,71 +1625,511 @@ export default function InventoryTurnoverDashboard() {
         <CardContent>
           {transferLoading ? (
             <p className="text-center text-muted-foreground py-8">Loading transfer recommendations...</p>
-          ) : transferRecommendations && transferRecommendations.length > 0 ? (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Style #</TableHead>
-                    <TableHead>Item Name</TableHead>
-                    <TableHead>From Store</TableHead>
-                    <TableHead>To Store</TableHead>
-                    <TableHead className="text-right">Transfer Qty</TableHead>
-                    <TableHead className="text-right">From Stock</TableHead>
-                    <TableHead className="text-right">To Stock</TableHead>
-                    <TableHead className="text-right">From Sales/Day</TableHead>
-                    <TableHead className="text-right">To Sales/Day</TableHead>
-                    {useMLPredictions && <TableHead className="text-right">Confidence</TableHead>}
-                    <TableHead>Priority</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {transferRecommendations.map((item, index) => (
-                    <TableRow key={`${item.styleNumber}-${item.fromStore}-${item.toStore}-${index}`} data-testid={`row-transfer-${index}`}>
-                      <TableCell className="font-mono text-sm">{item.styleNumber}</TableCell>
-                      <TableCell className="max-w-xs truncate">{item.itemName}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="font-mono">{item.fromStore}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="font-mono bg-blue-50">{item.toStore}</Badge>
-                      </TableCell>
-                      <TableCell className="text-right font-semibold">{formatNumber(item.recommendedQty)}</TableCell>
-                      <TableCell className="text-right">{formatNumber(item.fromStoreQty)}</TableCell>
-                      <TableCell className="text-right">{formatNumber(item.toStoreQty)}</TableCell>
-                      <TableCell className="text-right">{item.fromStoreDailySales.toFixed(2)}</TableCell>
-                      <TableCell className="text-right text-blue-600 font-semibold">{item.toStoreDailySales.toFixed(2)}</TableCell>
-                      {useMLPredictions && (
-                        <TableCell className="text-right">
-                          {item.mlPowered && item.successProbability ? (
-                            <Badge
-                              variant={
-                                item.confidenceLevel === 'High' ? 'default' :
-                                item.confidenceLevel === 'Medium' ? 'secondary' :
-                                'outline'
-                              }
-                              className={
-                                item.confidenceLevel === 'High' ? 'bg-green-600' :
-                                item.confidenceLevel === 'Medium' ? 'bg-yellow-600' :
-                                'bg-gray-400'
-                              }
-                            >
-                              {(item.successProbability * 100).toFixed(0)}%
-                            </Badge>
-                          ) : (
-                            <span className="text-muted-foreground text-sm">-</span>
-                          )}
-                        </TableCell>
+          ) : filteredAndSortedTransferRecommendations && filteredAndSortedTransferRecommendations.length > 0 ? (
+            <div className="space-y-4">
+              {/* Filters and Sorting Controls */}
+              <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                  {/* Vendor Filter */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="filter-vendor" className="text-xs font-medium">Vendor</Label>
+                    <Select value={transferFilterVendor} onValueChange={setTransferFilterVendor}>
+                      <SelectTrigger id="filter-vendor" className="h-9">
+                        <SelectValue placeholder="All Vendors" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Vendors</SelectItem>
+                        {uniqueVendors.filter(v => v !== null).map(vendor => (
+                          <SelectItem key={vendor} value={vendor as string}>{vendor}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Category Filter */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="filter-category" className="text-xs font-medium">Category</Label>
+                    <Select value={transferFilterCategory} onValueChange={setTransferFilterCategory}>
+                      <SelectTrigger id="filter-category" className="h-9">
+                        <SelectValue placeholder="All Categories" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Categories</SelectItem>
+                        {uniqueCategories.filter(c => c !== null).map(category => (
+                          <SelectItem key={category} value={category as string}>{category}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* From Store Filter */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="filter-from-store" className="text-xs font-medium">From Store</Label>
+                    <Select value={transferFilterFromStore} onValueChange={setTransferFilterFromStore}>
+                      <SelectTrigger id="filter-from-store" className="h-9">
+                        <SelectValue placeholder="All Stores" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Stores</SelectItem>
+                        {uniqueStores.map(store => (
+                          <SelectItem key={store} value={store}>{store}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* To Store Filter */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="filter-to-store" className="text-xs font-medium">To Store</Label>
+                    <Select value={transferFilterToStore} onValueChange={setTransferFilterToStore}>
+                      <SelectTrigger id="filter-to-store" className="h-9">
+                        <SelectValue placeholder="All Stores" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Stores</SelectItem>
+                        {uniqueStores.map(store => (
+                          <SelectItem key={store} value={store}>{store}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Sort By */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sort-by" className="text-xs font-medium">Sort By</Label>
+                    <Select value={transferSortBy} onValueChange={(value: 'priority' | 'qty' | 'velocity') => setTransferSortBy(value)}>
+                      <SelectTrigger id="sort-by" className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="priority">Priority</SelectItem>
+                        <SelectItem value="qty">Transfer Quantity</SelectItem>
+                        <SelectItem value="velocity">Velocity Gap</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Velocity Time Window */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="velocity-days" className="text-xs font-medium">Velocity Window</Label>
+                    <Select value={transferVelocityDays.toString()} onValueChange={(value) => setTransferVelocityDays(parseInt(value))}>
+                      <SelectTrigger id="velocity-days" className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="30">Last 30 Days</SelectItem>
+                        <SelectItem value="60">Last 60 Days</SelectItem>
+                        <SelectItem value="90">Last 90 Days</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t">
+                  <Badge variant="secondary" className="text-xs">
+                    Showing {filteredAndSortedTransferRecommendations.length} of {transferRecommendations?.length || 0} transfers
+                  </Badge>
+                  {(transferFilterVendor !== 'all' || transferFilterCategory !== 'all' || transferFilterFromStore !== 'all' || transferFilterToStore !== 'all') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setTransferFilterVendor('all');
+                        setTransferFilterCategory('all');
+                        setTransferFilterFromStore('all');
+                        setTransferFilterToStore('all');
+                      }}
+                      className="text-xs h-7"
+                    >
+                      Clear Filters
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Expandable Transfer Rows */}
+              <div className="space-y-3">
+                {filteredAndSortedTransferRecommendations.map((item, index) => {
+                  const rowKey = `${item.styleNumber}-${item.fromStore}-${item.toStore}`;
+                  const isExpanded = expandedTransferRows.has(rowKey);
+                  const toggleRow = () => {
+                    const newExpanded = new Set(expandedTransferRows);
+                    if (isExpanded) {
+                      newExpanded.delete(rowKey);
+                    } else {
+                      newExpanded.add(rowKey);
+                    }
+                    setExpandedTransferRows(newExpanded);
+                  };
+
+                  return (
+                    <div key={`${rowKey}-${index}`} className="border rounded-lg overflow-hidden">
+                      {/* Collapsed Row - Transfer Summary */}
+                      <div
+                        className="p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+                        onClick={toggleRow}
+                      >
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                          <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                            <div className="col-span-2 md:col-span-1">
+                              <p className="font-mono text-sm font-semibold">{item.styleNumber}</p>
+                              <p className="text-sm text-muted-foreground truncate max-w-[200px]">
+                                {item.itemName}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">From Store</p>
+                              <Badge variant="outline" className="font-mono mt-1">{item.fromStore}</Badge>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">To Store</p>
+                              <Badge variant="outline" className="font-mono bg-blue-50 mt-1">{item.toStore}</Badge>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Transfer Qty</p>
+                              <p className="text-sm font-semibold">{formatNumber(item.recommendedQty)} units</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Velocity Gap</p>
+                              <p className="text-sm font-semibold text-blue-600">
+                                {(item.toStoreDailySales - item.fromStoreDailySales).toFixed(2)}/day
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Priority</p>
+                              <Badge
+                                variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}
+                                className="mt-1"
+                              >
+                                {item.priority}
+                              </Badge>
+                            </div>
+                          </div>
+                          <Button variant="ghost" size="sm" className="self-start lg:self-auto">
+                            {isExpanded ? '▼ Hide Details' : '► Show Details'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Expanded Row - SKU-Level Color/Size Breakdown */}
+                      {isExpanded && (
+                        <div className="border-t bg-muted/20 p-4">
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Left Column: SKU Breakdown */}
+                            <div>
+                              <h4 className="font-semibold mb-3 flex items-center gap-2">
+                                <Package className="w-4 h-4" />
+                                Which Items to Transfer
+                              </h4>
+                              {item.skuDetails && item.skuDetails.length > 0 ? (
+                                (() => {
+                                  // RESPECT THE BACKEND'S RECOMMENDED TOTAL QUANTITY
+                                  const totalUnitsToTransfer = item.recommendedQty; // e.g., 9 units
+
+                                  // Check if we have any SKU-level velocity data
+                                  const hasAnyVelocity = item.skuDetails.some(sku => sku.toStoreDailySales > 0);
+
+                                  // HYBRID PRIORITY ALGORITHM
+                                  const skusWithScores = item.skuDetails.map(sku => {
+                                    // Only consider SKUs where source has stock
+                                    if (sku.fromStoreQty <= 0) {
+                                      return { ...sku, transferScore: 0, maxTransferable: 0, reason: 'No stock at source' };
+                                    }
+
+                                    let transferScore = 0;
+                                    let urgencyLabel = '';
+
+                                    if (hasAnyVelocity) {
+                                      // MODE 1: VELOCITY-BASED (when we have SKU-level sales data)
+                                      const baseVelocity = sku.toStoreDailySales || 0;
+
+                                      let stockoutMultiplier = 1;
+                                      if (sku.toStoreQty === 0) {
+                                        stockoutMultiplier = 10;
+                                        urgencyLabel = 'OUT - High velocity';
+                                      } else if (sku.toStoreQty === 1) {
+                                        stockoutMultiplier = 5;
+                                        urgencyLabel = 'Low stock - High velocity';
+                                      } else if (sku.toStoreQty === 2) {
+                                        stockoutMultiplier = 2;
+                                        urgencyLabel = 'Low stock';
+                                      } else if (sku.toStoreQty <= 4) {
+                                        stockoutMultiplier = 1.2;
+                                        urgencyLabel = 'Moderate stock';
+                                      } else {
+                                        stockoutMultiplier = 1;
+                                        urgencyLabel = 'Balance inventory';
+                                      }
+
+                                      const marginBonus = item.avgMarginPercent > 60 ? 1.2 : 1.0;
+                                      const inventoryGap = sku.fromStoreQty - sku.toStoreQty;
+                                      const gapBonus = inventoryGap > 3 ? 1.5 : (inventoryGap > 1 ? 1.2 : 1.0);
+
+                                      transferScore = baseVelocity * stockoutMultiplier * marginBonus * gapBonus;
+                                    } else {
+                                      // MODE 2: STOCKOUT-FIRST FALLBACK (when no SKU velocity data)
+                                      // Use style-level velocity to estimate importance
+                                      const styleVelocity = item.toStoreDailySales || 0;
+
+                                      if (sku.toStoreQty === 0) {
+                                        // Critical: Out of stock at high-velocity store
+                                        transferScore = 1000 + sku.fromStoreQty + (styleVelocity * 100);
+                                        urgencyLabel = 'OUT - Replenish';
+                                      } else if (sku.toStoreQty === 1) {
+                                        // Urgent: Almost out
+                                        transferScore = 500 + sku.fromStoreQty + (styleVelocity * 50);
+                                        urgencyLabel = 'Low stock';
+                                      } else if (sku.toStoreQty === 2) {
+                                        // Warning: Low stock
+                                        transferScore = 200 + sku.fromStoreQty + (styleVelocity * 20);
+                                        urgencyLabel = 'Low stock';
+                                      } else if (sku.fromStoreQty > sku.toStoreQty + 3) {
+                                        // Balance large gaps
+                                        const gap = sku.fromStoreQty - sku.toStoreQty;
+                                        transferScore = gap * 10 + sku.fromStoreQty;
+                                        urgencyLabel = 'Balance inventory';
+                                      } else {
+                                        transferScore = 1;
+                                        urgencyLabel = 'Maintain variety';
+                                      }
+                                    }
+
+                                    // Calculate max units we can transfer from this SKU
+                                    const maxTransferable = Math.min(
+                                      sku.fromStoreQty,
+                                      Math.ceil(sku.fromStoreQty / 2) // Don't deplete source completely
+                                    );
+
+                                    return {
+                                      ...sku,
+                                      transferScore,
+                                      maxTransferable,
+                                      reason: urgencyLabel
+                                    };
+                                  });
+
+                                  // Sort by transfer score (highest priority first)
+                                  const sortedSkus = skusWithScores.sort((a, b) => b.transferScore - a.transferScore);
+
+                                  // ALLOCATE THE RECOMMENDED QUANTITY ACROSS TOP PRIORITY SKUs
+                                  let remainingUnits = totalUnitsToTransfer;
+                                  const skusWithAllocations = sortedSkus.map(sku => {
+                                    if (remainingUnits <= 0 || sku.transferScore === 0) {
+                                      return { ...sku, recommendedTransferQty: 0 };
+                                    }
+
+                                    // Allocate units to this SKU (1-2 units max per SKU to spread across varieties)
+                                    const maxToAllocate = Math.min(
+                                      sku.maxTransferable,
+                                      2, // Max 2 units per SKU to maintain variety
+                                      remainingUnits
+                                    );
+
+                                    remainingUnits -= maxToAllocate;
+                                    return { ...sku, recommendedTransferQty: maxToAllocate };
+                                  });
+
+                                  // Calculate actual total allocated
+                                  const totalAllocated = skusWithAllocations.reduce((sum, sku) => sum + sku.recommendedTransferQty, 0);
+
+                                  // Separate SKUs with recommendations from the rest
+                                  const skusToTransfer = skusWithAllocations.filter(sku => sku.recommendedTransferQty > 0);
+                                  const otherSkus = skusWithAllocations.filter(sku => sku.recommendedTransferQty === 0 && sku.fromStoreQty > 0);
+                                  const skusToShow = [...skusToTransfer, ...otherSkus];
+
+                                  return (
+                                    <div className="space-y-3">
+                                      {totalAllocated > 0 && (
+                                        <div className="p-3 bg-green-50 border border-green-200 rounded-md">
+                                          <p className="text-sm font-semibold text-green-900 flex items-center gap-2">
+                                            ✓ Transfer {totalAllocated} units across {skusToTransfer.length} SKUs
+                                          </p>
+                                          <p className="text-xs text-green-700 mt-1">
+                                            {hasAnyVelocity ? (
+                                              <><strong>Velocity-based priority:</strong> Items highlighted in green are high-velocity SKUs with low/zero stock at destination. These will generate the most sales and profit.</>
+                                            ) : (
+                                              <><strong>Stockout-first priority:</strong> Items highlighted in green are out-of-stock or low-stock SKUs at the destination. No individual SKU sales data available, so prioritizing replenishment of stockouts.</>
+                                            )}
+                                          </p>
+                                        </div>
+                                      )}
+                                      <div className="rounded-md border overflow-hidden">
+                                        <Table>
+                                          <TableHeader>
+                                            <TableRow className="bg-card">
+                                              <TableHead className="text-xs">SKU</TableHead>
+                                              <TableHead className="text-xs">Color</TableHead>
+                                              <TableHead className="text-xs">Size</TableHead>
+                                              <TableHead className="text-right text-xs">From Qty</TableHead>
+                                              <TableHead className="text-right text-xs">To Qty</TableHead>
+                                              <TableHead className="text-right text-xs">Velocity/Day</TableHead>
+                                              <TableHead className="text-xs">Reason</TableHead>
+                                              <TableHead className="text-right text-xs font-semibold">Transfer</TableHead>
+                                            </TableRow>
+                                          </TableHeader>
+                                          <TableBody>
+                                            {skusToShow.map((sku, skuIdx) => {
+                                              const shouldTransfer = sku.recommendedTransferQty > 0;
+                                              const hasVelocity = sku.toStoreDailySales > 0;
+                                              return (
+                                                <TableRow
+                                                  key={`${sku.sku}-${skuIdx}`}
+                                                  className={shouldTransfer ? "text-sm bg-green-50 border-l-4 border-l-green-500" : "text-sm"}
+                                                >
+                                                  <TableCell className="font-mono text-xs">{sku.sku}</TableCell>
+                                                  <TableCell>
+                                                    <Badge variant="outline" className="text-xs">
+                                                      {sku.color || 'N/A'}
+                                                    </Badge>
+                                                  </TableCell>
+                                                  <TableCell className="font-semibold">{sku.size || 'N/A'}</TableCell>
+                                                  <TableCell className="text-right">{formatNumber(sku.fromStoreQty)}</TableCell>
+                                                  <TableCell className="text-right">
+                                                    <span className={sku.toStoreQty === 0 ? "text-red-600 font-bold" : ""}>
+                                                      {formatNumber(sku.toStoreQty)}
+                                                    </span>
+                                                  </TableCell>
+                                                  <TableCell className="text-right">
+                                                    {hasVelocity ? (
+                                                      <span className="font-semibold text-blue-600">
+                                                        {sku.toStoreDailySales.toFixed(2)}
+                                                      </span>
+                                                    ) : (
+                                                      <span className="text-muted-foreground text-xs">0.00</span>
+                                                    )}
+                                                  </TableCell>
+                                                  <TableCell className="text-xs text-muted-foreground max-w-[120px]">
+                                                    {shouldTransfer ? sku.reason : '-'}
+                                                  </TableCell>
+                                                  <TableCell className="text-right">
+                                                    {shouldTransfer ? (
+                                                      <Badge className="bg-green-600 font-bold">
+                                                        → {sku.recommendedTransferQty}
+                                                      </Badge>
+                                                    ) : (
+                                                      <span className="text-muted-foreground text-xs">-</span>
+                                                    )}
+                                                  </TableCell>
+                                                </TableRow>
+                                              );
+                                            })}
+                                          </TableBody>
+                                        </Table>
+                                      </div>
+                                    </div>
+                                  );
+                                })()
+                              ) : (
+                                <p className="text-sm text-muted-foreground p-3 bg-card rounded-md border">
+                                  No SKU-level details available for this transfer
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Right Column: Store Metrics */}
+                            <div>
+                              <h4 className="font-semibold mb-3 flex items-center gap-2">
+                                <BarChart3 className="w-4 h-4" />
+                                Store Metrics
+                              </h4>
+                              <div className="space-y-3">
+                                <div className="p-3 bg-card rounded-md border">
+                                  <p className="text-xs text-muted-foreground mb-2 flex items-center gap-2">
+                                    <span className="font-semibold">{item.fromStore}</span> (Source)
+                                  </p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Current Stock</p>
+                                      <p className="text-lg font-bold">{formatNumber(item.fromStoreQty)}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Daily Sales</p>
+                                      <p className="text-lg font-bold">{item.fromStoreDailySales.toFixed(2)}</p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="p-3 bg-card rounded-md border border-blue-200">
+                                  <p className="text-xs text-muted-foreground mb-2 flex items-center gap-2">
+                                    <span className="font-semibold">{item.toStore}</span> (Destination)
+                                  </p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Current Stock</p>
+                                      <p className="text-lg font-bold text-blue-600">{formatNumber(item.toStoreQty)}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Daily Sales</p>
+                                      <p className="text-lg font-bold text-blue-600">{item.toStoreDailySales.toFixed(2)}</p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="p-3 bg-card rounded-md border-2 border-primary/20">
+                                  <p className="text-xs text-muted-foreground mb-1">Recommended Transfer</p>
+                                  <p className="text-2xl font-bold text-green-600">
+                                    {formatNumber(item.recommendedQty)} units
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-2">
+                                    Margin: {item.avgMarginPercent.toFixed(1)}%
+                                  </p>
+                                </div>
+
+                                {useMLPredictions && item.mlPowered && item.successProbability && (
+                                  <div className="p-3 bg-purple-50 rounded-md border border-purple-200">
+                                    <p className="text-xs font-semibold mb-2 flex items-center gap-1">
+                                      🤖 AI Prediction
+                                    </p>
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-xs text-muted-foreground">Success Probability:</span>
+                                      <Badge
+                                        variant={
+                                          item.confidenceLevel === 'High' ? 'default' :
+                                          item.confidenceLevel === 'Medium' ? 'secondary' :
+                                          'outline'
+                                        }
+                                        className={
+                                          item.confidenceLevel === 'High' ? 'bg-green-600' :
+                                          item.confidenceLevel === 'Medium' ? 'bg-yellow-600' :
+                                          'bg-gray-400'
+                                        }
+                                      >
+                                        {(item.successProbability * 100).toFixed(0)}%
+                                      </Badge>
+                                    </div>
+                                    {item.modelVersion && (
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Model: {item.modelVersion}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       )}
-                      <TableCell>
-                        <Badge variant={item.priority === 'High' ? 'destructive' : item.priority === 'Medium' ? 'default' : 'secondary'}>
-                          {item.priority}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : filteredAndSortedTransferRecommendations && filteredAndSortedTransferRecommendations.length === 0 && transferRecommendations && transferRecommendations.length > 0 ? (
+            <div className="text-center py-8">
+              <p className="text-muted-foreground">No transfers match your filters</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setTransferFilterVendor('all');
+                  setTransferFilterCategory('all');
+                  setTransferFilterFromStore('all');
+                  setTransferFilterToStore('all');
+                }}
+                className="mt-4"
+              >
+                Clear Filters
+              </Button>
             </div>
           ) : (
             <p className="text-center text-muted-foreground py-8">No transfer opportunities found</p>

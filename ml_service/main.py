@@ -41,7 +41,7 @@ app.add_middleware(
 transfer_model: Optional[TransferPredictor] = None
 segmentation_model: Optional[SegmentationPredictor] = None
 prepack_optimizer: PrepackOptimizer = PrepackOptimizer()
-profit_optimizer: ProfitBasedPrepackOptimizer = ProfitBasedPrepackOptimizer()
+profit_optimizer: ProfitBasedPrepackOptimizer = ProfitBasedPrepackOptimizer(max_boxes_per_prepack=3)  # 3 boxes max = 9 combinations per style (much faster)
 
 
 # Pydantic models for API
@@ -772,8 +772,8 @@ async def get_prepack_recommendations(request: PrepackRecommendationRequest):
             total_boxes=solution.total_boxes,
             total_pieces=solution.total_pieces,
             total_cost=solution.total_cost,
-            coverage_pct=solution.coverage_pct,
-            waste_pct=solution.waste_pct,
+            coverage_pct=getattr(solution, 'coverage_pct', 0.0),  # May not exist for profit-based optimizer
+            waste_pct=getattr(solution, 'waste_pct', 0.0),  # May not exist for profit-based optimizer
             score=solution.score,
             prepack_combinations=solution.prepack_combinations,
             available_prepacks=[p.prepack_name for p in available_prepacks],
@@ -803,7 +803,8 @@ async def get_prepack_batch_recommendations(limit: int = 20):
     CRITICAL: This endpoint is color-aware - each recommendation specifies both pack type AND color.
     """
     try:
-        print(f"Batch prepack recommendations requested (limit={limit})")
+        # Optimize performance: Minimal logging for production
+        # print(f"Batch prepack recommendations requested (limit={limit})")
 
         # Step 1: Get styles needing restock from prepack vendors
         styles_needing_restock = get_styles_needing_restock(limit=limit)
@@ -817,7 +818,7 @@ async def get_prepack_batch_recommendations(limit: int = 20):
                 "message": "No styles currently need restocking"
             }
 
-        print(f"Found {len(styles_needing_restock)} styles needing restock")
+        # print(f"Found {len(styles_needing_restock)} styles needing restock")
 
         # Step 2: Process each style
         all_recommendations = []
@@ -827,18 +828,25 @@ async def get_prepack_batch_recommendations(limit: int = 20):
             vendor_name = style_info['vendor_name']
 
             try:
+                # print(f"Processing {style_number} ({vendor_name})...")
+
                 # Get inventory needs WITH FINANCIAL DATA grouped by color
                 needs_by_color = get_style_inventory_needs_with_financials(style_number, target_days_supply=90)
 
                 if not needs_by_color:
+                    # print(f"  → No financial needs data for {style_number}")
                     continue
+
+                # print(f"  → Found needs for colors: {list(needs_by_color.keys())}")
 
                 # Get available colors for this style
                 available_colors = get_available_colors_for_style(style_number, vendor_name)
 
                 if not available_colors:
-                    print(f"No colors configured for {style_number}")
+                    # print(f"  → No colors configured for {style_number}")
                     continue
+
+                # print(f"  → Available prepack colors: {available_colors}")
 
                 # Get all prepacks for this style (all colors)
                 all_prepacks = []
@@ -873,7 +881,10 @@ async def get_prepack_batch_recommendations(limit: int = 20):
                             all_prepacks.append(prepack_contents)
 
                 if not all_prepacks:
+                    # print(f"  → No prepacks found for {style_number}")
                     continue
+
+                # print(f"  → Found {len(all_prepacks)} prepack configurations")
 
                 # Use intelligent optimizer to find best prepack combination
                 # This considers size-level velocity and minimizes waste
@@ -890,7 +901,10 @@ async def get_prepack_batch_recommendations(limit: int = 20):
                     current_network_days_supply=style_info['days_of_supply']
                 )
 
+                # print(f"  → Optimization result: {solution['total_boxes']} boxes, ${solution['total_cost']:.2f}, profit: ${solution.get('net_profit', 0):.2f}")
+
                 if solution['total_boxes'] > 0:
+                    # print(f"  ✓ Adding {style_number} to recommendations")
                     # Build color breakdown from optimizer solution
                     color_breakdown = []
                     for color, color_solution in solution.get('by_color', {}).items():
@@ -903,8 +917,8 @@ async def get_prepack_batch_recommendations(limit: int = 20):
                                     'total_pieces': box_count * color_solution.total_pieces // color_solution.total_boxes,
                                     'cost_per_box': color_solution.total_cost / color_solution.total_boxes if color_solution.total_boxes > 0 else 0,
                                     'total_cost': color_solution.total_cost,
-                                    'coverage_pct': color_solution.coverage_pct,
-                                    'waste_pct': color_solution.waste_pct
+                                    'coverage_pct': getattr(color_solution, 'coverage_pct', 0.0),  # May not exist for profit-based optimizer
+                                    'waste_pct': getattr(color_solution, 'waste_pct', 0.0)  # May not exist for profit-based optimizer
                                 })
 
                     all_recommendations.append({
@@ -917,8 +931,8 @@ async def get_prepack_batch_recommendations(limit: int = 20):
                         'total_boxes': solution['total_boxes'],
                         'total_cost': solution['total_cost'],
                         'total_pieces': solution['total_pieces'],
-                        'coverage_pct': solution['overall_coverage_pct'],
-                        'waste_pct': solution['overall_waste_pct'],
+                        'coverage_pct': solution.get('overall_coverage_pct', 0.0),  # Optional for profit-based
+                        'waste_pct': solution.get('overall_waste_pct', 0.0),  # Optional for profit-based
                         'color_breakdown': color_breakdown,
                         'urgency': 'Critical' if style_info['days_of_supply'] < 7 else 'High' if style_info['days_of_supply'] < 14 else 'Medium',
                         # PROFIT-BASED METRICS

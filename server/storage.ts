@@ -302,7 +302,7 @@ export interface IStorage {
     priority: string;
   }>>;
 
-  getTransferRecommendationsWithSKUs(limit?: number): Promise<Array<{
+  getTransferRecommendationsWithSKUs(limit?: number, days?: number): Promise<Array<{
     styleNumber: string;
     itemName: string;
     category: string | null;
@@ -472,6 +472,10 @@ export interface IStorage {
     totalItemsFound: number;
     totalItemsExpected: number;
   }>;
+  getAvailableColorsForStyle(
+    vendorName: string,
+    styleNumber: string
+  ): Promise<string[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -565,7 +569,8 @@ export class DatabaseStorage implements IStorage {
         ilike(itemList.itemNumber, `%${search}%`),
         ilike(itemList.itemName, `%${search}%`),
         ilike(itemList.vendorName, `%${search}%`),
-        ilike(itemList.category, `%${search}%`)
+        ilike(itemList.category, `%${search}%`),
+        ilike(itemList.styleNumber, `%${search}%`)
       ));
     }
     
@@ -738,7 +743,8 @@ export class DatabaseStorage implements IStorage {
           ilike(itemList.itemNumber, `%${search}%`),
           ilike(itemList.itemName, `%${search}%`),
           ilike(itemList.vendorName, `%${search}%`),
-          ilike(itemList.category, `%${search}%`)
+          ilike(itemList.category, `%${search}%`),
+          ilike(itemList.styleNumber, `%${search}%`)
         )
       );
     }
@@ -2244,23 +2250,23 @@ export class DatabaseStorage implements IStorage {
         itemList.vendorName
       );
 
-    // Calculate per-location sales velocities for the last 30 days (active stores only: GM, HM, NM, LM)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    
+    // Calculate per-location sales velocities for the last 60 days (active stores only: GM, HM, NM, LM)
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+
     const salesVelocityData = await db
       .select({
         styleNumber: itemList.styleNumber,
         store: salesTransactions.store,
         salesCount: sql<number>`COUNT(${salesTransactions.id})`,
-        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 60.0`,
       })
       .from(salesTransactions)
       .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
       .where(
         and(
           sql`${itemList.styleNumber} IS NOT NULL`,
-          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0]),
+          gte(salesTransactions.date, sixtyDaysAgo.toISOString().split('T')[0]),
           sql`${salesTransactions.store} IN ('GM', 'HM', 'NM', 'LM')`
         )
       )
@@ -2386,7 +2392,7 @@ export class DatabaseStorage implements IStorage {
     return recommendations.slice(0, limit);
   }
 
-  async getTransferRecommendationsWithSKUs(limit: number = 50): Promise<Array<{
+  async getTransferRecommendationsWithSKUs(limit: number = 50, days: number = 60): Promise<Array<{
     styleNumber: string;
     itemName: string;
     category: string | null;
@@ -2405,6 +2411,8 @@ export class DatabaseStorage implements IStorage {
       size: string | null;
       fromStoreQty: number;
       toStoreQty: number;
+      fromStoreDailySales: number;
+      toStoreDailySales: number;
     }>;
   }>> {
     // Get all SKUs with per-store quantities and style information
@@ -2430,21 +2438,21 @@ export class DatabaseStorage implements IStorage {
         AND ${itemList.itemNumber} IS NOT NULL
       `);
 
-    // Calculate per-SKU sales velocities for the last 30 days (active stores only)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Calculate per-SKU sales velocities for the specified time period (active stores only)
+    const daysAgo = new Date();
+    daysAgo.setDate(daysAgo.getDate() - days);
 
     const salesVelocityData = await db
       .select({
         sku: salesTransactions.sku,
         store: salesTransactions.store,
         salesCount: sql<number>`COUNT(${salesTransactions.id})`,
-        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / ${sql.raw(days.toString())}.0`,
       })
       .from(salesTransactions)
       .where(
         and(
-          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0]),
+          gte(salesTransactions.date, daysAgo.toISOString().split('T')[0]),
           sql`${salesTransactions.store} IN ('GM', 'HM', 'NM', 'LM')`,
           sql`${salesTransactions.sku} IS NOT NULL`
         )
@@ -2463,17 +2471,6 @@ export class DatabaseStorage implements IStorage {
       storeMap.set(row.store || '', Number(row.avgDailySales) || 0);
     }
 
-    // Group SKUs by style
-    const styleGroups = new Map<string, typeof skusWithData>();
-    for (const sku of skusWithData) {
-      if (!sku.styleNumber) continue;
-
-      if (!styleGroups.has(sku.styleNumber)) {
-        styleGroups.set(sku.styleNumber, []);
-      }
-      styleGroups.get(sku.styleNumber)!.push(sku);
-    }
-
     // Helper function to parse color from attribute field
     const parseColor = (attribute: string | null): string | null => {
       if (!attribute) return null;
@@ -2481,6 +2478,21 @@ export class DatabaseStorage implements IStorage {
       const match = attribute.match(/(?:Color:\s*)?(.+)/i);
       return match ? match[1].trim() : attribute.trim();
     };
+
+    // Group SKUs by style + color (not just style!)
+    // This ensures size coverage protection works at the color level
+    const styleColorGroups = new Map<string, typeof skusWithData>();
+    for (const sku of skusWithData) {
+      if (!sku.styleNumber) continue;
+
+      const color = parseColor(sku.attribute) || 'Unknown';
+      const groupKey = `${sku.styleNumber}|${color}`;
+
+      if (!styleColorGroups.has(groupKey)) {
+        styleColorGroups.set(groupKey, []);
+      }
+      styleColorGroups.get(groupKey)!.push(sku);
+    }
 
     const recommendations: Array<{
       styleNumber: string;
@@ -2501,11 +2513,14 @@ export class DatabaseStorage implements IStorage {
         size: string | null;
         fromStoreQty: number;
         toStoreQty: number;
+        fromStoreDailySales: number;
+        toStoreDailySales: number;
       }>;
     }> = [];
 
-    // For each style, calculate aggregated store quantities and velocities
-    for (const [styleNumber, skus] of Array.from(styleGroups.entries())) {
+    // For each style-color combination, calculate aggregated store quantities and velocities
+    for (const [groupKey, skus] of Array.from(styleColorGroups.entries())) {
+      const [styleNumber, color] = groupKey.split('|');
       // Aggregate quantities by store
       const storeQtyMap = new Map<string, number>([
         ['GM', 0], ['HM', 0], ['NM', 0], ['LM', 0]
@@ -2566,6 +2581,71 @@ export class DatabaseStorage implements IStorage {
             const recommendedQty = Math.min(recommendedByVelocity, maxFromHalf, 20);
 
             if (recommendedQty >= 1) {
+              // ========================================
+              // SIZE COVERAGE PROTECTION CHECK
+              // Block transfers if source store has insufficient size coverage
+              // ========================================
+
+              // Calculate current out-of-stock percentage for source store
+              const sourceSKUs = skus.map((sku: typeof skusWithData[0]) => {
+                let qty = 0;
+                if (fromStore.name === 'GM') qty = Number(sku.gmQty) || 0;
+                else if (fromStore.name === 'HM') qty = Number(sku.hmQty) || 0;
+                else if (fromStore.name === 'NM') qty = Number(sku.nmQty) || 0;
+                else if (fromStore.name === 'LM') qty = Number(sku.lmQty) || 0;
+                return { sku: sku.sku, qty };
+              });
+
+              const totalSKUs = sourceSKUs.length;
+              const currentOutOfStock = sourceSKUs.filter(s => s.qty === 0).length;
+              const currentOutOfStockPct = totalSKUs > 0 ? (currentOutOfStock / totalSKUs) * 100 : 0;
+
+              // DEBUG: Log size coverage check
+              if (styleNumber === '8501B' && color.toLowerCase().includes('black')) {
+                console.log(`[SIZE COVERAGE] ${styleNumber}|${color} FROM ${fromStore.name}:`);
+                console.log(`  Total SKUs: ${totalSKUs}`);
+                console.log(`  Out of Stock: ${currentOutOfStock} (${currentOutOfStockPct.toFixed(1)}%)`);
+                console.log(`  Threshold: 30%`);
+                console.log(`  ${currentOutOfStockPct >= 30 ? '❌ BLOCKED' : '✅ ALLOWED'}`);
+              }
+
+              // Block if already at or above 30% out-of-stock
+              if (currentOutOfStockPct >= 30) {
+                continue; // Skip this transfer - source store needs restocking, not depleting
+              }
+
+              // Simulate post-transfer inventory to predict future stockouts
+              // Strategy: Prioritize transferring high-velocity SKUs from destination
+              const skuVelocities = sourceSKUs.map(s => {
+                const velocities = skuVelocityMap.get(s.sku || '') || new Map();
+                const toVelocity = velocities.get(toStore.name) || 0;
+                return { sku: s.sku, qty: s.qty, toVelocity };
+              }).sort((a, b) => b.toVelocity - a.toVelocity); // Sort by destination velocity (highest first)
+
+              // Allocate recommended quantity across SKUs (prioritize high-velocity at destination)
+              let remainingToTransfer = recommendedQty;
+              const postTransferQtys = new Map<string, number>();
+
+              for (const skuVel of skuVelocities) {
+                if (remainingToTransfer <= 0) {
+                  postTransferQtys.set(skuVel.sku, skuVel.qty);
+                } else {
+                  const maxTransferable = Math.max(0, skuVel.qty - 1); // Leave at least 1 unit if possible
+                  const toTransfer = Math.min(maxTransferable, remainingToTransfer, 2); // Max 2 units per SKU
+                  postTransferQtys.set(skuVel.sku, skuVel.qty - toTransfer);
+                  remainingToTransfer -= toTransfer;
+                }
+              }
+
+              // Calculate future out-of-stock percentage
+              const futureOutOfStock = Array.from(postTransferQtys.values()).filter(qty => qty === 0).length;
+              const futureOutOfStockPct = totalSKUs > 0 ? (futureOutOfStock / totalSKUs) * 100 : 0;
+
+              // Block if transfer would push source store to 30% or more out-of-stock
+              if (futureOutOfStockPct >= 30) {
+                continue; // Skip this transfer - would create too many stockouts
+              }
+
               let priority = 'Low';
               if (toVelocity > fromVelocity * 2 && avgMarginPercent > 50) {
                 priority = 'High';
@@ -2591,17 +2671,40 @@ export class DatabaseStorage implements IStorage {
                 else if (toStore.name === 'NM') toStoreQty = Number(sku.nmQty) || 0;
                 else if (toStore.name === 'LM') toStoreQty = Number(sku.lmQty) || 0;
 
+                // Get SKU-level velocity data for both stores
+                const skuVelocities = skuVelocityMap.get(sku.sku || '') || new Map();
+                const fromStoreDailySales = skuVelocities.get(fromStore.name) || 0;
+                const toStoreDailySales = skuVelocities.get(toStore.name) || 0;
+
                 return {
                   sku: sku.sku || '',
                   color,
                   size,
                   fromStoreQty,
                   toStoreQty,
+                  fromStoreDailySales: Number(fromStoreDailySales.toFixed(3)),
+                  toStoreDailySales: Number(toStoreDailySales.toFixed(3)),
                 };
-              }).filter((detail: { sku: string; color: string | null; size: string | null; fromStoreQty: number; toStoreQty: number }) => detail.fromStoreQty > 0 || detail.toStoreQty > 0); // Only include SKUs with relevant quantities
+              }).filter((detail: { sku: string; color: string | null; size: string | null; fromStoreQty: number; toStoreQty: number; fromStoreDailySales: number; toStoreDailySales: number }) => detail.fromStoreQty > 0); // Only include SKUs that can actually be transferred (have stock at source)
+
+              // DEBUG: Log when all SKUs have 0 at source but recommendation exists
+              const skusWithSourceStock = skuDetails.filter(d => d.fromStoreQty > 0).length;
+              if (skusWithSourceStock === 0 && skuDetails.length > 0) {
+                console.warn(`[Backend SKU Mismatch] ${styleNumber}|${color} ${fromStore.name}→${toStore.name}:`);
+                console.warn(`  Aggregated ${fromStore.name} qty: ${fromStore.qty}`);
+                console.warn(`  SKU details count: ${skuDetails.length}`);
+                console.warn(`  SKUs with source stock: ${skusWithSourceStock}`);
+                console.warn(`  Sample SKUs:`, skuDetails.slice(0, 3).map(d => ({ sku: d.sku, size: d.size, fromQty: d.fromStoreQty, toQty: d.toStoreQty })));
+              }
+
+              // DEBUG: Log all recommendation creations (limited to development)
+              if (process.env.NODE_ENV === 'development' && skus[0]?.vendor === 'Argonaut Nations') {
+                console.log(`[Transfer Created] ${styleNumber}|${color} ${fromStore.name}→${toStore.name} (${recommendedQty} units, ${skuDetails.length} SKUs)`);
+              }
 
               recommendations.push({
                 styleNumber,
+                color, // Include color for conflict resolution
                 itemName: skus[0]?.itemName || '',
                 category: skus[0]?.category || null,
                 fromStore: fromStore.name,
@@ -2621,7 +2724,13 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Sort by priority then velocity gap
+    // ========================================
+    // CONFLICT RESOLUTION DISABLED
+    // Return ALL transfer recommendations without filtering
+    // User will manually manage inventory allocation across multiple destinations
+    // ========================================
+
+    // Sort all recommendations by priority then velocity gap
     const priorityOrder = { High: 1, Medium: 2, Low: 3 };
     recommendations.sort((a, b) => {
       if (priorityOrder[a.priority as keyof typeof priorityOrder] !== priorityOrder[b.priority as keyof typeof priorityOrder]) {
@@ -2791,22 +2900,22 @@ export class DatabaseStorage implements IStorage {
       vendorPrepackMap.set(config.vendorName || '', config.usesPrepacks || false);
     }
 
-    // Calculate sales velocities for the last 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Calculate sales velocities for the last 60 days
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
 
     const salesVelocityData = await db
       .select({
         styleNumber: itemList.styleNumber,
         salesCount: sql<number>`COUNT(${salesTransactions.id})`,
-        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 30.0`,
+        avgDailySales: sql<number>`COUNT(${salesTransactions.id})::numeric / 60.0`,
       })
       .from(salesTransactions)
       .innerJoin(itemList, eq(salesTransactions.sku, itemList.itemNumber))
       .where(
         and(
           sql`${itemList.styleNumber} IS NOT NULL`,
-          gte(salesTransactions.date, thirtyDaysAgo.toISOString().split('T')[0])
+          gte(salesTransactions.date, sixtyDaysAgo.toISOString().split('T')[0])
         )
       )
       .groupBy(itemList.styleNumber);
@@ -3991,6 +4100,29 @@ export class DatabaseStorage implements IStorage {
       totalItemsFound,
       totalItemsExpected: sizeDistributions.length,
     };
+  }
+
+  async getAvailableColorsForStyle(
+    vendorName: string,
+    styleNumber: string
+  ): Promise<string[]> {
+    // Query distinct colors (attribute field) from item_list for this vendor+style
+    const result = await db
+      .selectDistinct({ color: itemList.attribute })
+      .from(itemList)
+      .where(
+        and(
+          eq(itemList.vendorName, vendorName),
+          or(
+            eq(itemList.styleNumber, styleNumber),
+            eq(itemList.styleNumber2, styleNumber)
+          ),
+          sql`${itemList.attribute} IS NOT NULL AND ${itemList.attribute} != ''`
+        )
+      )
+      .orderBy(asc(itemList.attribute));
+
+    return result.map(row => row.color).filter(Boolean) as string[];
   }
 
   // Prepack Recommendation Logging

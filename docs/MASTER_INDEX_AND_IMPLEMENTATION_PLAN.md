@@ -81,6 +81,7 @@ All other documents are referenced here with their specific purpose.
 | `/docs/GAP_ANALYSIS_PROFIT_BASED_SYSTEM.md` | Current vs required state analysis | ✅ Read for implementation planning |
 | `/docs/PREPACK_SYSTEM_COMPLETE_SUMMARY.md` | Session summary of fixes & evolution | ❌ Optional - Historical reference |
 | `/docs/PREPACK_SIZE_VELOCITY_FIX.md` | Technical fixes for size-level velocity | ❌ Optional - Historical reference |
+| `/docs/PREPACK_8102B_FIX_DOCUMENTATION.md` | 🔧 **8102B Fix** - Steady seller detection improvements | ✅ Read for velocity window changes & performance notes |
 
 **Summary**: **MAJOR EVOLUTION** - The optimizer algorithm has been completely redesigned based on real business data.
 

@@ -84,6 +84,7 @@ export function PackDialog({
   }>>([{ sizeValue: "", quantity: "" }]);
   const [newColorInput, setNewColorInput] = useState("");
   const [isCalculatingCost, setIsCalculatingCost] = useState(false);
+  const [isLoadingColors, setIsLoadingColors] = useState(false);
   const [calculatedCost, setCalculatedCost] = useState<{
     totalCost: string;
     averageCostPerUnit: string;
@@ -189,12 +190,45 @@ export function PackDialog({
     });
   };
 
-  const useDefaultColors = () => {
-    if (styleDefaultColors) {
+  const useDefaultColors = async () => {
+    // If style has configured default colors, use those
+    if (styleDefaultColors && styleDefaultColors.length > 0) {
       setFormData({
         ...formData,
         availableColors: styleDefaultColors,
       });
+      return;
+    }
+
+    // Otherwise, fetch available colors from inventory
+    setIsLoadingColors(true);
+    try {
+      const response = await fetch(
+        `/api/prepack-configurations/available-colors?vendorName=${encodeURIComponent(vendorName)}&styleNumber=${encodeURIComponent(styleNumber)}`,
+        {
+          credentials: "include",
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch available colors");
+      }
+
+      const data = await response.json();
+
+      if (data.colors && data.colors.length > 0) {
+        setFormData({
+          ...formData,
+          availableColors: data.colors,
+        });
+      } else {
+        alert("No colors found in inventory for this style. Please add colors manually.");
+      }
+    } catch (error) {
+      console.error("Error fetching colors from inventory:", error);
+      alert(`Failed to load colors from inventory: ${error instanceof Error ? error.message : "Unknown error"}. Please add colors manually.`);
+    } finally {
+      setIsLoadingColors(false);
     }
   };
 
@@ -394,16 +428,24 @@ export function PackDialog({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Available Colors</Label>
-                {styleDefaultColors && styleDefaultColors.length > 0 && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={useDefaultColors}
-                  >
-                    Use Style Defaults ({styleDefaultColors.length} colors)
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={useDefaultColors}
+                  disabled={isLoadingColors}
+                >
+                  {isLoadingColors ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      Loading...
+                    </>
+                  ) : styleDefaultColors && styleDefaultColors.length > 0 ? (
+                    `Use Style Defaults (${styleDefaultColors.length} colors)`
+                  ) : (
+                    "Use Colors from Inventory"
+                  )}
+                </Button>
               </div>
 
               {/* Display Colors */}
